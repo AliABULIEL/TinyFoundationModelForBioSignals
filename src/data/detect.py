@@ -391,6 +391,49 @@ def compute_peak_statistics(
     return stats
 
 
+def compute_peak_statistics(
+    peaks: np.ndarray,
+    fs: float,
+    signal_length: int = None
+) -> dict:
+    """Compute statistics from detected peaks.
+    
+    Args:
+        peaks: Peak indices.
+        fs: Sampling frequency.
+        signal_length: Total signal length in samples.
+        
+    Returns:
+        Dictionary with statistics.
+    """
+    stats = {
+        'n_peaks': len(peaks),
+        'mean_rate': 0.0,
+        'std_rate': 0.0,
+        'mean_interval': 0.0,
+        'coverage': 0.0
+    }
+    
+    if len(peaks) < 2:
+        return stats
+    
+    # Calculate intervals
+    intervals = np.diff(peaks) / fs  # in seconds
+    rates = 60.0 / intervals  # in bpm
+    
+    stats['mean_rate'] = np.mean(rates)
+    stats['std_rate'] = np.std(rates)
+    stats['mean_interval'] = np.mean(intervals)
+    
+    # Coverage (time from first to last peak)
+    if signal_length:
+        stats['coverage'] = (peaks[-1] - peaks[0]) / fs
+    else:
+        stats['coverage'] = (peaks[-1] - peaks[0]) / fs
+    
+    return stats
+
+
 def validate_peaks(
     peaks: np.ndarray,
     fs: float,
