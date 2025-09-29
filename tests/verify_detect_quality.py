@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Quick verification of detection and quality modules."""
 
 import sys

@@ -27,7 +27,7 @@ echo "----------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
     --mode full \
     --case-set bis \
-    --output data \
+    --output configs/splits/splits_full.json \
     --seed 42
 
 echo ""
@@ -38,7 +38,7 @@ echo "Processing training set..."
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file data/splits_full.json \
+    --split-file configs/splits/splits_full.json \
     --split train \
     --outdir artifacts/raw_windows/train \
     --duration-sec 60 \
@@ -49,7 +49,7 @@ echo "Processing validation set..."
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file data/splits_full.json \
+    --split-file configs/splits/splits_full.json \
     --split val \
     --outdir artifacts/raw_windows/val \
     --duration-sec 60 \
@@ -60,7 +60,7 @@ echo "Processing test set..."
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file data/splits_full.json \
+    --split-file configs/splits/splits_full.json \
     --split test \
     --outdir artifacts/raw_windows/test \
     --duration-sec 60 \
@@ -144,7 +144,7 @@ echo "----------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
-    --split-file data/splits_full.json \
+    --split-file configs/splits/splits_full.json \
     --outdir artifacts/raw_windows \
     --out artifacts/run_ft_full
 
@@ -155,7 +155,7 @@ $PYTHON scripts/ttm_vitaldb.py test \
     --ckpt artifacts/run_ft_full/best_model.pt \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
-    --split-file data/splits_full.json \
+    --split-file configs/splits/splits_full.json \
     --outdir artifacts/raw_windows \
     --out artifacts/run_ft_full
 

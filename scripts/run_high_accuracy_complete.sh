@@ -33,7 +33,6 @@ mkdir -p "$OUTPUT_DIR/raw_windows"
 mkdir -p "$OUTPUT_DIR/checkpoints"
 mkdir -p "$OUTPUT_DIR/evaluation"
 mkdir -p "$OUTPUT_DIR/downstream_tasks"
-mkdir -p configs/splits
 
 # Record start time
 START_TIME=$(date +%s)
@@ -43,11 +42,10 @@ echo "========================================================================"
 echo "STEP 1/7: Prepare Train/Val/Test Splits (Full Dataset)"
 echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
-    --train-ratio 0.7 \
-    --val-ratio 0.15 \
-    --test-ratio 0.15 \
-    --seed 42 \
-    --out "$OUTPUT_DIR/splits.json"
+    --mode full \
+    --case-set bis \
+    --output "$OUTPUT_DIR" \
+    --seed 42
 
 echo ""
 echo "========================================================================"
@@ -58,10 +56,11 @@ echo ""
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split train \
     --outdir "$OUTPUT_DIR/raw_windows/train" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
@@ -72,20 +71,22 @@ echo "Processing validation set..."
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split val \
     --outdir "$OUTPUT_DIR/raw_windows/val" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 # Test windows
 echo "Processing test set..."
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split test \
     --outdir "$OUTPUT_DIR/raw_windows/test" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
@@ -134,7 +135,7 @@ head:
     hidden_dims: [512, 256]
     activation: "gelu"
     dropout: 0.2
-    batch_norm: false
+    use_batch_norm: false
 
 # Focal loss for imbalanced data
 loss:
@@ -171,18 +172,13 @@ echo ""
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml "$OUTPUT_DIR/model_high_accuracy.yaml" \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split train \
-    --task clf \
-    --out "$OUTPUT_DIR/checkpoints" \
-    --epochs 50 \
-    --early-stopping-patience 10
+    --split-file "$OUTPUT_DIR/splits_full.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
+    --out "$OUTPUT_DIR/checkpoints"
 
 echo ""
 echo "✓ Fine-tuning complete!"
 echo "  Best model: $OUTPUT_DIR/checkpoints/best_model.pt"
-echo "  Last checkpoint: $OUTPUT_DIR/checkpoints/last_checkpoint.pt"
-echo "  Metrics: $OUTPUT_DIR/checkpoints/metrics.json"
 echo ""
 
 # Find the best model
@@ -203,18 +199,15 @@ echo "========================================================================"
 echo "STEP 6/7: Evaluation on Test Set (using BEST MODEL)"
 echo "========================================================================"
 echo "Using model: $BEST_MODEL"
-echo "With isotonic calibration and overlapping windows"
 echo ""
 
 $PYTHON scripts/ttm_vitaldb.py test \
+    --ckpt "$BEST_MODEL" \
     --model-yaml "$OUTPUT_DIR/model_high_accuracy.yaml" \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split test \
-    --task clf \
-    --ckpt "$BEST_MODEL" \
-    --out "$OUTPUT_DIR/evaluation" \
-    --calibration isotonic
+    --split-file "$OUTPUT_DIR/splits_full.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
+    --out "$OUTPUT_DIR/evaluation"
 
 echo ""
 echo "✓ Evaluation complete!"
@@ -258,13 +251,6 @@ echo "✓ Downstream tasks complete!"
 echo "  Results: $OUTPUT_DIR/downstream_tasks/"
 echo ""
 
-# Generate benchmark comparison
-echo "Generating benchmark comparison report..."
-$PYTHON scripts/benchmark_comparison.py \
-    --results-dir "$OUTPUT_DIR/downstream_tasks" \
-    --format html \
-    --plot
-
 # Calculate total runtime
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
@@ -283,25 +269,11 @@ echo "  Output directory: $OUTPUT_DIR"
 echo "  Best model: $BEST_MODEL"
 echo "  Test results: $OUTPUT_DIR/evaluation/test_results.json"
 echo "  Downstream tasks: $OUTPUT_DIR/downstream_tasks/"
-echo "  Benchmark comparison: $OUTPUT_DIR/downstream_tasks/aggregate_comparison.html"
 echo ""
 echo "Performance Improvements (vs FastTrack):"
 echo "  ✓ Fine-tuned encoder (last 2 blocks unfrozen)"
 echo "  ✓ LoRA adapters for efficient parameter updates"
 echo "  ✓ Enhanced MLP head for better capacity"
 echo "  ✓ Focal loss for imbalanced data"
-echo "  ✓ Isotonic calibration for better uncertainty"
-echo ""
-echo "Generated Files:"
-ls -lh "$OUTPUT_DIR/checkpoints/"*.pt 2>/dev/null | awk '{print "  "$9" ("$5")"}'
-echo ""
-echo "View Results:"
-echo "  Training metrics: cat $OUTPUT_DIR/checkpoints/metrics.json"
-echo "  Test results: cat $OUTPUT_DIR/evaluation/test_results.json"
-echo "  Benchmark report: open $OUTPUT_DIR/downstream_tasks/aggregate_comparison.html"
-echo ""
-echo "Compare with FastTrack:"
-echo "  diff artifacts/fasttrack_complete/evaluation/test_results.json \\"
-echo "       artifacts/high_accuracy_complete/evaluation/test_results.json"
 echo ""
 echo "======================================================================"

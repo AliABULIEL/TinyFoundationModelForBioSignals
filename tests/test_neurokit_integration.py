@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Quick test to verify NeuroKit2 integration."""
 
 import sys

@@ -19,7 +19,6 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON="${PYTHON:-python3}"
 OUTPUT_DIR="${OUTPUT_DIR:-artifacts/fasttrack_complete}"
-FASTTRACK="--fasttrack"
 
 # Print configuration
 echo "Configuration:"
@@ -34,7 +33,6 @@ mkdir -p "$OUTPUT_DIR/raw_windows"
 mkdir -p "$OUTPUT_DIR/checkpoints"
 mkdir -p "$OUTPUT_DIR/evaluation"
 mkdir -p "$OUTPUT_DIR/downstream_tasks"
-mkdir -p configs/splits
 
 # Record start time
 START_TIME=$(date +%s)
@@ -44,12 +42,10 @@ echo "========================================================================"
 echo "STEP 1/6: Prepare Train/Val/Test Splits"
 echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
-    --train-ratio 0.7 \
-    --val-ratio 0.15 \
-    --test-ratio 0.15 \
-    --seed 42 \
-    --out "$OUTPUT_DIR/splits.json" \
-    $FASTTRACK
+    --mode fasttrack \
+    --case-set bis \
+    --output "$OUTPUT_DIR" \
+    --seed 42
 
 echo ""
 echo "========================================================================"
@@ -58,43 +54,32 @@ echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_fasttrack.json" \
     --split train \
     --outdir "$OUTPUT_DIR/raw_windows/train" \
-    --ecg-mode analysis \
-    $FASTTRACK
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
-echo "STEP 3/6: Build Preprocessed Windows (Val + Test)"
+echo "STEP 3/6: Build Preprocessed Windows (Test)"
 echo "========================================================================"
-# Validation windows
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split val \
-    --outdir "$OUTPUT_DIR/raw_windows/val" \
-    --ecg-mode analysis \
-    $FASTTRACK
-
-# Test windows
-$PYTHON scripts/ttm_vitaldb.py build-windows \
-    --channels-yaml configs/channels.yaml \
-    --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_fasttrack.json" \
     --split test \
     --outdir "$OUTPUT_DIR/raw_windows/test" \
-    --ecg-mode analysis \
-    $FASTTRACK
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
 echo "STEP 4/6: Training TTM Model (Foundation Model Mode)"
 echo "========================================================================"
 echo "Configuration:"
-echo "  - Frozen encoder (805K params frozen)"
-echo "  - Linear head only (~290K trainable params)"
+echo "  - Frozen encoder"
+echo "  - Linear head only"
 echo "  - 10 epochs with early stopping"
 echo "  - Batch size: 128"
 echo ""
@@ -102,17 +87,14 @@ echo ""
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split train \
-    --task clf \
+    --split-file "$OUTPUT_DIR/splits_fasttrack.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
     --out "$OUTPUT_DIR/checkpoints" \
-    $FASTTRACK
+    --fasttrack
 
 echo ""
 echo "✓ Training complete!"
 echo "  Best model: $OUTPUT_DIR/checkpoints/best_model.pt"
-echo "  Last checkpoint: $OUTPUT_DIR/checkpoints/last_checkpoint.pt"
-echo "  Metrics: $OUTPUT_DIR/checkpoints/metrics.json"
 echo ""
 
 # Find the best model
@@ -136,14 +118,12 @@ echo "Using model: $BEST_MODEL"
 echo ""
 
 $PYTHON scripts/ttm_vitaldb.py test \
+    --ckpt "$BEST_MODEL" \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split test \
-    --task clf \
-    --ckpt "$BEST_MODEL" \
-    --out "$OUTPUT_DIR/evaluation" \
-    --calibration temperature
+    --split-file "$OUTPUT_DIR/splits_fasttrack.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
+    --out "$OUTPUT_DIR/evaluation"
 
 echo ""
 echo "✓ Evaluation complete!"
@@ -204,17 +184,9 @@ echo "  Best model: $BEST_MODEL"
 echo "  Test results: $OUTPUT_DIR/evaluation/test_results.json"
 echo "  Downstream tasks: $OUTPUT_DIR/downstream_tasks/"
 echo ""
-echo "Generated Files:"
-ls -lh "$OUTPUT_DIR/checkpoints/"*.pt 2>/dev/null | awk '{print "  "$9" ("$5")"}'
-echo ""
-echo "View Results:"
-echo "  Training metrics: cat $OUTPUT_DIR/checkpoints/metrics.json"
-echo "  Test results: cat $OUTPUT_DIR/evaluation/test_results.json"
-echo "  Downstream comparison: cat $OUTPUT_DIR/downstream_tasks/aggregate_comparison.html"
-echo ""
 echo "Next Steps:"
-echo "  1. View training curves: tensorboard --logdir $OUTPUT_DIR/checkpoints/tensorboard"
-echo "  2. Compare to benchmarks: python scripts/benchmark_comparison.py --results-dir $OUTPUT_DIR/downstream_tasks"
+echo "  1. View training metrics: cat $OUTPUT_DIR/checkpoints/metrics.json"
+echo "  2. View test results: cat $OUTPUT_DIR/evaluation/test_results.json"
 echo "  3. Try high-accuracy mode: bash scripts/run_high_accuracy_complete.sh"
 echo ""
 echo "======================================================================"

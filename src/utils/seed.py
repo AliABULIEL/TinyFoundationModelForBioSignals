@@ -18,13 +18,13 @@ def set_seed(seed: int = 42, deterministic: bool = True) -> None:
     
     Note:
         This sets seeds for:
-        - Python random
+        - python3 random
         - NumPy
         - PyTorch (CPU and CUDA)
         - CUDNN deterministic mode
         - Environment variables
     """
-    # Python random
+    # python3 random
     random.seed(seed)
     
     # NumPy
@@ -57,7 +57,7 @@ def get_random_state() -> dict:
         Dictionary containing random states from all sources.
     """
     state = {
-        'python': random.getstate(),
+        'python3': random.getstate(),
         'numpy': np.random.get_state(),
         'torch': torch.get_rng_state(),
     }
@@ -74,7 +74,7 @@ def set_random_state(state: dict) -> None:
     Args:
         state: Dictionary containing random states from get_random_state().
     """
-    random.setstate(state['python'])
+    random.setstate(state['python3'])
     np.random.set_state(state['numpy'])
     torch.set_rng_state(state['torch'])
     

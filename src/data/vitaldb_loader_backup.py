@@ -1,4 +1,4 @@
-"""Fixed VitalDB loader using robust API methods."""
+"""VitalDB loader that handles the 50% NaN pattern in waveform data."""
 
 import os
 import ssl
@@ -68,16 +68,21 @@ def safe_to_numeric(data: Union[np.ndarray, list, pd.Series]) -> Optional[np.nda
 def fix_alternating_nan_pattern(signal: np.ndarray) -> np.ndarray:
     """
     Fix the common VitalDB pattern where every other sample is NaN.
+    This happens when data is stored at half the reported sampling rate.
     """
     valid_mask = ~np.isnan(signal)
     valid_ratio = np.mean(valid_mask)
     
+    # Check if we have the alternating pattern (around 50% valid)
     if 0.45 <= valid_ratio <= 0.55:
+        # Check if it's actually alternating
         valid_indices = np.where(valid_mask)[0]
         if len(valid_indices) > 1:
             gaps = np.diff(valid_indices)
+            # If most gaps are 2 (alternating pattern), extract valid samples
             if np.median(gaps) == 2 or np.mean(gaps) < 2.5:
                 print(f"   Detected alternating NaN pattern, extracting valid samples...")
+                # Extract only valid samples
                 clean_signal = signal[valid_mask]
                 return clean_signal
     
@@ -91,7 +96,6 @@ def get_available_case_sets() -> Dict[str, Set[int]]:
     
     case_sets = {}
     
-    # Standard case sets
     if hasattr(vitaldb, 'caseids_bis'):
         case_sets['bis'] = set(vitaldb.caseids_bis)
     if hasattr(vitaldb, 'caseids_des'):
@@ -108,42 +112,6 @@ def get_available_case_sets() -> Dict[str, Set[int]]:
     return case_sets
 
 
-def find_cases_with_track(track_name: str, max_cases: Optional[int] = None) -> List[int]:
-    """
-    Find VitalDB cases that have a specific track.
-    Uses the robust vitaldb.find_cases() API.
-    """
-    if not VITALDB_AVAILABLE:
-        return []
-    
-    try:
-        # Map common names to VitalDB track names
-        track_mapping = {
-            'PLETH': 'PLETH',
-            'PPG': 'PLETH',
-            'ECG_II': 'ECG_II',
-            'ECG': 'ECG_II',
-            'ABP': 'ABP',
-            'ART': 'ART',
-            'EEG': 'BIS/BIS'
-        }
-        
-        vitaldb_track = track_mapping.get(track_name.upper(), track_name)
-        
-        print(f"Finding cases with track: {vitaldb_track}...")
-        cases = vitaldb.find_cases(vitaldb_track)
-        
-        if max_cases:
-            cases = cases[:max_cases]
-        
-        print(f"✓ Found {len(cases)} cases with {vitaldb_track}")
-        return cases
-        
-    except Exception as e:
-        print(f"Error finding cases: {e}")
-        return []
-
-
 def list_cases(
     min_duration_hours: float = 0.5,
     required_channels: Optional[List[str]] = None,
@@ -152,35 +120,30 @@ def list_cases(
     case_set: str = 'bis',
     max_cases: Optional[int] = None
 ) -> List[Dict[str, any]]:
-    """List available VitalDB cases using robust method."""
+    """List available VitalDB cases."""
     if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
         return _mock_list_cases(min_duration_hours, required_channels)
     
-    # Try using find_cases for specific channels
-    if required_channels and len(required_channels) > 0:
-        # Find cases with first required channel
-        case_ids = find_cases_with_track(required_channels[0], max_cases)
+    case_sets = get_available_case_sets()
+    
+    if case_set in case_sets:
+        case_ids = list(case_sets[case_set])
     else:
-        # Use predefined case sets
-        case_sets = get_available_case_sets()
-        if case_set in case_sets:
-            case_ids = list(case_sets[case_set])
-        else:
-            case_ids = list(case_sets.get('bis', []))
-        
-        if max_cases:
-            case_ids = case_ids[:max_cases]
+        case_ids = list(case_sets.get('bis', []))
+    
+    if max_cases:
+        case_ids = case_ids[:max_cases]
     
     cases = []
     for case_id in case_ids:
         cases.append({
             'case_id': str(case_id),
             'subject_id': str(case_id),
-            'available_channels': required_channels if required_channels else [],
+            'available_channels': [],
             'duration_s': 3600
         })
     
-    print(f"Found {len(cases)} cases")
+    print(f"Found {len(cases)} cases from {case_set} set")
     return cases
 
 
@@ -191,19 +154,19 @@ def load_channel(
     cache_dir: str = "data/cache",
     start_sec: float = 0,
     duration_sec: Optional[float] = None,
-    auto_fix_alternating: bool = True
+    auto_fix_alternating: bool = True  # NEW: Auto-fix alternating NaN pattern
 ) -> Tuple[np.ndarray, float]:
     """
-    Load a single channel from VitalDB case using robust API.
-    FIXED: Uses vitaldb.load_case() instead of VitalFile to avoid track errors.
+    Load a single channel from VitalDB case.
+    Handles the alternating NaN pattern common in VitalDB data.
     """
     if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
         return _mock_load_channel(case_id, channel)
     
     try:
-        case_id_int = int(case_id)
+        case_id = int(case_id)
     except:
-        case_id_int = case_id
+        pass
     
     # Try cache first
     if use_cache:
@@ -215,74 +178,80 @@ def load_channel(
             except:
                 pass
     
-    # Load from VitalDB using robust API
+    # Load from VitalDB
     try:
-        # Map channel name to VitalDB track
-        track_mapping = {
+        vf = vitaldb.VitalFile(case_id)
+        tracks = vf.get_track_names()
+        
+        # Find the right track (prioritize device-specific waveforms)
+        actual_track = None
+        channel_upper = channel.upper()
+        
+        # Priority tracks for each signal type
+        priority_tracks = {
             'PLETH': ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH'],
             'PPG': ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH'],
-            'ECG_II': ['SNUADC/ECG_II', 'Solar8000/ECG_II'],
             'ECG': ['SNUADC/ECG_II', 'SNUADC/ECG_V5', 'Solar8000/ECG_II'],
-            'ABP': ['SNUADC/ART', 'Solar8000/ART'],
-            'ART': ['SNUADC/ART', 'Solar8000/ART']
+            'ECG_II': ['SNUADC/ECG_II', 'Solar8000/ECG_II'],
         }
         
-        channel_upper = channel.upper()
-        possible_tracks = track_mapping.get(channel_upper, [channel])
-        
-        print(f"   Loading case {case_id}, channel {channel}...")
-        
-        # Try each possible track
-        signal = None
-        actual_track = None
-        
-        for track in possible_tracks:
-            try:
-                # Use vitaldb.load_case() - more robust than VitalFile
-                data = vitaldb.load_case(case_id_int, [track])
-                
-                if data is not None and len(data) > 0:
-                    signal = data
-                    actual_track = track
-                    print(f"   ✓ Loaded from {track}")
+        # Find track
+        if channel_upper in priority_tracks:
+            for priority in priority_tracks[channel_upper]:
+                if priority in tracks:
+                    actual_track = priority
                     break
-            except Exception as e:
-                continue
         
-        if signal is None:
-            raise ValueError(f"Could not load {channel} from case {case_id}")
+        # Fallback search
+        if not actual_track:
+            for track in tracks:
+                if 'EVENT' in track.upper():
+                    continue
+                track_upper = track.upper()
+                if 'PLETH' in channel_upper and 'PLETH' in track_upper:
+                    actual_track = track
+                    break
+                elif 'ECG' in channel_upper and 'ECG' in track_upper:
+                    actual_track = track
+                    break
         
-        # Convert to numeric
-        signal = safe_to_numeric(signal)
-        if signal is None:
-            raise ValueError(f"Could not convert data to numeric")
+        if not actual_track:
+            raise ValueError(f"No track found for '{channel}' in case {case_id}")
         
-        # Handle 2D arrays
-        if signal.ndim == 2:
-            signal = signal[:, 0]
-        
-        # Apply window if specified
-        if duration_sec:
-            fs = 100.0 if 'PLETH' in actual_track else 500.0
-            end_sample = int((start_sec + duration_sec) * fs)
-            start_sample = int(start_sec * fs)
-            signal = signal[start_sample:end_sample]
+        print(f"   Loading {actual_track}...")
         
         # Determine sampling rate
-        if 'PLETH' in actual_track or 'PPG' in channel_upper:
+        if 'PLETH' in actual_track.upper():
             fs = 100.0
-        elif 'ECG' in actual_track or 'ECG' in channel_upper:
+        elif 'ECG' in actual_track.upper():
             fs = 500.0 if 'SNUADC' in actual_track else 250.0
-        elif 'ART' in actual_track or 'ABP' in channel_upper:
-            fs = 100.0
         else:
             fs = 100.0
         
-        # Fix alternating NaN pattern
+        # Load data
+        end_sec = start_sec + duration_sec if duration_sec else start_sec + 60
+        data = vf.to_numpy([actual_track], start_sec, end_sec)
+        
+        if data is None or len(data) == 0:
+            raise ValueError(f"No data returned for {actual_track}")
+        
+        # Convert to numeric
+        data = safe_to_numeric(data)
+        if data is None:
+            raise ValueError(f"Could not convert data to numeric")
+        
+        # Extract signal
+        if data.ndim == 2:
+            signal = data[:, 0]
+        else:
+            signal = data
+        
+        # Check for alternating NaN pattern and fix if present
         original_length = len(signal)
         if auto_fix_alternating:
             signal = fix_alternating_nan_pattern(signal)
             if len(signal) < original_length:
+                # Adjust sampling rate since we removed every other sample
                 fs = fs / 2
                 print(f"   Adjusted sampling rate to {fs} Hz after removing alternating NaNs")
         
@@ -291,9 +260,10 @@ def load_channel(
         print(f"   Final quality: {valid_ratio:.1%} valid samples ({len(signal)} total)")
         
         if valid_ratio < 0.9:
-            # Interpolate remaining NaNs
+            print(f"   Warning: Still some NaN values present")
+            # Clean remaining NaNs
             valid_mask = ~np.isnan(signal)
-            if np.sum(valid_mask) > 100:
+            if np.sum(valid_mask) > 100:  # At least 100 valid samples
                 valid_indices = np.where(valid_mask)[0]
                 signal = np.interp(np.arange(len(signal)), valid_indices, signal[valid_indices])
                 print(f"   Interpolated remaining NaN values")

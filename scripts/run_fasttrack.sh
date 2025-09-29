@@ -14,31 +14,21 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON="${PYTHON:-python3}"
 
-# Check if running in FastTrack mode (default)
-FASTTRACK="${FASTTRACK:-true}"
-MODE_FLAG=""
-if [ "$FASTTRACK" = true ]; then
-    MODE_FLAG="--fasttrack"
-    echo "Running in FastTrack mode (50 train, 20 test cases)"
-else
-    echo "Running in full mode (all VitalDB cases)"
-fi
+echo "Running in FastTrack mode (50 train, 20 test cases)"
 
 # Create output directories
 mkdir -p artifacts/raw_windows
 mkdir -p artifacts/checkpoints
-mkdir -p configs/splits
+mkdir -p data
 
 echo ""
 echo "Step 1/4: Preparing train/test splits..."
 echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
-    --train-ratio 0.71 \
-    --val-ratio 0.0 \
-    --test-ratio 0.29 \
-    --seed 42 \
-    --out configs/splits/train_test.json \
-    $MODE_FLAG
+    --mode fasttrack \
+    --case-set bis \
+    --output data \
+    --seed 42
 
 echo ""
 echo "Step 2/4: Building preprocessed windows..."
@@ -47,21 +37,21 @@ echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file configs/splits/train_test.json \
+    --split-file data/splits_fasttrack.json \
     --split train \
     --outdir artifacts/raw_windows/train \
-    --ecg-mode analysis \
-    $MODE_FLAG
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 # Build test windows
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file configs/splits/train_test.json \
+    --split-file data/splits_fasttrack.json \
     --split test \
     --outdir artifacts/raw_windows/test \
-    --ecg-mode analysis \
-    $MODE_FLAG
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "Step 3/4: Training TTM model..."
@@ -69,24 +59,21 @@ echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file configs/splits/train_test.json \
-    --split train \
-    --task clf \
+    --split-file data/splits_fasttrack.json \
+    --outdir artifacts/raw_windows \
     --out artifacts/run_ft_fast \
-    $MODE_FLAG
+    --fasttrack
 
 echo ""
 echo "Step 4/4: Testing and evaluation..."
 echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py test \
+    --ckpt artifacts/run_ft_fast/best_model.pt \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file configs/splits/train_test.json \
-    --split test \
-    --task clf \
-    --ckpt artifacts/run_ft_fast/model.pt \
-    --out artifacts/run_ft_fast \
-    --calibration temperature
+    --split-file data/splits_fasttrack.json \
+    --outdir artifacts/raw_windows \
+    --out artifacts/run_ft_fast
 
 echo ""
 echo "=========================================="
@@ -94,20 +81,11 @@ echo "FastTrack Pipeline Complete!"
 echo "=========================================="
 echo ""
 echo "Results saved to: artifacts/run_ft_fast/"
-echo "  - model.pt: Trained model checkpoint"
-echo "  - metrics.json: Performance metrics"
+echo "  - best_model.pt: Trained model checkpoint"
 echo "  - test_results.json: Test set evaluation"
 echo ""
 echo "To run with higher accuracy (full fine-tuning):"
-echo "  1. Set FASTTRACK=false"
-echo "  2. Edit configs/model.yaml:"
-echo "     - freeze_encoder: false"
-echo "     - unfreeze_last_n_blocks: 2"
-echo "     - lora.enabled: true"
-echo "  3. Re-run this script"
+echo "  bash scripts/run_high_accuracy.sh"
 echo ""
-echo "View training logs:"
+echo "View training logs (if available):"
 echo "  tail -f artifacts/run_ft_fast/train.log"
-echo ""
-echo "Launch TensorBoard:"
-echo "  tensorboard --logdir artifacts/run_ft_fast/tensorboard"

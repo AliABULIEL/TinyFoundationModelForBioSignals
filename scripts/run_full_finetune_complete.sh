@@ -32,7 +32,6 @@ mkdir -p "$OUTPUT_DIR/raw_windows"
 mkdir -p "$OUTPUT_DIR/checkpoints"
 mkdir -p "$OUTPUT_DIR/evaluation"
 mkdir -p "$OUTPUT_DIR/downstream_tasks"
-mkdir -p configs/splits
 
 # Record start time
 START_TIME=$(date +%s)
@@ -42,11 +41,10 @@ echo "========================================================================"
 echo "STEP 1/7: Prepare Train/Val/Test Splits"
 echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
-    --train-ratio 0.7 \
-    --val-ratio 0.15 \
-    --test-ratio 0.15 \
-    --seed 42 \
-    --out "$OUTPUT_DIR/splits.json"
+    --mode full \
+    --case-set bis \
+    --output "$OUTPUT_DIR" \
+    --seed 42
 
 echo ""
 echo "========================================================================"
@@ -55,10 +53,11 @@ echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split train \
     --outdir "$OUTPUT_DIR/raw_windows/train" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
@@ -68,19 +67,21 @@ echo "========================================================================"
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split val \
     --outdir "$OUTPUT_DIR/raw_windows/val" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 # Test windows
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
+    --split-file "$OUTPUT_DIR/splits_full.json" \
     --split test \
     --outdir "$OUTPUT_DIR/raw_windows/test" \
-    --ecg-mode analysis
+    --duration-sec 60 \
+    --min-sqi 0.8
 
 echo ""
 echo "========================================================================"
@@ -132,7 +133,7 @@ head:
     hidden_dims: [768, 512, 256]
     activation: "gelu"
     dropout: 0.15
-    batch_norm: false
+    use_batch_norm: false
 
 # Advanced loss
 loss:
@@ -178,17 +179,13 @@ echo ""
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml "$OUTPUT_DIR/model_full_finetune.yaml" \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split train \
-    --task clf \
-    --out "$OUTPUT_DIR/checkpoints" \
-    --epochs 100 \
-    --early-stopping-patience 15
+    --split-file "$OUTPUT_DIR/splits_full.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
+    --out "$OUTPUT_DIR/checkpoints"
 
 echo ""
 echo "✓ Deep fine-tuning complete!"
 echo "  Best model: $OUTPUT_DIR/checkpoints/best_model.pt"
-echo "  Last checkpoint: $OUTPUT_DIR/checkpoints/last_checkpoint.pt"
 echo ""
 
 # Find the best model
@@ -209,14 +206,12 @@ echo "Using model: $BEST_MODEL"
 echo ""
 
 $PYTHON scripts/ttm_vitaldb.py test \
+    --ckpt "$BEST_MODEL" \
     --model-yaml "$OUTPUT_DIR/model_full_finetune.yaml" \
     --run-yaml configs/run.yaml \
-    --split-file "$OUTPUT_DIR/splits.json" \
-    --split test \
-    --task clf \
-    --ckpt "$BEST_MODEL" \
-    --out "$OUTPUT_DIR/evaluation" \
-    --calibration isotonic
+    --split-file "$OUTPUT_DIR/splits_full.json" \
+    --outdir "$OUTPUT_DIR/raw_windows" \
+    --out "$OUTPUT_DIR/evaluation"
 
 echo ""
 echo "✓ Evaluation complete!"
@@ -254,14 +249,6 @@ echo ""
 echo "✓ Downstream tasks complete!"
 echo ""
 
-# Generate benchmark comparison
-if [ -f "scripts/benchmark_comparison.py" ]; then
-    $PYTHON scripts/benchmark_comparison.py \
-        --results-dir "$OUTPUT_DIR/downstream_tasks" \
-        --format html \
-        --plot || true
-fi
-
 # Calculate total runtime
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
@@ -287,10 +274,5 @@ echo "  ✓ LoRA adapters (rank 32) on top"
 echo "  ✓ Deep MLP head (3 layers)"
 echo "  ✓ ~60% of encoder parameters trained"
 echo "  ✓ Optimal for maximum performance"
-echo ""
-echo "Compare Performance:"
-echo "  FastTrack:     artifacts/fasttrack_complete/evaluation/test_results.json"
-echo "  High-Accuracy: artifacts/high_accuracy_complete/evaluation/test_results.json"
-echo "  Full Finetune: $OUTPUT_DIR/evaluation/test_results.json"
 echo ""
 echo "======================================================================"

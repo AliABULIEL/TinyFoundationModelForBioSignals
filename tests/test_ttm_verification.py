@@ -152,7 +152,7 @@ def test_installation_instructions():
         print("   cd tsfm")
         print("   pip install -e .")
         print("\n3. Verify installation:")
-        print("   python -c 'from tsfm import TinyTimeMixerForPrediction; print(\"Success!\")'")
+        print("   python3 -c 'from tsfm import TinyTimeMixerForPrediction; print(\"Success!\")'")
     
     print("\nAvailable TTM models from IBM:")
     print("  - ibm-granite/granite-timeseries-ttm-v1")
