@@ -17,6 +17,10 @@ pyarrow>=10.0.0
 scikit-learn>=1.2.0
 matplotlib>=3.6.0
 
+# Time Series Foundation Models (IBM TTM)
+tsfm[notebooks]>=0.1.0
+transformers>=4.30.0  # Required for tsfm
+
 # Optional: Development tools (install with pip install -e .[dev])
 # ruff>=0.1.0
 # black>=23.0.0

@@ -2,8 +2,9 @@
 
 # TTM Base Model
 model:
-  # Model variant (HuggingFace model ID or local path)
-  variant: "ibm/TTM"  # or "ttm-512-96", "ttm-1024-96", "ttm-1536-96"
+  # Model variant (IBM tsfm model ID)
+  variant: "ibm-granite/granite-timeseries-ttm-v1"  # IBM's official TTM model
+  # Other options: Use different context lengths as needed
   
   # Model architecture parameters
   input_channels: 3  # ECG, PPG, ABP
