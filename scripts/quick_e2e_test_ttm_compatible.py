@@ -123,9 +123,9 @@ for split_name, case_ids in simple_splits.items():
                     if 'PLETH' in ch_name or 'PPG' in ch_name:
                         filtered = apply_bandpass_filter(signal, fs, 0.5, 10, 'cheby2', 4)
                     elif 'ECG' in ch_name:
-                        filtered = apply_bandpass_filter(signal, fs, 0.5, 40, 'butterworth', 4)
+                        filtered = apply_bandpass_filter(signal, fs, 0.5, 40, 'butter', 4)
                     elif 'ABP' in ch_name:
-                        filtered = apply_bandpass_filter(signal, fs, 0.5, 20, 'butterworth', 4)
+                        filtered = apply_bandpass_filter(signal, fs, 0.5, 20, 'butter', 4)
                     else:
                         filtered = signal
                     
