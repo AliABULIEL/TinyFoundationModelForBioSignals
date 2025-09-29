@@ -62,6 +62,10 @@ class TestLoRA:
         
         # LoRA linear
         lora_linear = LoRALinear(linear, r=8, alpha=16)
+        
+        # Initialize B with non-zero values for testing
+        nn.init.xavier_uniform_(lora_linear.lora_B)
+        
         lora_output = lora_linear(x)
         
         # Shapes should match
@@ -135,6 +139,9 @@ class TestLoRA:
         original_weight = linear.weight.clone()
         
         lora_linear = LoRALinear(linear, r=8, merge_weights=True)
+        
+        # Initialize B with non-zero values so merge has an effect
+        nn.init.xavier_uniform_(lora_linear.lora_B)
         
         # Initially not merged
         assert not lora_linear.merged

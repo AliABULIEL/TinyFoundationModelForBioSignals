@@ -88,8 +88,9 @@ class LoRALinear(nn.Module):
             
             # Add LoRA adaptation
             x_dropout = self.lora_dropout(x)
-            lora_out = F.linear(x_dropout, self.lora_A)  # [B, ..., r]
-            lora_out = F.linear(lora_out, self.lora_B)   # [B, ..., out]
+            # Use weight matrices directly for computation
+            lora_out = x_dropout @ self.lora_A.t()  # [B, ..., r]
+            lora_out = lora_out @ self.lora_B.t()   # [B, ..., out]
             result = result + lora_out * self.scaling
             
             return result
@@ -153,38 +154,54 @@ def apply_lora(
     """
     if target_modules is None:
         # Default: target all Linear layers except layer norm
-        target_modules = ['linear', 'fc', 'dense', 'mlp', 'mixer']
+        target_modules = []
     
     if exclude_modules is None:
         exclude_modules = ['norm', 'ln', 'layernorm']
     
     lora_modules = {}
+    modules_to_replace = []
     
+    # First pass: identify modules to replace
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
             # Check if should target this module
-            should_target = any(target in name.lower() for target in target_modules)
+            if target_modules:
+                should_target = any(target in name.lower() for target in target_modules)
+            else:
+                # If no specific targets, target all Linear layers
+                should_target = True
+                
             should_exclude = any(exclude in name.lower() for exclude in exclude_modules)
             
             if should_target and not should_exclude:
-                # Replace with LoRA module
-                lora_module = LoRALinear(
-                    module, r=r, alpha=alpha, dropout=dropout
-                )
-                
-                # Replace in parent
-                parent_name = '.'.join(name.split('.')[:-1])
-                module_name = name.split('.')[-1]
-                
-                if parent_name:
-                    parent = model
-                    for part in parent_name.split('.'):
-                        parent = getattr(parent, part)
-                    setattr(parent, module_name, lora_module)
-                else:
-                    setattr(model, module_name, lora_module)
-                
-                lora_modules[name] = lora_module
+                modules_to_replace.append((name, module))
+    
+    # Second pass: replace modules
+    for name, module in modules_to_replace:
+        # Create LoRA module
+        lora_module = LoRALinear(
+            module, r=r, alpha=alpha, dropout=dropout
+        )
+        
+        # Parse the module path
+        parts = name.split('.')
+        
+        # Navigate to parent and replace
+        parent = model
+        for part in parts[:-1]:
+            if part.isdigit():
+                parent = parent[int(part)]
+            else:
+                parent = getattr(parent, part)
+        
+        # Replace the module
+        if parts[-1].isdigit():
+            parent[int(parts[-1])] = lora_module
+        else:
+            setattr(parent, parts[-1], lora_module)
+        
+        lora_modules[name] = lora_module
     
     return lora_modules
 
