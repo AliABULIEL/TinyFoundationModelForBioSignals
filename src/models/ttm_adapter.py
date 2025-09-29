@@ -1,9 +1,12 @@
 """TTM (TinyTimeMixers) adapter for biosignal analysis.
 
-Wraps the official TinyTimeMixers model with options for:
+Wraps the TinyTimeMixers model from Hugging Face with options for:
 - Frozen encoder (foundation model mode)
 - Partial unfreezing of last N blocks
 - LoRA adaptation for efficient fine-tuning
+
+To use TTM from Hugging Face, install:
+pip install transformers
 """
 
 import warnings
@@ -12,13 +15,24 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
+# Try to import from Hugging Face transformers
 try:
-    from tinytimemixers import TinyTimeMixerForPrediction
-    TTM_AVAILABLE = True
+    from transformers import AutoModel, AutoConfig
+    # For TTM specifically, we might need the PatchTSMixer model
+    try:
+        from transformers import PatchTSMixerForPrediction, PatchTSMixerModel
+        TTM_AVAILABLE = True
+    except ImportError:
+        # Fallback to AutoModel
+        TTM_AVAILABLE = True
+        warnings.warn(
+            "PatchTSMixer not found in transformers. Using AutoModel fallback.",
+            ImportWarning
+        )
 except ImportError:
     TTM_AVAILABLE = False
     warnings.warn(
-        "tinytimemixers not installed. Install with: pip install tinytimemixers",
+        "transformers not installed. Install with: pip install transformers",
         ImportWarning
     )
 
@@ -40,7 +54,7 @@ class TTMAdapter(nn.Module):
     
     def __init__(
         self,
-        variant: str = "ttm-1024-96",
+        variant: str = "ibm/TTM",  # Hugging Face model ID
         task: str = "classification",
         num_classes: Optional[int] = None,
         out_features: Optional[int] = None,
@@ -52,12 +66,13 @@ class TTMAdapter(nn.Module):
         input_channels: int = 1,
         context_length: int = 96,
         prediction_length: int = 0,
+        use_huggingface: bool = True,
         **ttm_kwargs
     ):
         """Initialize TTM adapter.
         
         Args:
-            variant: TTM model variant (e.g., "ttm-1024-96", "ttm-512-96")
+            variant: HuggingFace model ID or variant name
             task: Task type ("classification", "regression", "prediction")
             num_classes: Number of classes for classification
             out_features: Output dimension for regression
@@ -69,12 +84,15 @@ class TTMAdapter(nn.Module):
             input_channels: Number of input channels
             context_length: Length of input context
             prediction_length: Length of prediction horizon
+            use_huggingface: Whether to use Hugging Face models
             **ttm_kwargs: Additional arguments for TTM model
         """
         super().__init__()
         
         if not TTM_AVAILABLE:
-            raise ImportError("tinytimemixers not installed")
+            raise ImportError(
+                "transformers not installed. Install with: pip install transformers"
+            )
         
         self.variant = variant
         self.task = task
@@ -84,8 +102,8 @@ class TTMAdapter(nn.Module):
         self.context_length = context_length
         self.prediction_length = prediction_length
         
-        # Initialize TTM encoder
-        self._init_encoder(variant, **ttm_kwargs)
+        # Initialize encoder from Hugging Face
+        self._init_encoder_huggingface(variant, **ttm_kwargs)
         
         # Get encoder output dimension
         self.encoder_dim = self._get_encoder_dim()
@@ -103,53 +121,86 @@ class TTMAdapter(nn.Module):
         if lora_config is not None:
             self._apply_lora(lora_config)
     
-    def _init_encoder(self, variant: str, **kwargs):
-        """Initialize TTM encoder.
+    def _init_encoder_huggingface(self, model_id: str, **kwargs):
+        """Initialize encoder from Hugging Face.
         
         Args:
-            variant: Model variant
-            **kwargs: Additional TTM arguments
+            model_id: Hugging Face model ID
+            **kwargs: Additional model arguments
         """
-        # Map variant to model configuration
-        variant_configs = {
-            "ttm-512-96": {
-                "prediction_length": self.prediction_length or 96,
-                "context_length": self.context_length,
-                "num_input_channels": self.input_channels,
-            },
-            "ttm-1024-96": {
-                "prediction_length": self.prediction_length or 96,
-                "context_length": self.context_length,
-                "num_input_channels": self.input_channels,
-            },
-            "ttm-1536-96": {
-                "prediction_length": self.prediction_length or 96,
-                "context_length": self.context_length,
-                "num_input_channels": self.input_channels,
-            }
+        # Map common TTM variants to HF model IDs
+        hf_model_map = {
+            "ttm-512-96": "ibm/TTM",
+            "ttm-1024-96": "ibm/TTM",
+            "ttm-1536-96": "ibm/TTM",
         }
         
-        if variant not in variant_configs:
-            raise ValueError(f"Unknown variant: {variant}")
+        # Use mapping if it's a known variant
+        if model_id in hf_model_map:
+            model_id = hf_model_map[model_id]
         
-        config = variant_configs[variant]
-        config.update(kwargs)
-        
-        # Load pretrained model
         try:
-            self.encoder = TinyTimeMixerForPrediction.from_pretrained(
-                f"ibm/{variant}",
-                **config
-            )
+            # Try to load as PatchTSMixer (TTM architecture)
+            if 'PatchTSMixerForPrediction' in globals():
+                self.encoder = PatchTSMixerForPrediction.from_pretrained(
+                    model_id,
+                    num_input_channels=self.input_channels,
+                    context_length=self.context_length,
+                    prediction_length=self.prediction_length or self.context_length,
+                    **kwargs
+                )
+            else:
+                # Fallback to AutoModel
+                self.encoder = AutoModel.from_pretrained(
+                    model_id,
+                    trust_remote_code=True,  # Some models need this
+                    **kwargs
+                )
+            
+            # Get the backbone if available
+            if hasattr(self.encoder, 'backbone'):
+                self.backbone = self.encoder.backbone
+            else:
+                self.backbone = self.encoder
+                
         except Exception as e:
-            warnings.warn(f"Failed to load pretrained {variant}, using random init: {e}")
-            self.encoder = TinyTimeMixerForPrediction(**config)
+            warnings.warn(f"Failed to load from HuggingFace: {e}")
+            # Create a simple transformer encoder as fallback
+            self._create_fallback_encoder()
+    
+    def _create_fallback_encoder(self):
+        """Create a simple transformer encoder as fallback."""
+        hidden_size = 512  # Default hidden size
         
-        # Extract the backbone if needed for feature extraction
-        if hasattr(self.encoder, 'backbone'):
-            self.backbone = self.encoder.backbone
-        else:
-            self.backbone = self.encoder
+        class SimpleEncoder(nn.Module):
+            def __init__(self, input_channels, context_length, hidden_size):
+                super().__init__()
+                self.input_projection = nn.Linear(input_channels, hidden_size)
+                self.pos_embedding = nn.Parameter(
+                    torch.randn(1, context_length, hidden_size) * 0.02
+                )
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=hidden_size,
+                    nhead=8,
+                    dim_feedforward=hidden_size * 4,
+                    dropout=0.1,
+                    batch_first=True
+                )
+                self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
+                self.config = type('Config', (), {'hidden_size': hidden_size, 'd_model': hidden_size})()
+            
+            def forward(self, x, output_hidden_states=False):
+                x = self.input_projection(x)
+                x = x + self.pos_embedding[:, :x.size(1), :]
+                x = self.transformer(x)
+                if output_hidden_states:
+                    return type('Output', (), {'last_hidden_state': x, 'hidden_states': (x,)})()
+                return x
+        
+        self.encoder = SimpleEncoder(
+            self.input_channels, self.context_length, hidden_size
+        )
+        self.backbone = self.encoder
     
     def _get_encoder_dim(self) -> int:
         """Get the output dimension of the encoder."""
@@ -160,15 +211,15 @@ class TTMAdapter(nn.Module):
             elif hasattr(self.encoder.config, 'hidden_size'):
                 return self.encoder.config.hidden_size
         
-        # Default based on variant
-        if '512' in self.variant:
+        # Default based on variant name
+        if '512' in str(self.variant):
             return 512
-        elif '1024' in self.variant:
+        elif '1024' in str(self.variant):
             return 1024
-        elif '1536' in self.variant:
+        elif '1536' in str(self.variant):
             return 1536
         else:
-            return 768  # Default
+            return 512  # Default
     
     def _init_head(
         self,
@@ -227,7 +278,7 @@ class TTMAdapter(nn.Module):
                 raise ValueError(f"Unknown head type: {head_type}")
         
         elif task == "prediction":
-            # For time series prediction, use the built-in TTM head
+            # For time series prediction, use the built-in head if available
             self.head = None
         
         else:
@@ -311,14 +362,14 @@ class TTMAdapter(nn.Module):
         Returns:
             Output predictions or (predictions, features) if return_features=True
         """
-        # TTM expects [B, T, C] format
+        # Most models expect [B, T, C] format
         if x.dim() == 3 and x.size(-1) != self.input_channels:
             # Assume [B, C, T] format, transpose to [B, T, C]
             x = x.transpose(1, 2)
         
         # Get encoder features
-        if self.task == "prediction":
-            # Use TTM's prediction head
+        if self.task == "prediction" and hasattr(self.encoder, 'generate'):
+            # Use model's prediction method if available
             outputs = self.encoder(x)
             if hasattr(outputs, 'prediction_outputs'):
                 features = outputs.last_hidden_state if hasattr(outputs, 'last_hidden_state') else None
@@ -328,12 +379,17 @@ class TTMAdapter(nn.Module):
                 predictions = outputs
         else:
             # Extract features for classification/regression
-            outputs = self.encoder(x, output_hidden_states=True)
+            try:
+                outputs = self.encoder(x, output_hidden_states=True)
+            except:
+                outputs = self.encoder(x)
             
             if hasattr(outputs, 'last_hidden_state'):
                 features = outputs.last_hidden_state
             elif hasattr(outputs, 'hidden_states'):
                 features = outputs.hidden_states[-1]
+            elif isinstance(outputs, torch.Tensor):
+                features = outputs
             else:
                 # Fallback: use the output directly
                 features = outputs
@@ -407,9 +463,12 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
             exclude_modules=config['lora'].get('exclude_modules')
         )
     
+    # Update variant to use HuggingFace model IDs
+    variant = config.get('variant', 'ibm/TTM')
+    
     # Create model
     model = TTMAdapter(
-        variant=config.get('variant', 'ttm-1024-96'),
+        variant=variant,
         task=config.get('task', 'classification'),
         num_classes=config.get('num_classes'),
         out_features=config.get('out_features'),
