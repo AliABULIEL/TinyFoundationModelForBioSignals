@@ -406,10 +406,11 @@ def test_shapes_correct():
 
 def test_deterministic_seeding():
     """Test deterministic seeding per worker."""
-    # Create dataset
+    # Create dataset with both data and labels
     n_samples = 100
     data = torch.randn(n_samples, 10, 3)
-    dataset = torch.utils.data.TensorDataset(data)
+    labels = torch.randint(0, 2, (n_samples,))
+    dataset = torch.utils.data.TensorDataset(data, labels)
     
     # Test with multiple workers
     dataloader1 = create_dataloader(
@@ -433,10 +434,18 @@ def test_deterministic_seeding():
     data2 = []
     
     for batch in dataloader1:
-        data1.append(batch[0])
+        # Handle both tuple and single tensor returns
+        if isinstance(batch, tuple):
+            data1.append(batch[0])
+        else:
+            data1.append(batch)
     
     for batch in dataloader2:
-        data2.append(batch[0])
+        # Handle both tuple and single tensor returns
+        if isinstance(batch, tuple):
+            data2.append(batch[0])
+        else:
+            data2.append(batch)
     
     # Should be same order
     data1 = torch.cat(data1, dim=0)

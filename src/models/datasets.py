@@ -177,8 +177,9 @@ class RawWindowDataset(Dataset):
         # Convert to tensors
         window = torch.from_numpy(window).float()
         
-        if isinstance(target, np.ndarray):
-            target = torch.from_numpy(target)
+        if isinstance(target, (np.ndarray, np.generic)):
+            # Handle both arrays and numpy scalars
+            target = torch.from_numpy(np.asarray(target))
             if target.dtype == torch.float64:
                 target = target.float()
         
@@ -322,15 +323,20 @@ class StreamingWindowDataset(Dataset):
         return window, metadata
 
 
-def custom_collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, Union[torch.Tensor, List]]:
+def custom_collate_fn(batch: List[Union[Tuple, torch.Tensor]]) -> Tuple[torch.Tensor, Union[torch.Tensor, List]]:
     """Custom collate function for handling mixed data types.
     
     Args:
-        batch: List of (data, target) tuples
+        batch: List of (data, target) tuples or single tensors
         
     Returns:
         Batched tensors or lists
     """
+    # Handle TensorDataset with single tensor (no targets)
+    if len(batch) > 0 and not isinstance(batch[0], tuple):
+        # Single tensor dataset
+        return torch.stack(batch, dim=0)
+    
     # Separate data and targets
     data = [item[0] for item in batch]
     targets = [item[1] for item in batch]
