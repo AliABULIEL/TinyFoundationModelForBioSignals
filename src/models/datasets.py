@@ -5,6 +5,7 @@ Loads preprocessed NPZ windows and provides efficient batching.
 
 import json
 import os
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -123,8 +124,8 @@ class RawWindowDataset(Dataset):
         else:
             file_path = file_info
         
-        # Load NPZ
-        data = load_npz(file_path)
+        # Load NPZ with pickle support for metadata
+        data = load_npz(file_path, allow_pickle=True)
         
         # Add to cache if enabled
         if self.cache_size > 0:
@@ -356,20 +357,6 @@ def custom_collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, Union[torch.Ten
     return data, targets
 
 
-def create_worker_init_fn(base_seed: int):
-    """Create a worker init function with the given base seed.
-    
-    Args:
-        base_seed: Base random seed.
-        
-    Returns:
-        Worker init function.
-    """
-    def init_fn(worker_id: int):
-        worker_init_fn(worker_id, base_seed)
-    return init_fn
-
-
 def create_dataloader(
     dataset: Dataset,
     batch_size: int = 32,
@@ -397,8 +384,8 @@ def create_dataloader(
     generator = torch.Generator()
     generator.manual_seed(seed)
     
-    # Create worker init function
-    worker_fn = create_worker_init_fn(seed) if num_workers > 0 else None
+    # Create worker init function using partial
+    worker_fn = partial(worker_init_fn, base_seed=seed) if num_workers > 0 else None
     
     # Create dataloader
     dataloader = DataLoader(

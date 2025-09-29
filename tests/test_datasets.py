@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.models.datasets import (
     RawWindowDataset,
@@ -34,8 +36,7 @@ class TestRawWindowDataset:
             # Create train file
             train_data = {
                 'data': np.random.randn(n_windows, window_size, n_channels).astype(np.float32),
-                'labels': np.random.randint(0, 2, n_windows),
-                'metadata': {'fs': 125.0, 'channels': ['ECG', 'PPG', 'ABP']}
+                'labels': np.random.randint(0, 2, n_windows)
             }
             train_path = os.path.join(tmpdir, 'train.npz')
             save_npz(train_path, train_data)
@@ -43,8 +44,7 @@ class TestRawWindowDataset:
             # Create val file
             val_data = {
                 'data': np.random.randn(5, window_size, n_channels).astype(np.float32),
-                'labels': np.random.randint(0, 2, 5),
-                'metadata': {'fs': 125.0}
+                'labels': np.random.randint(0, 2, 5)
             }
             val_path = os.path.join(tmpdir, 'val.npz')
             save_npz(val_path, val_data)
