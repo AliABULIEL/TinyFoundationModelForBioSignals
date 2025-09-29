@@ -49,7 +49,7 @@ class TTMAdapter(nn.Module):
         unfreeze_last_n_blocks: int = 0,
         lora_config: Optional[Union[Dict, LoRAConfig]] = None,
         input_channels: int = 3,
-        context_length: int = 512,
+        context_length: int = 1250,  # 10 seconds at 125 Hz
         prediction_length: int = 96,
         use_real_ttm: bool = True,
         decoder_mode: str = "mix_channel",
@@ -224,26 +224,61 @@ class TTMAdapter(nn.Module):
             print(f"After freezing: {trainable_params:,}/{total_params:,} trainable params")
     
     def _apply_lora(self, lora_config: Union[Dict, LoRAConfig]):
-        """Apply LoRA to the model."""
+        """Apply LoRA to the model with TTM-specific targeting."""
         if isinstance(lora_config, dict):
             lora_config = LoRAConfig.from_dict(lora_config)
         
-        # Apply LoRA to encoder
+        # If no target modules specified, use TTM-specific defaults
+        target_modules = lora_config.target_modules
+        if target_modules is None or len(target_modules) == 0:
+            # Target TTM's attention and mixer layers by default
+            target_modules = [
+                'attention',      # Attention layers
+                'mixer',          # Time mixer layers
+                'dense',          # Dense/FF layers
+                'query',          # Query projections
+                'key',            # Key projections
+                'value',          # Value projections
+                'output'          # Output projections
+            ]
+            print(f"Using default TTM target modules: {target_modules}")
+        
+        exclude_modules = lora_config.exclude_modules
+        if exclude_modules is None:
+            # Exclude normalization and embedding layers
+            exclude_modules = ['norm', 'ln', 'layernorm', 'embed', 'head']
+        
+        # Apply LoRA to backbone (not decoder/head)
+        target = self.backbone if hasattr(self, 'backbone') else self.encoder
+        
         lora_modules = apply_lora(
-            self.encoder,
+            target,
             r=lora_config.r,
             alpha=lora_config.alpha,
             dropout=lora_config.dropout,
-            target_modules=lora_config.target_modules,
-            exclude_modules=lora_config.exclude_modules
+            target_modules=target_modules,
+            exclude_modules=exclude_modules
         )
         
         self.lora_modules = lora_modules
         
-        # Freeze non-LoRA parameters
-        freeze_non_lora_parameters(self.encoder)
+        # Freeze non-LoRA parameters in the backbone
+        freeze_non_lora_parameters(target)
         
-        print(f"Applied LoRA to {len(lora_modules)} modules")
+        # Validate LoRA was applied
+        if len(lora_modules) == 0:
+            warnings.warn(
+                "No LoRA modules were created. This might indicate that the "
+                "target_modules don't match the model architecture. "
+                "Try inspecting model.named_modules() to see available names."
+            )
+        else:
+            print(f"✓ Applied LoRA to {len(lora_modules)} modules:")
+            for name in list(lora_modules.keys())[:5]:  # Show first 5
+                print(f"  - {name}")
+            if len(lora_modules) > 5:
+                print(f"  ... and {len(lora_modules) - 5} more")
+        
         print_lora_summary(self)
     
     def forward(
@@ -344,6 +379,45 @@ class TTMAdapter(nn.Module):
         print(f"Head parameters: {head_params:,}")
         print(f"Trainable percentage: {trainable_params/total_params*100:.2f}%")
         print("=" * 50)
+    
+    def inspect_modules(self, show_all: bool = False, max_display: int = 20):
+        """Inspect module names for LoRA targeting.
+        
+        Args:
+            show_all: Show all modules (otherwise only Linear modules)
+            max_display: Maximum number of modules to display
+        """
+        print("\n" + "=" * 50)
+        print("MODULE INSPECTION (for LoRA targeting)")
+        print("=" * 50)
+        
+        target = self.backbone if hasattr(self, 'backbone') else self.encoder
+        linear_modules = []
+        all_modules = []
+        
+        for name, module in target.named_modules():
+            all_modules.append((name, type(module).__name__))
+            if isinstance(module, nn.Linear):
+                linear_modules.append((name, module.in_features, module.out_features))
+        
+        print(f"\nTotal modules: {len(all_modules)}")
+        print(f"Linear modules: {len(linear_modules)}")
+        
+        if show_all:
+            print(f"\nAll modules (showing {min(max_display, len(all_modules))}/{len(all_modules)}):")
+            for name, mod_type in all_modules[:max_display]:
+                print(f"  {name:60s} -> {mod_type}")
+        else:
+            print(f"\nLinear modules (showing {min(max_display, len(linear_modules))}/{len(linear_modules)}):")
+            for name, in_feat, out_feat in linear_modules[:max_display]:
+                print(f"  {name:60s} -> [{in_feat}, {out_feat}]")
+        
+        if len(linear_modules) > max_display or (show_all and len(all_modules) > max_display):
+            print(f"  ... ({len(linear_modules) - max_display} more)")
+        
+        print("\nTo target specific modules with LoRA, use patterns like:")
+        print("  target_modules: ['attention', 'mixer', 'dense', 'query', 'value']")
+        print("=" * 50 + "\n")
 
 
 def create_ttm_model(config: Dict) -> TTMAdapter:
@@ -381,7 +455,7 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
         unfreeze_last_n_blocks=config.get('unfreeze_last_n_blocks', 0),
         lora_config=lora_config,
         input_channels=config.get('input_channels', 3),
-        context_length=config.get('context_length', 512),
+        context_length=config.get('context_length', 1250),  # Default: 10s at 125 Hz
         prediction_length=config.get('prediction_length', 96),
         use_real_ttm=True,  # Always try to use real TTM
         decoder_mode=config.get('decoder_mode', 'mix_channel')

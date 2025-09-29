@@ -3,7 +3,7 @@
 # TTM Base Model
 model:
   # Model variant (IBM tsfm model ID)
-  variant: "ibm-granite/granite-timeseries-ttm-v1"  # IBM's official TTM model
+  variant: "ibm-granite/granite-timeseries-ttm-r1"  # IBM's official TTM release model
   # Other options: Use different context lengths as needed
   
   # Model architecture parameters
