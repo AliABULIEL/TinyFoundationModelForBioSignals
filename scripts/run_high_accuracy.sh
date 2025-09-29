@@ -24,7 +24,7 @@ mkdir -p data
 echo ""
 echo "Step 1/5: Preparing train/val/test splits..."
 echo "----------------------------------------------"
-$PYTHON scripts/ttm_vitaldb.py prepare-splits \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py prepare-splits \
     --mode full \
     --case-set bis \
     --output configs/splits \
@@ -35,7 +35,7 @@ echo "Step 2/5: Building preprocessed windows..."
 echo "--------------------------------------------"
 # Build training windows
 echo "Processing training set..."
-$PYTHON scripts/ttm_vitaldb.py build-windows \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
     --split-file configs/splits/splits_full.json \
@@ -46,7 +46,7 @@ $PYTHON scripts/ttm_vitaldb.py build-windows \
 
 # Build validation windows
 echo "Processing validation set..."
-$PYTHON scripts/ttm_vitaldb.py build-windows \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
     --split-file configs/splits/splits_full.json \
@@ -57,7 +57,7 @@ $PYTHON scripts/ttm_vitaldb.py build-windows \
 
 # Build test windows
 echo "Processing test set..."
-$PYTHON scripts/ttm_vitaldb.py build-windows \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
     --split-file configs/splits/splits_full.json \
@@ -141,7 +141,7 @@ EOF
 echo ""
 echo "Step 4/5: Training with fine-tuning..."
 echo "----------------------------------------"
-$PYTHON scripts/ttm_vitaldb.py train \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py train \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
     --split-file configs/splits/splits_full.json \
@@ -151,7 +151,7 @@ $PYTHON scripts/ttm_vitaldb.py train \
 echo ""
 echo "Step 5/5: Testing..."
 echo "-----------------------------------------------"
-$PYTHON scripts/ttm_vitaldb.py test \
+$PYTHON scripts/ttm_vitaldb_multiprocess.py test \
     --ckpt artifacts/run_ft_full/best_model.pt \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
