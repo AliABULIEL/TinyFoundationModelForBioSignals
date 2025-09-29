@@ -1,4 +1,4 @@
-"""Training utilities and trainers for TTM models."""
+"""Training utilities and trainers for TTM models with BEST MODEL SAVING."""
 
 import json
 import logging
@@ -404,7 +404,7 @@ class TrainerBase:
 
 
 class TrainerClf(TrainerBase):
-    """Trainer for classification tasks."""
+    """Trainer for classification tasks with BEST MODEL SAVING."""
     
     def __init__(
         self,
@@ -503,7 +503,7 @@ class TrainerClf(TrainerBase):
         monitor_metric: str = "accuracy",
         monitor_mode: str = "max"
     ) -> Dict[str, List[float]]:
-        """Full training loop for classification.
+        """Full training loop for classification with BEST MODEL SAVING.
         
         Args:
             num_epochs: Number of epochs to train
@@ -522,6 +522,15 @@ class TrainerClf(TrainerBase):
         )
         
         best_metric = -np.inf if monitor_mode == "max" else np.inf
+        best_epoch = 0
+        
+        logger.info("\n" + "="*70)
+        logger.info("TRAINING STARTED")
+        logger.info("="*70)
+        logger.info(f"Monitor metric: {monitor_metric} ({monitor_mode})")
+        logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
+        logger.info(f"Early stopping patience: {early_stopping_patience}")
+        logger.info("="*70 + "\n")
         
         for epoch in range(1, num_epochs + 1):
             self.epoch = epoch
@@ -551,7 +560,15 @@ class TrainerClf(TrainerBase):
                 
                 if is_best:
                     best_metric = current_metric
+                    best_epoch = epoch
                     self.best_val_metric = current_metric
+                    
+                    # ALWAYS save best model (not just when save_best=True)
+                    best_model_path = self.checkpoint_dir / "best_model.pt"
+                    logger.info(f"✓ New best {monitor_metric}: {current_metric:.6f} - Saving to {best_model_path}")
+                    self.save_checkpoint(best_model_path)
+                    
+                    # Also save with standard name for backward compatibility
                     if save_best:
                         self.save_checkpoint(self.checkpoint_dir / "model.pt")
                         self.save_metrics(self.checkpoint_dir / "metrics.json")
@@ -560,15 +577,35 @@ class TrainerClf(TrainerBase):
                 if early_stopping(current_metric):
                     logger.info(f"Early stopping triggered at epoch {epoch}")
                     break
+            
+            # Save last checkpoint
+            last_checkpoint_path = self.checkpoint_dir / "last_checkpoint.pt"
+            self.save_checkpoint(last_checkpoint_path)
+        
+        # Training complete - log summary
+        logger.info("\n" + "="*70)
+        logger.info("TRAINING COMPLETE")
+        logger.info("="*70)
+        logger.info(f"Total epochs: {self.epoch}")
+        logger.info(f"Best epoch: {best_epoch}")
+        logger.info(f"Best {monitor_metric}: {best_metric:.6f}")
+        logger.info(f"Best model saved to: {self.checkpoint_dir / 'best_model.pt'}")
+        logger.info(f"Last checkpoint saved to: {self.checkpoint_dir / 'last_checkpoint.pt'}")
+        logger.info("="*70 + "\n")
+        
+        # Save final metrics
+        self.save_metrics(self.checkpoint_dir / "metrics.json")
         
         return {
             "train_history": self.train_history,
-            "val_history": self.val_history
+            "val_history": self.val_history,
+            "best_epoch": best_epoch,
+            "best_metric": best_metric
         }
 
 
 class TrainerReg(TrainerBase):
-    """Trainer for regression tasks."""
+    """Trainer for regression tasks with BEST MODEL SAVING."""
     
     def __init__(
         self,
@@ -658,7 +695,7 @@ class TrainerReg(TrainerBase):
         monitor_metric: str = "mse",
         monitor_mode: str = "min"
     ) -> Dict[str, List[float]]:
-        """Full training loop for regression.
+        """Full training loop for regression with BEST MODEL SAVING.
         
         Args:
             num_epochs: Number of epochs to train
@@ -677,6 +714,15 @@ class TrainerReg(TrainerBase):
         )
         
         best_metric = -np.inf if monitor_mode == "max" else np.inf
+        best_epoch = 0
+        
+        logger.info("\n" + "="*70)
+        logger.info("TRAINING STARTED")
+        logger.info("="*70)
+        logger.info(f"Monitor metric: {monitor_metric} ({monitor_mode})")
+        logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
+        logger.info(f"Early stopping patience: {early_stopping_patience}")
+        logger.info("="*70 + "\n")
         
         for epoch in range(1, num_epochs + 1):
             self.epoch = epoch
@@ -707,7 +753,15 @@ class TrainerReg(TrainerBase):
                 
                 if is_best:
                     best_metric = current_metric
+                    best_epoch = epoch
                     self.best_val_metric = current_metric
+                    
+                    # ALWAYS save best model (not just when save_best=True)
+                    best_model_path = self.checkpoint_dir / "best_model.pt"
+                    logger.info(f"✓ New best {monitor_metric}: {current_metric:.6f} - Saving to {best_model_path}")
+                    self.save_checkpoint(best_model_path)
+                    
+                    # Also save with standard name for backward compatibility
                     if save_best:
                         self.save_checkpoint(self.checkpoint_dir / "model.pt")
                         self.save_metrics(self.checkpoint_dir / "metrics.json")
@@ -716,10 +770,30 @@ class TrainerReg(TrainerBase):
                 if early_stopping(current_metric):
                     logger.info(f"Early stopping triggered at epoch {epoch}")
                     break
+            
+            # Save last checkpoint
+            last_checkpoint_path = self.checkpoint_dir / "last_checkpoint.pt"
+            self.save_checkpoint(last_checkpoint_path)
+        
+        # Training complete - log summary
+        logger.info("\n" + "="*70)
+        logger.info("TRAINING COMPLETE")
+        logger.info("="*70)
+        logger.info(f"Total epochs: {self.epoch}")
+        logger.info(f"Best epoch: {best_epoch}")
+        logger.info(f"Best {monitor_metric}: {best_metric:.6f}")
+        logger.info(f"Best model saved to: {self.checkpoint_dir / 'best_model.pt'}")
+        logger.info(f"Last checkpoint saved to: {self.checkpoint_dir / 'last_checkpoint.pt'}")
+        logger.info("="*70 + "\n")
+        
+        # Save final metrics
+        self.save_metrics(self.checkpoint_dir / "metrics.json")
         
         return {
             "train_history": self.train_history,
-            "val_history": self.val_history
+            "val_history": self.val_history,
+            "best_epoch": best_epoch,
+            "best_metric": best_metric
         }
 
 
