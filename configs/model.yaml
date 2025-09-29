@@ -1,10 +1,83 @@
-ttm:
-  variant: "tiny"
-  freeze_encoder: true
-  unfreeze_last_n_blocks: 0
-  lora: {enabled: false, r: 8, alpha: 16, dropout: 0.05}
-head:
-  kind: "mlp-classifier"   # or mlp-regressor/linear-*
-  hidden_dims: [256, 128]
-  dropout: 0.2
-  out_dim: 2
+# Model Configuration
+
+# TTM variant to use
+variant: "ttm-1024-96"
+
+# Task configuration
+task: "classification"  # classification, regression, or prediction
+num_classes: 2  # For classification
+out_features: 1  # For regression
+
+# Head configuration
+head_type: "linear"  # linear, mlp, or sequence
+head_config:
+  dropout: 0.1
+  # For MLP heads:
+  # hidden_dims: [256, 128]
+  # activation: "relu"
+  # use_batch_norm: true
+
+# Foundation model configuration
+freeze_encoder: true  # Freeze encoder by default (FM mode)
+unfreeze_last_n_blocks: 0  # Number of last blocks to unfreeze
+
+# LoRA configuration for efficient fine-tuning
+lora:
+  enabled: false
+  r: 8  # Rank of decomposition
+  alpha: 16  # Scaling factor
+  dropout: 0.1
+  target_modules: ["mixer", "mlp", "fc"]
+  exclude_modules: ["norm", "layernorm"]
+
+# Input configuration
+input_channels: 1  # Number of input channels (e.g., 1 for ECG, 3 for ECG+PPG+ABP)
+context_length: 96  # Length of input sequence
+prediction_length: 0  # For prediction task
+
+# Training configuration
+learning_rate: 1e-4
+weight_decay: 0.01
+warmup_steps: 100
+max_epochs: 100
+batch_size: 32
+gradient_clip_val: 1.0
+
+# Fine-tuning strategies
+fine_tuning:
+  # Strategy 1: Frozen (default) - only train head
+  frozen:
+    freeze_encoder: true
+    learning_rate: 1e-3
+    
+  # Strategy 2: Partial unfreeze - unfreeze last N blocks
+  partial:
+    freeze_encoder: true
+    unfreeze_last_n_blocks: 2
+    learning_rate: 5e-5
+    
+  # Strategy 3: LoRA - efficient adaptation
+  lora:
+    freeze_encoder: true
+    lora:
+      enabled: true
+      r: 8
+      alpha: 16
+    learning_rate: 1e-4
+    
+  # Strategy 4: Full fine-tuning (expensive)
+  full:
+    freeze_encoder: false
+    learning_rate: 1e-5
+
+# Optimizer configuration
+optimizer:
+  type: "adamw"
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+# Scheduler configuration  
+scheduler:
+  type: "cosine"  # linear, cosine, or plateau
+  min_lr: 1e-6
+  patience: 5  # For plateau scheduler

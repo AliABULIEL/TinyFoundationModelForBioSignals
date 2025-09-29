@@ -1,167 +1,404 @@
-"""Task-specific heads for TTM model."""
+"""Task-specific heads for classification and regression.
+
+Provides simple and MLP-based heads for downstream tasks.
+"""
 
 from typing import List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class MLPHead(nn.Module):
-    """Multi-layer perceptron head for classification/regression."""
+class LinearClassifier(nn.Module):
+    """Simple linear classification head."""
     
     def __init__(
         self,
-        input_dim: int,
-        hidden_dims: List[int],
-        output_dim: int,
-        dropout: float = 0.2,
-        activation: str = "relu",
+        in_features: int,
+        num_classes: int,
+        dropout: float = 0.0,
+        bias: bool = True
     ):
-        """Initialize MLP head.
+        """Initialize linear classifier.
         
         Args:
-            input_dim: Input dimension.
-            hidden_dims: Hidden layer dimensions.
-            output_dim: Output dimension.
-            dropout: Dropout rate.
-            activation: Activation function name.
+            in_features: Input feature dimension
+            num_classes: Number of output classes
+            dropout: Dropout probability
+            bias: Whether to use bias
         """
         super().__init__()
-        # TODO: Implement in later prompt
-        pass
+        
+        self.in_features = in_features
+        self.num_classes = num_classes
+        
+        # Dropout layer
+        if dropout > 0:
+            self.dropout = nn.Dropout(p=dropout)
+        else:
+            self.dropout = nn.Identity()
+        
+        # Linear layer
+        self.fc = nn.Linear(in_features, num_classes, bias=bias)
+        
+        # Initialize weights
+        nn.init.xavier_uniform_(self.fc.weight)
+        if bias:
+            nn.init.zeros_(self.fc.bias)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         
         Args:
-            x: Input tensor.
+            x: Input tensor [B, in_features] or [B, T, in_features]
             
         Returns:
-            Output tensor.
+            Logits tensor [B, num_classes]
         """
-        # TODO: Implement in later prompt
-        pass
+        # Handle sequence output by averaging
+        if x.dim() == 3:
+            x = x.mean(dim=1)  # Average over time dimension
+        
+        x = self.dropout(x)
+        logits = self.fc(x)
+        return logits
 
 
-class LinearHead(nn.Module):
-    """Simple linear head for classification/regression."""
+class LinearRegressor(nn.Module):
+    """Simple linear regression head."""
     
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int,
-        bias: bool = True,
+        in_features: int,
+        out_features: int = 1,
+        dropout: float = 0.0,
+        bias: bool = True
     ):
-        """Initialize linear head.
+        """Initialize linear regressor.
         
         Args:
-            input_dim: Input dimension.
-            output_dim: Output dimension.
-            bias: Whether to use bias.
+            in_features: Input feature dimension
+            out_features: Output dimension (default 1 for scalar)
+            dropout: Dropout probability
+            bias: Whether to use bias
         """
         super().__init__()
-        self.linear = nn.Linear(input_dim, output_dim, bias=bias)
+        
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        # Dropout layer
+        if dropout > 0:
+            self.dropout = nn.Dropout(p=dropout)
+        else:
+            self.dropout = nn.Identity()
+        
+        # Linear layer
+        self.fc = nn.Linear(in_features, out_features, bias=bias)
+        
+        # Initialize weights
+        nn.init.xavier_uniform_(self.fc.weight)
+        if bias:
+            nn.init.zeros_(self.fc.bias)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         
         Args:
-            x: Input tensor.
+            x: Input tensor [B, in_features] or [B, T, in_features]
             
         Returns:
-            Output tensor.
+            Output tensor [B, out_features]
         """
-        return self.linear(x)
+        # Handle sequence output by averaging
+        if x.dim() == 3:
+            x = x.mean(dim=1)  # Average over time dimension
+        
+        x = self.dropout(x)
+        output = self.fc(x)
+        return output
 
 
-class AttentionHead(nn.Module):
-    """Attention-based aggregation head."""
+class MLPClassifier(nn.Module):
+    """MLP classification head with batch norm and dropout."""
     
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int,
-        num_heads: int = 4,
+        in_features: int,
+        num_classes: int,
+        hidden_dims: Optional[List[int]] = None,
         dropout: float = 0.1,
+        activation: str = 'relu',
+        use_batch_norm: bool = True,
+        use_layer_norm: bool = False
     ):
-        """Initialize attention head.
+        """Initialize MLP classifier.
         
         Args:
-            input_dim: Input dimension.
-            output_dim: Output dimension.
-            num_heads: Number of attention heads.
-            dropout: Dropout rate.
+            in_features: Input feature dimension
+            num_classes: Number of output classes
+            hidden_dims: List of hidden layer dimensions
+            dropout: Dropout probability
+            activation: Activation function ('relu', 'gelu', 'tanh')
+            use_batch_norm: Whether to use batch normalization
+            use_layer_norm: Whether to use layer normalization
         """
         super().__init__()
-        # TODO: Implement in later prompt
-        pass
+        
+        self.in_features = in_features
+        self.num_classes = num_classes
+        
+        if hidden_dims is None:
+            # Default: single hidden layer with size between input and output
+            hidden_dims = [max(num_classes * 2, in_features // 2)]
+        
+        # Build layers
+        layers = []
+        prev_dim = in_features
+        
+        for hidden_dim in hidden_dims:
+            # Linear layer
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            
+            # Normalization
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            elif use_layer_norm:
+                layers.append(nn.LayerNorm(hidden_dim))
+            
+            # Activation
+            if activation == 'relu':
+                layers.append(nn.ReLU())
+            elif activation == 'gelu':
+                layers.append(nn.GELU())
+            elif activation == 'tanh':
+                layers.append(nn.Tanh())
+            else:
+                raise ValueError(f"Unknown activation: {activation}")
+            
+            # Dropout
+            if dropout > 0:
+                layers.append(nn.Dropout(p=dropout))
+            
+            prev_dim = hidden_dim
+        
+        # Final layer (no activation)
+        layers.append(nn.Linear(prev_dim, num_classes))
+        
+        self.mlp = nn.Sequential(*layers)
+        
+        # Initialize weights
+        self._init_weights()
     
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _init_weights(self):
+        """Initialize weights with Xavier/He initialization."""
+        for module in self.mlp:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         
         Args:
-            x: Input tensor [batch, seq_len, dim].
-            mask: Optional attention mask.
+            x: Input tensor [B, in_features] or [B, T, in_features]
             
         Returns:
-            Output tensor.
+            Logits tensor [B, num_classes]
         """
-        # TODO: Implement in later prompt
-        pass
+        # Handle sequence output by averaging
+        if x.dim() == 3:
+            x = x.mean(dim=1)  # Average over time dimension
+        
+        logits = self.mlp(x)
+        return logits
 
 
-class PoolingHead(nn.Module):
-    """Pooling-based aggregation head."""
+class MLPRegressor(nn.Module):
+    """MLP regression head with batch norm and dropout."""
     
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int,
-        pooling_type: str = "mean",
-        hidden_dim: Optional[int] = None,
+        in_features: int,
+        out_features: int = 1,
+        hidden_dims: Optional[List[int]] = None,
+        dropout: float = 0.1,
+        activation: str = 'relu',
+        use_batch_norm: bool = True,
+        use_layer_norm: bool = False
     ):
-        """Initialize pooling head.
+        """Initialize MLP regressor.
         
         Args:
-            input_dim: Input dimension.
-            output_dim: Output dimension.
-            pooling_type: Type of pooling ('mean', 'max', 'both').
-            hidden_dim: Optional hidden dimension for projection.
+            in_features: Input feature dimension
+            out_features: Output dimension
+            hidden_dims: List of hidden layer dimensions
+            dropout: Dropout probability
+            activation: Activation function ('relu', 'gelu', 'tanh')
+            use_batch_norm: Whether to use batch normalization
+            use_layer_norm: Whether to use layer normalization
         """
         super().__init__()
-        # TODO: Implement in later prompt
-        pass
+        
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        if hidden_dims is None:
+            # Default: single hidden layer
+            hidden_dims = [in_features // 2]
+        
+        # Build layers
+        layers = []
+        prev_dim = in_features
+        
+        for hidden_dim in hidden_dims:
+            # Linear layer
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            
+            # Normalization
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            elif use_layer_norm:
+                layers.append(nn.LayerNorm(hidden_dim))
+            
+            # Activation
+            if activation == 'relu':
+                layers.append(nn.ReLU())
+            elif activation == 'gelu':
+                layers.append(nn.GELU())
+            elif activation == 'tanh':
+                layers.append(nn.Tanh())
+            else:
+                raise ValueError(f"Unknown activation: {activation}")
+            
+            # Dropout
+            if dropout > 0:
+                layers.append(nn.Dropout(p=dropout))
+            
+            prev_dim = hidden_dim
+        
+        # Final layer (no activation for regression)
+        layers.append(nn.Linear(prev_dim, out_features))
+        
+        self.mlp = nn.Sequential(*layers)
+        
+        # Initialize weights
+        self._init_weights()
     
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _init_weights(self):
+        """Initialize weights with Xavier/He initialization."""
+        for module in self.mlp:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         
         Args:
-            x: Input tensor [batch, seq_len, dim].
-            mask: Optional mask for valid positions.
+            x: Input tensor [B, in_features] or [B, T, in_features]
             
         Returns:
-            Output tensor.
+            Output tensor [B, out_features]
         """
-        # TODO: Implement in later prompt
-        pass
-
-
-def create_head(
-    head_type: str,
-    input_dim: int,
-    output_dim: int,
-    **kwargs,
-) -> nn.Module:
-    """Factory function to create task heads.
-    
-    Args:
-        head_type: Type of head ('mlp', 'linear', 'attention', 'pooling').
-        input_dim: Input dimension.
-        output_dim: Output dimension.
-        **kwargs: Additional arguments for the head.
+        # Handle sequence output by averaging
+        if x.dim() == 3:
+            x = x.mean(dim=1)  # Average over time dimension
         
-    Returns:
-        Task head module.
-    """
-    # TODO: Implement in later prompt
-    pass
+        output = self.mlp(x)
+        return output
+
+
+class AttentionPooling(nn.Module):
+    """Attention-based pooling for sequence features."""
+    
+    def __init__(self, in_features: int):
+        """Initialize attention pooling.
+        
+        Args:
+            in_features: Input feature dimension
+        """
+        super().__init__()
+        self.attention = nn.Linear(in_features, 1)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+        
+        Args:
+            x: Input tensor [B, T, in_features]
+            
+        Returns:
+            Pooled tensor [B, in_features]
+        """
+        # Compute attention weights
+        attn_weights = self.attention(x)  # [B, T, 1]
+        attn_weights = F.softmax(attn_weights, dim=1)  # [B, T, 1]
+        
+        # Apply attention
+        pooled = torch.sum(x * attn_weights, dim=1)  # [B, in_features]
+        return pooled
+
+
+class SequenceClassifier(nn.Module):
+    """Classifier for sequence data with various pooling options."""
+    
+    def __init__(
+        self,
+        in_features: int,
+        num_classes: int,
+        pooling: str = 'mean',
+        head_type: str = 'linear',
+        **head_kwargs
+    ):
+        """Initialize sequence classifier.
+        
+        Args:
+            in_features: Input feature dimension
+            num_classes: Number of output classes
+            pooling: Pooling method ('mean', 'max', 'last', 'attention')
+            head_type: Type of head ('linear' or 'mlp')
+            **head_kwargs: Additional arguments for the head
+        """
+        super().__init__()
+        
+        self.pooling = pooling
+        
+        # Setup pooling
+        if pooling == 'attention':
+            self.pool = AttentionPooling(in_features)
+        else:
+            self.pool = None
+        
+        # Setup head
+        if head_type == 'linear':
+            self.head = LinearClassifier(in_features, num_classes, **head_kwargs)
+        elif head_type == 'mlp':
+            self.head = MLPClassifier(in_features, num_classes, **head_kwargs)
+        else:
+            raise ValueError(f"Unknown head type: {head_type}")
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+        
+        Args:
+            x: Input tensor [B, T, in_features]
+            
+        Returns:
+            Logits tensor [B, num_classes]
+        """
+        # Apply pooling
+        if self.pooling == 'mean':
+            x = x.mean(dim=1)
+        elif self.pooling == 'max':
+            x, _ = x.max(dim=1)
+        elif self.pooling == 'last':
+            x = x[:, -1, :]
+        elif self.pooling == 'attention':
+            x = self.pool(x)
+        
+        # Apply head (expects 2D input now)
+        logits = self.head(x)
+        return logits

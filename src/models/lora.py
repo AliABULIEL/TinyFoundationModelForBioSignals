@@ -1,174 +1,302 @@
-"""LoRA (Low-Rank Adaptation) implementation for TTM."""
+"""LoRA (Low-Rank Adaptation) implementation for efficient fine-tuning.
 
-from typing import Optional
+Based on: https://arxiv.org/abs/2106.09685
+"""
+
+import math
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LoRALayer(nn.Module):
-    """LoRA adaptation layer."""
+class LoRALinear(nn.Module):
+    """LoRA adapter for nn.Linear layers.
+    
+    Implements low-rank decomposition: W' = W + BA/r
+    where W is frozen, B and A are trainable low-rank matrices.
+    """
     
     def __init__(
         self,
-        in_features: int,
-        out_features: int,
-        rank: int = 8,
+        original_module: nn.Linear,
+        r: int = 8,
         alpha: float = 16.0,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
+        merge_weights: bool = False
     ):
-        """Initialize LoRA layer.
+        """Initialize LoRA adapter.
         
         Args:
-            in_features: Input features.
-            out_features: Output features.
-            rank: LoRA rank.
-            alpha: Scaling factor.
-            dropout: Dropout rate.
+            original_module: Original nn.Linear module to adapt
+            r: Rank of decomposition
+            alpha: Scaling factor (lora_alpha/r)
+            dropout: Dropout probability
+            merge_weights: Whether to merge adapter weights
         """
         super().__init__()
-        self.rank = rank
+        
+        self.original_module = original_module
+        self.r = r
         self.alpha = alpha
-        self.scaling = alpha / rank
+        self.dropout = dropout
+        self.merge_weights = merge_weights
+        self.merged = False
         
-        # Low-rank matrices
-        self.lora_A = nn.Parameter(torch.randn(in_features, rank))
-        self.lora_B = nn.Parameter(torch.zeros(rank, out_features))
+        # Get dimensions
+        self.in_features = original_module.in_features
+        self.out_features = original_module.out_features
         
-        # Optional dropout
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+        # Freeze original weights
+        for param in original_module.parameters():
+            param.requires_grad = False
         
-        # Initialize
-        self.reset_parameters()
-    
-    def reset_parameters(self) -> None:
-        """Initialize LoRA parameters."""
-        nn.init.kaiming_uniform_(self.lora_A, a=torch.sqrt(torch.tensor(5.0)).item())
-        nn.init.zeros_(self.lora_B)
+        # Create low-rank matrices
+        if r > 0:
+            self.lora_A = nn.Parameter(torch.zeros(r, self.in_features))
+            self.lora_B = nn.Parameter(torch.zeros(self.out_features, r))
+            self.scaling = alpha / r
+            
+            # Initialize A with Kaiming uniform and B with zeros
+            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B)
+            
+            # Optional dropout
+            if dropout > 0:
+                self.lora_dropout = nn.Dropout(p=dropout)
+            else:
+                self.lora_dropout = nn.Identity()
+        else:
+            # r=0 means no LoRA, just frozen original
+            self.lora_A = None
+            self.lora_B = None
+            self.scaling = 1.0
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass with LoRA adaptation.
         
         Args:
-            x: Input tensor.
+            x: Input tensor
             
         Returns:
-            LoRA delta.
+            Output tensor
         """
-        if self.dropout is not None:
-            x = self.dropout(x)
-        
-        # Compute low-rank adaptation
-        lora_out = x @ self.lora_A @ self.lora_B
-        return lora_out * self.scaling
-
-
-class LoRALinear(nn.Module):
-    """Linear layer with LoRA adaptation."""
-    
-    def __init__(
-        self,
-        base_layer: nn.Linear,
-        rank: int = 8,
-        alpha: float = 16.0,
-        dropout: float = 0.1,
-    ):
-        """Initialize LoRA linear layer.
-        
-        Args:
-            base_layer: Base linear layer.
-            rank: LoRA rank.
-            alpha: Scaling factor.
-            dropout: Dropout rate.
-        """
-        super().__init__()
-        self.base_layer = base_layer
-        self.lora = LoRALayer(
-            base_layer.in_features,
-            base_layer.out_features,
-            rank=rank,
-            alpha=alpha,
-            dropout=dropout,
-        )
-        
-        # Freeze base layer
-        for param in self.base_layer.parameters():
-            param.requires_grad = False
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-        
-        Args:
-            x: Input tensor.
+        if self.r > 0 and not self.merged:
+            # Original forward pass
+            result = self.original_module(x)
             
-        Returns:
-            Output with LoRA adaptation.
-        """
-        base_out = self.base_layer(x)
-        lora_out = self.lora(x)
-        return base_out + lora_out
+            # Add LoRA adaptation
+            x_dropout = self.lora_dropout(x)
+            lora_out = F.linear(x_dropout, self.lora_A)  # [B, ..., r]
+            lora_out = F.linear(lora_out, self.lora_B)   # [B, ..., out]
+            result = result + lora_out * self.scaling
+            
+            return result
+        else:
+            # No LoRA or weights merged
+            return self.original_module(x)
+    
+    def merge(self):
+        """Merge LoRA weights into original weights."""
+        if self.r > 0 and not self.merged:
+            # Compute merged weight: W' = W + BA * scaling
+            delta_w = (self.lora_B @ self.lora_A) * self.scaling
+            self.original_module.weight.data += delta_w
+            self.merged = True
+    
+    def unmerge(self):
+        """Unmerge LoRA weights from original weights."""
+        if self.r > 0 and self.merged:
+            # Subtract merged weight
+            delta_w = (self.lora_B @ self.lora_A) * self.scaling
+            self.original_module.weight.data -= delta_w
+            self.merged = False
+    
+    def train(self, mode: bool = True):
+        """Set training mode."""
+        super().train(mode)
+        # Unmerge weights when training
+        if mode and self.merge_weights and self.merged:
+            self.unmerge()
+        return self
+    
+    def eval(self):
+        """Set evaluation mode."""
+        super().eval()
+        # Optionally merge weights when evaluating
+        if self.merge_weights and not self.merged:
+            self.merge()
+        return self
 
 
-def add_lora_to_model(
+def apply_lora(
     model: nn.Module,
-    target_modules: list,
-    rank: int = 8,
+    r: int = 8,
     alpha: float = 16.0,
-    dropout: float = 0.1,
-) -> nn.Module:
-    """Add LoRA layers to target modules in a model.
+    dropout: float = 0.0,
+    target_modules: Optional[List[str]] = None,
+    exclude_modules: Optional[List[str]] = None
+) -> Dict[str, LoRALinear]:
+    """Apply LoRA to specified modules in a model.
     
     Args:
-        model: Base model.
-        target_modules: List of module names to add LoRA to.
-        rank: LoRA rank.
-        alpha: Scaling factor.
-        dropout: Dropout rate.
+        model: PyTorch model
+        r: LoRA rank
+        alpha: LoRA alpha scaling
+        dropout: LoRA dropout
+        target_modules: Module name patterns to target (e.g., ['mixer', 'mlp'])
+        exclude_modules: Module name patterns to exclude
         
     Returns:
-        Model with LoRA layers.
+        Dictionary of replaced modules
     """
-    # TODO: Implement in later prompt
-    pass
+    if target_modules is None:
+        # Default: target all Linear layers except layer norm
+        target_modules = ['linear', 'fc', 'dense', 'mlp', 'mixer']
+    
+    if exclude_modules is None:
+        exclude_modules = ['norm', 'ln', 'layernorm']
+    
+    lora_modules = {}
+    
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            # Check if should target this module
+            should_target = any(target in name.lower() for target in target_modules)
+            should_exclude = any(exclude in name.lower() for exclude in exclude_modules)
+            
+            if should_target and not should_exclude:
+                # Replace with LoRA module
+                lora_module = LoRALinear(
+                    module, r=r, alpha=alpha, dropout=dropout
+                )
+                
+                # Replace in parent
+                parent_name = '.'.join(name.split('.')[:-1])
+                module_name = name.split('.')[-1]
+                
+                if parent_name:
+                    parent = model
+                    for part in parent_name.split('.'):
+                        parent = getattr(parent, part)
+                    setattr(parent, module_name, lora_module)
+                else:
+                    setattr(model, module_name, lora_module)
+                
+                lora_modules[name] = lora_module
+    
+    return lora_modules
 
 
-def merge_lora_weights(model: nn.Module) -> nn.Module:
-    """Merge LoRA weights back into base model.
+def mark_lora_parameters(model: nn.Module):
+    """Mark LoRA parameters for easy identification.
     
     Args:
-        model: Model with LoRA layers.
-        
-    Returns:
-        Model with merged weights.
+        model: Model with LoRA modules
     """
-    # TODO: Implement in later prompt
-    pass
+    for name, param in model.named_parameters():
+        if 'lora_' in name:
+            param.is_lora_param = True
+        else:
+            param.is_lora_param = False
 
 
-def get_lora_parameters(model: nn.Module) -> list:
-    """Get all LoRA parameters from model.
+def get_lora_parameters(model: nn.Module) -> List[nn.Parameter]:
+    """Get only LoRA parameters from model.
     
     Args:
-        model: Model potentially containing LoRA layers.
+        model: Model with LoRA modules
         
     Returns:
-        List of LoRA parameters.
+        List of LoRA parameters
     """
     lora_params = []
-    for name, module in model.named_modules():
-        if isinstance(module, (LoRALayer, LoRALinear)):
-            lora_params.extend(module.parameters())
+    for name, param in model.named_parameters():
+        if 'lora_' in name:
+            lora_params.append(param)
     return lora_params
 
 
-def count_lora_parameters(model: nn.Module) -> int:
-    """Count number of trainable LoRA parameters.
+def freeze_non_lora_parameters(model: nn.Module):
+    """Freeze all non-LoRA parameters.
     
     Args:
-        model: Model potentially containing LoRA layers.
-        
-    Returns:
-        Number of trainable LoRA parameters.
+        model: Model with LoRA modules
     """
-    return sum(p.numel() for p in get_lora_parameters(model) if p.requires_grad)
+    for name, param in model.named_parameters():
+        if 'lora_' not in name:
+            param.requires_grad = False
+
+
+def print_lora_summary(model: nn.Module):
+    """Print summary of LoRA parameters.
+    
+    Args:
+        model: Model with LoRA modules
+    """
+    total_params = 0
+    lora_params = 0
+    trainable_params = 0
+    
+    for name, param in model.named_parameters():
+        param_count = param.numel()
+        total_params += param_count
+        
+        if 'lora_' in name:
+            lora_params += param_count
+        
+        if param.requires_grad:
+            trainable_params += param_count
+    
+    print(f"Total parameters: {total_params:,}")
+    print(f"LoRA parameters: {lora_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"LoRA percentage: {lora_params/total_params*100:.2f}%")
+    print(f"Trainable percentage: {trainable_params/total_params*100:.2f}%")
+
+
+class LoRAConfig:
+    """Configuration for LoRA adapters."""
+    
+    def __init__(
+        self,
+        r: int = 8,
+        alpha: float = 16.0,
+        dropout: float = 0.0,
+        target_modules: Optional[List[str]] = None,
+        exclude_modules: Optional[List[str]] = None,
+        merge_weights: bool = False
+    ):
+        """Initialize LoRA configuration.
+        
+        Args:
+            r: Rank of decomposition
+            alpha: Scaling factor
+            dropout: Dropout probability
+            target_modules: Modules to apply LoRA to
+            exclude_modules: Modules to exclude from LoRA
+            merge_weights: Whether to merge weights during eval
+        """
+        self.r = r
+        self.alpha = alpha
+        self.dropout = dropout
+        self.target_modules = target_modules
+        self.exclude_modules = exclude_modules
+        self.merge_weights = merge_weights
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict) -> 'LoRAConfig':
+        """Create from dictionary configuration."""
+        return cls(**config_dict)
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary."""
+        return {
+            'r': self.r,
+            'alpha': self.alpha,
+            'dropout': self.dropout,
+            'target_modules': self.target_modules,
+            'exclude_modules': self.exclude_modules,
+            'merge_weights': self.merge_weights
+        }
