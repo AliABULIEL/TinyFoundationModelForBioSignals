@@ -1,0 +1,113 @@
+# Blood Pressure Estimation Task Configuration
+
+task:
+  name: "blood_pressure_estimation"
+  type: "regression"
+  target: "both"  # 'sbp', 'dbp', or 'both'
+  target_dim: 2  # SBP and DBP
+  
+  # Data parameters
+  sampling_rate: 125.0  # Hz
+  segment_duration_s: 10.0
+  
+  # Required signals
+  required_channels:
+    - "SNUADC/PLETH"  # PPG (input)
+    - "SNUADC/ART"    # Arterial pressure (ground truth)
+  
+  # Quality control
+  quality:
+    min_sqi: 0.8
+    ppg_abp_correlation_threshold: 0.9
+    check_artifacts: true
+    
+  # Label generation (Elgendi algorithm)
+  label_generation:
+    method: "elgendi"
+    detect_systolic_peaks: true
+    detect_diastolic_troughs: true
+    min_peak_distance_s: 0.5
+    prominence_threshold: 10  # mmHg
+    
+  # Clinical standards
+  clinical_standards:
+    aami:
+      me_threshold: 5.0  # mmHg
+      sd_threshold: 8.0  # mmHg
+      min_subjects: 85
+    
+    bhs:
+      grade_a:
+        pct_5mmhg: 60
+        pct_10mmhg: 85
+        pct_15mmhg: 95
+      grade_b:
+        pct_5mmhg: 50
+        pct_10mmhg: 75
+        pct_15mmhg: 90
+
+# Model configuration
+model:
+  freeze_encoder: true
+  head_type: "mlp"
+  head_config:
+    hidden_dims: [256, 128, 64]
+    dropout: 0.2
+    activation: "relu"
+    output_activation: null  # Linear output for regression
+
+# Training parameters
+training:
+  batch_size: 128
+  learning_rate: 5e-4
+  epochs: 100
+  early_stopping_patience: 15
+  
+  # Loss function
+  loss:
+    type: "smooth_l1"  # Huber loss
+    delta: 1.0
+    
+  # Normalization
+  normalize_targets: true
+  sbp_range: [80, 180]
+  dbp_range: [40, 120]
+
+# Evaluation
+evaluation:
+  primary_metric: "mae"
+  secondary_metrics:
+    - "rmse"
+    - "pearson_r"
+    - "me"  # Mean error
+    - "sd"  # Standard deviation
+  
+  # AAMI compliance
+  check_aami_compliance: true
+  check_bhs_grade: true
+  
+  # Clinical thresholds
+  target_mae: 3.0  # mmHg
+  target_grade: "A"  # BHS Grade A
+
+# Benchmarks
+benchmarks:
+  - paper: "Pan et al."
+    year: 2024
+    dataset: "VitalDB"
+    metrics:
+      sbp_mae: 2.16
+      sbp_sd: 1.53
+      dbp_mae: 1.12
+      dbp_sd: 0.59
+      bhs_grade: "A"
+    notes: "Best VitalDB performance, AAMI Grade A"
+  
+  - paper: "PulseDB (Wang et al.)"
+    year: 2023
+    dataset: "VitalDB+MIMIC-III"
+    n_patients: 3458
+    metrics:
+      sbp_mae: 5.2
+      dbp_mae: 3.1
+    notes: "Definitive benchmark dataset, 5.2M segments"

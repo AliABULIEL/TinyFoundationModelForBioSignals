@@ -13,69 +13,7 @@ try:
 except ImportError:
     NEUROKIT_AVAILABLE = False
     # Mock for testing without neurokit2
-    class MockNeuroKit:
-        @staticmethod
-        def ecg_peaks(signal, sampling_rate=1000, method="neurokit"):
-            # Simple peak detection for testing
-            threshold = np.mean(signal) + 2 * np.std(signal)
-            peaks = np.where(signal > threshold)[0]
-            # Ensure minimum distance between peaks
-            if len(peaks) > 1:
-                min_distance = int(0.6 * sampling_rate)  # 100 bpm max
-                filtered_peaks = [peaks[0]]
-                for p in peaks[1:]:
-                    if p - filtered_peaks[-1] >= min_distance:
-                        filtered_peaks.append(p)
-                peaks = np.array(filtered_peaks)
-            return peaks, {}
-        
-        @staticmethod
-        def ppg_peaks(signal, sampling_rate=1000, method="elgendi"):
-            # Simple peak detection for PPG
-            from scipy import signal as scipy_signal
-            # Smooth signal first
-            window_size = int(0.1 * sampling_rate)
-            if window_size % 2 == 0:
-                window_size += 1
-            smoothed = scipy_signal.savgol_filter(signal, window_size, 3)
-            # Find peaks
-            peaks, _ = scipy_signal.find_peaks(smoothed, distance=int(0.4 * sampling_rate))
-            return peaks, {}
-        
-        @staticmethod
-        def signal_rate(peaks, sampling_rate=1000, desired_length=None):
-            if len(peaks) < 2:
-                if desired_length:
-                    return np.full(desired_length, np.nan)
-                return np.array([np.nan])
-            
-            # Calculate instantaneous rate
-            rr_intervals = np.diff(peaks) / sampling_rate  # in seconds
-            rates = 60 / rr_intervals  # in bpm
-            
-            if desired_length:
-                # Interpolate to desired length
-                indices = peaks[1:]  # Rate corresponds to the second peak of each interval
-                full_rate = np.zeros(desired_length)
-                
-                # Set rate at peak locations
-                for i, idx in enumerate(indices):
-                    if idx < desired_length:
-                        full_rate[idx] = rates[i]
-                
-                # Forward fill
-                last_rate = rates[0] if len(rates) > 0 else 60
-                for i in range(desired_length):
-                    if full_rate[i] == 0:
-                        full_rate[i] = last_rate
-                    else:
-                        last_rate = full_rate[i]
-                
-                return full_rate
-            
-            return rates
-    
-    nk = MockNeuroKit()
+
 
 
 def find_ecg_rpeaks(

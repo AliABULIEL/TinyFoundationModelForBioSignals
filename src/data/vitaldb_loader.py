@@ -1,103 +1,149 @@
-"""VitalDB data loader with case listing and channel loading."""
+"""VitalDB loader that handles the 50% NaN pattern in waveform data."""
 
 import os
+import ssl
+import urllib.request
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set, Union
+import warnings
 
 import numpy as np
 import pandas as pd
+
+# Configure SSL for VitalDB access
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except:
+    pass
 
 try:
     import vitaldb
     VITALDB_AVAILABLE = True
 except ImportError:
-    print("Warning: Vital db is not avaialble 1!!!!!!!")
+    print("Warning: VitalDB is not available!")
     VITALDB_AVAILABLE = False
-    # Mock for testing
-    class MockVitalDB:
-        @staticmethod
-        def list_cases():
-            return pd.DataFrame({
-                'caseid': ['1', '2', '3'],
-                'subject': [1, 2, 3],
-                'age': [45, 52, 38]
-            })
-    vitaldb = MockVitalDB()
+
+
+def safe_to_numeric(data: Union[np.ndarray, list, pd.Series]) -> Optional[np.ndarray]:
+    """Safely convert data to numeric numpy array."""
+    if data is None:
+        return None
+    
+    try:
+        if isinstance(data, pd.Series):
+            data = data.values
+        
+        if not isinstance(data, np.ndarray):
+            data = np.array(data)
+        
+        if data.dtype in [np.float32, np.float64, np.int32, np.int64]:
+            return data.astype(np.float64)
+        
+        if data.dtype == object:
+            numeric_data = []
+            for item in data.flat:
+                try:
+                    if isinstance(item, (list, np.ndarray)):
+                        if len(item) > 0:
+                            val = float(item[0]) if item[0] is not None else np.nan
+                        else:
+                            val = np.nan
+                    elif item is None or (isinstance(item, str) and item.strip() == ''):
+                        val = np.nan
+                    else:
+                        val = float(item)
+                    numeric_data.append(val)
+                except (TypeError, ValueError):
+                    numeric_data.append(np.nan)
+            
+            return np.array(numeric_data, dtype=np.float64)
+        
+        return data.astype(np.float64)
+        
+    except Exception as e:
+        warnings.warn(f"Could not convert data to numeric: {e}")
+        return None
+
+
+def fix_alternating_nan_pattern(signal: np.ndarray) -> np.ndarray:
+    """
+    Fix the common VitalDB pattern where every other sample is NaN.
+    This happens when data is stored at half the reported sampling rate.
+    """
+    valid_mask = ~np.isnan(signal)
+    valid_ratio = np.mean(valid_mask)
+    
+    # Check if we have the alternating pattern (around 50% valid)
+    if 0.45 <= valid_ratio <= 0.55:
+        # Check if it's actually alternating
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) > 1:
+            gaps = np.diff(valid_indices)
+            # If most gaps are 2 (alternating pattern), extract valid samples
+            if np.median(gaps) == 2 or np.mean(gaps) < 2.5:
+                print(f"   Detected alternating NaN pattern, extracting valid samples...")
+                # Extract only valid samples
+                clean_signal = signal[valid_mask]
+                return clean_signal
+    
+    return signal
+
+
+def get_available_case_sets() -> Dict[str, Set[int]]:
+    """Get all available pre-filtered case sets from VitalDB."""
+    if not VITALDB_AVAILABLE:
+        return {}
+    
+    case_sets = {}
+    
+    if hasattr(vitaldb, 'caseids_bis'):
+        case_sets['bis'] = set(vitaldb.caseids_bis)
+    if hasattr(vitaldb, 'caseids_des'):
+        case_sets['desflurane'] = set(vitaldb.caseids_des)
+    if hasattr(vitaldb, 'caseids_sevo'):
+        case_sets['sevoflurane'] = set(vitaldb.caseids_sevo)
+    if hasattr(vitaldb, 'caseids_rft20'):
+        case_sets['remifentanil'] = set(vitaldb.caseids_rft20)
+    if hasattr(vitaldb, 'caseids_ppf'):
+        case_sets['propofol'] = set(vitaldb.caseids_ppf)
+    if hasattr(vitaldb, 'caseids_tiva'):
+        case_sets['tiva'] = set(vitaldb.caseids_tiva)
+    
+    return case_sets
 
 
 def list_cases(
     min_duration_hours: float = 0.5,
     required_channels: Optional[List[str]] = None,
     use_cache: bool = True,
-    cache_dir: str = "data/cache"
+    cache_dir: str = "data/cache",
+    case_set: str = 'bis',
+    max_cases: Optional[int] = None
 ) -> List[Dict[str, any]]:
-    """List available VitalDB cases with metadata.
-    
-    Args:
-        min_duration_hours: Minimum case duration in hours.
-        required_channels: List of required channel names.
-        use_cache: Whether to use cached case list.
-        cache_dir: Directory for cache files.
-        
-    Returns:
-        List of dictionaries with case metadata:
-        - case_id: Case identifier
-        - subject_id: Subject identifier
-        - available_channels: List of available channel names
-        - duration_s: Duration in seconds
-        
-    Example:
-        >>> cases = list_cases(required_channels=['ART', 'PLETH'])
-        >>> print(f"Found {len(cases)} cases with required channels")
-    """
-    # Check if we're in mock mode (for testing)
+    """List available VitalDB cases."""
     if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
         return _mock_list_cases(min_duration_hours, required_channels)
     
-    # Try to load cached case list
-    cache_path = Path(cache_dir) / "vitaldb_cases.parquet"
+    case_sets = get_available_case_sets()
     
-    if use_cache and cache_path.exists():
-        try:
-            df_cases = pd.read_parquet(cache_path)
-        except Exception:
-            df_cases = vitaldb.list_cases()
-            _save_case_cache(df_cases, cache_path)
+    if case_set in case_sets:
+        case_ids = list(case_sets[case_set])
     else:
-        # Fetch case list from VitalDB
-        df_cases = vitaldb.list_cases()
-        if use_cache:
-            _save_case_cache(df_cases, cache_path)
+        case_ids = list(case_sets.get('bis', []))
     
-    # Process cases
+    if max_cases:
+        case_ids = case_ids[:max_cases]
+    
     cases = []
-    for _, row in df_cases.iterrows():
-        # Extract case metadata
-        case_id = str(row.get('caseid', row.name))
-        subject_id = row.get('subject', case_id)
-        
-        # Parse available channels from track info
-        channels = _parse_channels(row)
-        
-        # Calculate duration (assuming it's in the data or we fetch it)
-        duration_s = _estimate_duration(row)
-        
-        # Filter by duration
-        if duration_s < min_duration_hours * 3600:
-            continue
-        
-        # Filter by required channels
-        if required_channels:
-            if not all(ch in channels for ch in required_channels):
-                continue
-        
+    for case_id in case_ids:
         cases.append({
-            'case_id': case_id,
-            'subject_id': subject_id,
-            'available_channels': channels,
-            'duration_s': duration_s
+            'case_id': str(case_id),
+            'subject_id': str(case_id),
+            'available_channels': [],
+            'duration_s': 3600
         })
     
+    print(f"Found {len(cases)} cases from {case_set} set")
     return cases
 
 
@@ -105,244 +151,149 @@ def load_channel(
     case_id: str,
     channel: str,
     use_cache: bool = True,
-    cache_dir: str = "data/cache"
+    cache_dir: str = "data/cache",
+    start_sec: float = 0,
+    duration_sec: Optional[float] = None,
+    auto_fix_alternating: bool = True  # NEW: Auto-fix alternating NaN pattern
 ) -> Tuple[np.ndarray, float]:
-    """Load a single channel from VitalDB case.
-    
-    Args:
-        case_id: Case identifier.
-        channel: Channel name (e.g., 'ART', 'PLETH', 'ECG_II').
-        use_cache: Whether to use cached data.
-        cache_dir: Directory for cache files.
-        
-    Returns:
-        Tuple of (signal_array, sampling_frequency_hz).
-        
-    Raises:
-        ValueError: If case or channel not found.
-        
-    Example:
-        >>> signal, fs = load_channel('1', 'PLETH')
-        >>> print(f"Loaded {len(signal)/fs:.1f} seconds at {fs} Hz")
     """
-    # Check if we're in mock mode
+    Load a single channel from VitalDB case.
+    Handles the alternating NaN pattern common in VitalDB data.
+    """
     if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
         return _mock_load_channel(case_id, channel)
     
+    try:
+        case_id = int(case_id)
+    except:
+        pass
+    
     # Try cache first
     if use_cache:
-        cache_path = Path(cache_dir) / f"case_{case_id}" / f"{channel}.npz"
+        cache_path = Path(cache_dir) / f"case_{case_id}_clean" / f"{channel}.npz"
         if cache_path.exists():
             try:
                 data = np.load(cache_path)
                 return data['signal'], float(data['fs'])
-            except Exception:
-                pass  # Fall back to loading from VitalDB
+            except:
+                pass
     
     # Load from VitalDB
     try:
-        # Load the case
-        vital_data = vitaldb.load_case(case_id)
+        vf = vitaldb.VitalFile(case_id)
+        tracks = vf.get_track_names()
         
-        # Map channel names (handle aliases)
-        channel_map = {
-            'ART': ['ART', 'ABP', 'ARTERIAL'],
-            'PLETH': ['PLETH', 'PPG', 'SpO2'],
-            'ECG_II': ['ECG_II', 'ECG_LEAD_II', 'II']
+        # Find the right track (prioritize device-specific waveforms)
+        actual_track = None
+        channel_upper = channel.upper()
+        
+        # Priority tracks for each signal type
+        priority_tracks = {
+            'PLETH': ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH'],
+            'PPG': ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH'],
+            'ECG': ['SNUADC/ECG_II', 'SNUADC/ECG_V5', 'Solar8000/ECG_II'],
+            'ECG_II': ['SNUADC/ECG_II', 'Solar8000/ECG_II'],
         }
         
-        # Find the actual channel name in the data
-        actual_channel = channel
-        if channel in channel_map:
-            for alias in channel_map[channel]:
-                if alias in vital_data:
-                    actual_channel = alias
+        # Find track
+        if channel_upper in priority_tracks:
+            for priority in priority_tracks[channel_upper]:
+                if priority in tracks:
+                    actual_track = priority
                     break
         
-        if actual_channel not in vital_data:
-            raise ValueError(f"Channel {channel} not found in case {case_id}")
+        # Fallback search
+        if not actual_track:
+            for track in tracks:
+                if 'EVENT' in track.upper():
+                    continue
+                track_upper = track.upper()
+                if 'PLETH' in channel_upper and 'PLETH' in track_upper:
+                    actual_track = track
+                    break
+                elif 'ECG' in channel_upper and 'ECG' in track_upper:
+                    actual_track = track
+                    break
         
-        # Extract signal and sampling frequency
-        track = vital_data[actual_channel]
-        signal = track['vals']
-        fs = track.get('srate', 100.0)  # Default to 100 Hz if not specified
+        if not actual_track:
+            raise ValueError(f"No track found for '{channel}' in case {case_id}")
         
-        # Remove NaN values (mark as 0 or interpolate)
-        if np.any(np.isnan(signal)):
-            signal = _handle_nans(signal)
+        print(f"   Loading {actual_track}...")
         
-        # Cache the result
-        if use_cache:
+        # Determine sampling rate
+        if 'PLETH' in actual_track.upper():
+            fs = 100.0
+        elif 'ECG' in actual_track.upper():
+            fs = 500.0 if 'SNUADC' in actual_track else 250.0
+        else:
+            fs = 100.0
+        
+        # Load data
+        end_sec = start_sec + duration_sec if duration_sec else start_sec + 60
+        data = vf.to_numpy([actual_track], start_sec, end_sec)
+        
+        if data is None or len(data) == 0:
+            raise ValueError(f"No data returned for {actual_track}")
+        
+        # Convert to numeric
+        data = safe_to_numeric(data)
+        if data is None:
+            raise ValueError(f"Could not convert data to numeric")
+        
+        # Extract signal
+        if data.ndim == 2:
+            signal = data[:, 0]
+        else:
+            signal = data
+        
+        # Check for alternating NaN pattern and fix if present
+        original_length = len(signal)
+        if auto_fix_alternating:
+            signal = fix_alternating_nan_pattern(signal)
+            if len(signal) < original_length:
+                # Adjust sampling rate since we removed every other sample
+                fs = fs / 2
+                print(f"   Adjusted sampling rate to {fs} Hz after removing alternating NaNs")
+        
+        # Final quality check
+        valid_ratio = np.mean(~np.isnan(signal))
+        print(f"   Final quality: {valid_ratio:.1%} valid samples ({len(signal)} total)")
+        
+        if valid_ratio < 0.9:
+            print(f"   Warning: Still some NaN values present")
+            # Clean remaining NaNs
+            valid_mask = ~np.isnan(signal)
+            if np.sum(valid_mask) > 100:  # At least 100 valid samples
+                valid_indices = np.where(valid_mask)[0]
+                signal = np.interp(np.arange(len(signal)), valid_indices, signal[valid_indices])
+                print(f"   Interpolated remaining NaN values")
+        
+        # Save to cache
+        if use_cache and len(signal) > 0:
+            cache_path = Path(cache_dir) / f"case_{case_id}_clean" / f"{channel}.npz"
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(cache_path, signal=signal, fs=fs)
+            try:
+                np.savez_compressed(cache_path, signal=signal, fs=fs)
+            except:
+                pass
         
-        return signal.astype(np.float32), float(fs)
+        return signal, float(fs)
         
     except Exception as e:
-        raise ValueError(f"Failed to load channel {channel} from case {case_id}: {e}")
+        raise ValueError(f"Error loading channel '{channel}' from case {case_id}: {e}")
 
 
-def _mock_list_cases(
-    min_duration_hours: float = 0.5,
-    required_channels: Optional[List[str]] = None
-) -> List[Dict[str, any]]:
-    """Mock case listing for testing."""
-    mock_cases = [
-        {
-            'case_id': '1',
-            'subject_id': 'subj_001',
-            'available_channels': ['ART', 'PLETH', 'ECG_II'],
-            'duration_s': 7200.0  # 2 hours
-        },
-        {
-            'case_id': '2',
-            'subject_id': 'subj_002',
-            'available_channels': ['ART', 'PLETH', 'ECG_II', 'EEG'],
-            'duration_s': 3600.0  # 1 hour
-        },
-        {
-            'case_id': '3',
-            'subject_id': 'subj_003',
-            'available_channels': ['PLETH', 'ECG_II'],
-            'duration_s': 1800.0  # 0.5 hours
-        }
-    ]
-    
-    # Filter by duration
-    cases = [c for c in mock_cases if c['duration_s'] >= min_duration_hours * 3600]
-    
-    # Filter by required channels
-    if required_channels:
-        cases = [
-            c for c in cases
-            if all(ch in c['available_channels'] for ch in required_channels)
-        ]
-    
-    return cases
+def _mock_list_cases(min_duration_hours: float = 0.5,
+                     required_channels: Optional[List[str]] = None) -> List[Dict]:
+    """Mock case list for testing."""
+    return [{'case_id': str(i), 'subject_id': str(i), 
+             'available_channels': ['PLETH'], 'duration_s': 3600} 
+            for i in range(1, 6)]
 
 
 def _mock_load_channel(case_id: str, channel: str) -> Tuple[np.ndarray, float]:
-    """Mock channel loading for testing."""
-    np.random.seed(hash((case_id, channel)) % 2**32)
-    
-    # Mock sampling frequencies
-    fs_map = {
-        'ART': 125.0,
-        'PLETH': 125.0,
-        'ECG_II': 500.0,  # Will be downsampled
-        'EEG': 250.0
-    }
-    
-    fs = fs_map.get(channel, 100.0)
-    duration_s = {'1': 7200, '2': 3600, '3': 1800}.get(case_id, 3600)
-    n_samples = int(duration_s * fs)
-    
-    # Generate synthetic signal based on channel type
-    if channel in ['ART', 'ABP']:
-        # Blood pressure: oscillating around 120/80
-        t = np.linspace(0, duration_s, n_samples)
-        signal = 100 + 20 * np.sin(2 * np.pi * 1.2 * t)  # ~72 bpm
-        signal += 5 * np.random.randn(n_samples)
-    elif channel in ['PLETH', 'PPG']:
-        # PPG: cardiac pulses
-        t = np.linspace(0, duration_s, n_samples)
-        signal = np.sin(2 * np.pi * 1.2 * t) ** 2  # Pulse-like
-        signal += 0.1 * np.random.randn(n_samples)
-    elif channel == 'ECG_II':
-        # ECG: R-peaks
-        t = np.linspace(0, duration_s, n_samples)
-        signal = np.zeros(n_samples)
-        # Add R-peaks every ~0.83s (72 bpm)
-        peak_interval = int(0.83 * fs)
-        signal[::peak_interval] = 1.0
-        # Smooth slightly
-        from scipy.ndimage import gaussian_filter1d
-        signal = gaussian_filter1d(signal, sigma=2)
-        signal += 0.05 * np.random.randn(n_samples)
-    else:
-        # Generic signal
-        signal = np.random.randn(n_samples) * 0.1
-    
-    return signal.astype(np.float32), fs
-
-
-def _parse_channels(row: pd.Series) -> List[str]:
-    """Parse available channels from case metadata."""
-    # This would parse the actual VitalDB track information
-    # For now, return common channels
-    channels = []
-    
-    # Check for various track columns or parse track string
-    track_info = str(row.get('track', ''))
-    
-    # Common channels in VitalDB
-    channel_keywords = {
-        'ART': ['ART', 'ABP', 'ARTERIAL'],
-        'PLETH': ['PLETH', 'PPG', 'SpO2'],
-        'ECG_II': ['ECG', 'II', 'LEAD'],
-        'EEG': ['EEG', 'BIS'],
-        'CO2': ['CO2', 'ETCO2', 'CAPNO']
-    }
-    
-    for channel, keywords in channel_keywords.items():
-        if any(kw in track_info.upper() for kw in keywords):
-            channels.append(channel)
-    
-    # If no channels parsed, assume standard set
-    if not channels:
-        channels = ['ART', 'PLETH', 'ECG_II']
-    
-    return channels
-
-
-def _estimate_duration(row: pd.Series) -> float:
-    """Estimate case duration in seconds."""
-    # Try to get duration from metadata
-    duration = row.get('duration', row.get('time_len', None))
-    
-    if duration is not None:
-        # Convert to seconds if needed
-        if isinstance(duration, str):
-            # Parse duration string (e.g., "02:30:00")
-            try:
-                parts = duration.split(':')
-                if len(parts) == 3:
-                    h, m, s = map(float, parts)
-                    return h * 3600 + m * 60 + s
-            except:
-                pass
-        else:
-            # Assume it's already in seconds or minutes
-            duration = float(duration)
-            if duration < 1000:  # Likely in minutes
-                return duration * 60
-            return duration
-    
-    # Default to 1 hour if unknown
-    return 3600.0
-
-
-def _save_case_cache(df: pd.DataFrame, cache_path: Path) -> None:
-    """Save case list to cache."""
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(cache_path, compression='snappy')
-    except Exception:
-        pass  # Ignore cache errors
-
-
-def _handle_nans(signal: np.ndarray) -> np.ndarray:
-    """Handle NaN values in signal."""
-    if not np.any(np.isnan(signal)):
-        return signal
-    
-    # Simple interpolation for NaN values
-    nans = np.isnan(signal)
-    if np.all(nans):
-        return np.zeros_like(signal)
-    
-    # Linear interpolation
-    x = np.arange(len(signal))
-    signal[nans] = np.interp(x[nans], x[~nans], signal[~nans])
-    
-    return signal
+    """Mock channel loading."""
+    fs = 100.0
+    t = np.arange(0, 10, 1/fs)
+    signal = np.sin(2 * np.pi * 1.2 * t) + 0.3 * np.sin(4 * np.pi * 1.2 * t)
+    return signal, fs
