@@ -165,10 +165,10 @@ class TTMAdapter(nn.Module):
         if head_config is None:
             head_config = {}
         
-        # For MLP head, ensure batch_norm is properly handled
+        # For MLP head, ensure use_batch_norm is properly handled
         if head_type == "mlp":
             # Default to no batch_norm to avoid dimension issues
-            head_config['batch_norm'] = head_config.get('batch_norm', False)
+            head_config['use_batch_norm'] = head_config.get('use_batch_norm', False)
         
         # Calculate input dimension for head
         # For real TTM: channels * patches * hidden = 3 * 8 * 192 after flattening

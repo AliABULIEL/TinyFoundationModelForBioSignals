@@ -25,7 +25,8 @@ config = {
     'head_type': 'mlp',
     'head_config': {
         'hidden_dims': [128, 64],
-        'dropout': 0.2
+        'dropout': 0.2,
+        'use_batch_norm': False  # Disable for stability
     }
 }
 
