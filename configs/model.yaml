@@ -1,83 +1,185 @@
-# Model Configuration
+# Model Configuration for TTM × VitalDB
 
-# TTM variant to use
-variant: "ttm-1024-96"
+# TTM Base Model
+model:
+  # Model variant (HuggingFace model ID or local path)
+  variant: "ibm/TTM"  # or "ttm-512-96", "ttm-1024-96", "ttm-1536-96"
+  
+  # Model architecture parameters
+  input_channels: 3  # ECG, PPG, ABP
+  context_length: 1250  # 10 seconds at 125 Hz
+  patch_size: 16
+  stride: 8
+  
+  # Hidden dimensions (depends on variant)
+  d_model: 512
+  n_heads: 8
+  n_layers: 8
+  
+  # Output prediction length (0 for classification/regression)
+  prediction_length: 0
 
-# Task configuration
-task: "classification"  # classification, regression, or prediction
-num_classes: 2  # For classification
-out_features: 1  # For regression
+# Task Configuration
+task:
+  type: "classification"  # classification, regression, prediction
+  
+  # Classification settings
+  num_classes: 2  # Binary by default (e.g., normal/abnormal)
+  class_names: ["normal", "abnormal"]
+  
+  # Regression settings (if applicable)
+  out_features: 1
+  target_range: [0, 1]
 
-# Head configuration
-head_type: "linear"  # linear, mlp, or sequence
-head_config:
-  dropout: 0.1
-  # For MLP heads:
-  # hidden_dims: [256, 128]
-  # activation: "relu"
-  # use_batch_norm: true
+# Training Mode
+training_mode:
+  # Foundation Model (FM) mode - frozen encoder
+  freeze_encoder: true  # Default: frozen
+  
+  # Partial unfreezing for fine-tuning
+  unfreeze_last_n_blocks: 0  # 0 = all frozen, 2 = last 2 blocks unfrozen
+  
+  # Gradual unfreezing schedule
+  gradual_unfreeze:
+    enabled: false
+    schedule: [0, 0, 2, 4, 8]  # Blocks to unfreeze per epoch
 
-# Foundation model configuration
-freeze_encoder: true  # Freeze encoder by default (FM mode)
-unfreeze_last_n_blocks: 0  # Number of last blocks to unfreeze
-
-# LoRA configuration for efficient fine-tuning
+# LoRA Configuration
 lora:
   enabled: false
-  r: 8  # Rank of decomposition
-  alpha: 16  # Scaling factor
+  r: 8  # LoRA rank
+  alpha: 16  # LoRA scaling factor
   dropout: 0.1
-  target_modules: ["mixer", "mlp", "fc"]
-  exclude_modules: ["norm", "layernorm"]
+  
+  # Target modules for LoRA
+  target_modules:
+    - "q_proj"  # Query projection
+    - "v_proj"  # Value projection
+    - "k_proj"  # Key projection (optional)
+    - "o_proj"  # Output projection (optional)
+  
+  # Exclude certain layers
+  exclude_modules:
+    - "layer_norm"
+    - "head"
 
-# Input configuration
-input_channels: 1  # Number of input channels (e.g., 1 for ECG, 3 for ECG+PPG+ABP)
-context_length: 96  # Length of input sequence
-prediction_length: 0  # For prediction task
+# Task Head Configuration
+head:
+  type: "linear"  # linear, mlp, attention
+  
+  # Linear head (default for FM mode)
+  linear:
+    dropout: 0.1
+    bias: true
+  
+  # MLP head (for higher capacity)
+  mlp:
+    hidden_dims: [256, 128]
+    activation: "gelu"  # relu, gelu, swish
+    dropout: 0.2
+    batch_norm: true
+  
+  # Attention pooling head
+  attention:
+    n_heads: 4
+    dropout: 0.1
+    pool_type: "mean"  # mean, max, cls
 
-# Training configuration
-learning_rate: 1e-4
-weight_decay: 0.01
-warmup_steps: 100
-max_epochs: 100
-batch_size: 32
-gradient_clip_val: 1.0
-
-# Fine-tuning strategies
-fine_tuning:
-  # Strategy 1: Frozen (default) - only train head
-  frozen:
-    freeze_encoder: true
-    learning_rate: 1e-3
+# Loss Function
+loss:
+  # Classification losses
+  classification:
+    type: "cross_entropy"  # cross_entropy, focal, label_smoothing
     
-  # Strategy 2: Partial unfreeze - unfreeze last N blocks
-  partial:
-    freeze_encoder: true
-    unfreeze_last_n_blocks: 2
-    learning_rate: 5e-5
+    # Class weights for imbalanced data
+    class_weights: null  # Will be computed from training data
     
-  # Strategy 3: LoRA - efficient adaptation
+    # Focal loss parameters
+    focal:
+      alpha: 0.25
+      gamma: 2.0
+    
+    # Label smoothing
+    label_smoothing: 0.1
+  
+  # Regression losses
+  regression:
+    type: "mse"  # mse, mae, huber, quantile
+    
+    # Huber loss delta
+    huber_delta: 1.0
+    
+    # Quantile loss percentiles
+    quantiles: [0.1, 0.5, 0.9]
+
+# Regularization
+regularization:
+  # Dropout rates
+  dropout:
+    attention: 0.1
+    feedforward: 0.1
+    head: 0.2
+  
+  # Weight decay
+  weight_decay: 0.01
+  
+  # Gradient clipping
+  gradient_clip: 1.0
+  
+  # Early stopping
+  early_stopping:
+    patience: 5
+    min_delta: 0.001
+    monitor: "val_loss"  # or val_accuracy
+    mode: "min"  # min for loss, max for accuracy
+
+# Mixed Precision Training
+mixed_precision:
+  enabled: true
+  opt_level: "O1"  # O0=FP32, O1=Mixed, O2=Almost FP16, O3=FP16
+
+# Model Initialization
+initialization:
+  # Pre-trained weights
+  pretrained: true
+  pretrained_path: null  # Use HuggingFace by default
+  
+  # Head initialization
+  head_init: "xavier"  # xavier, he, normal
+  head_init_gain: 0.02
+
+# Inference Configuration
+inference:
+  # Ensemble methods
+  ensemble:
+    enabled: false
+    models: []  # List of checkpoint paths
+    voting: "soft"  # soft, hard
+  
+  # Test-time augmentation
+  tta:
+    enabled: false
+    augmentations:
+      - "horizontal_flip"
+      - "amplitude_scale"
+    n_augmentations: 5
+  
+  # Uncertainty estimation
+  uncertainty:
+    enabled: false
+    method: "dropout"  # dropout, ensemble
+    n_samples: 10
+
+# FastTrack Mode Overrides
+fasttrack:
+  # These settings override above when --fasttrack is used
+  freeze_encoder: true
+  unfreeze_last_n_blocks: 0
   lora:
-    freeze_encoder: true
-    lora:
-      enabled: true
-      r: 8
-      alpha: 16
-    learning_rate: 1e-4
-    
-  # Strategy 4: Full fine-tuning (expensive)
-  full:
-    freeze_encoder: false
-    learning_rate: 1e-5
-
-# Optimizer configuration
-optimizer:
-  type: "adamw"
-  betas: [0.9, 0.999]
-  eps: 1e-8
-
-# Scheduler configuration  
-scheduler:
-  type: "cosine"  # linear, cosine, or plateau
-  min_lr: 1e-6
-  patience: 5  # For plateau scheduler
+    enabled: false
+  head:
+    type: "linear"
+  mixed_precision:
+    enabled: true
+  early_stopping:
+    patience: 3
