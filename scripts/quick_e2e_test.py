@@ -49,13 +49,21 @@ print()
 
 # Setup logging
 import logging
+
+# Create file handler for detailed logging
+file_handler = logging.FileHandler(test_dir / 'pipeline_test.log')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Create console handler with higher level (only warnings and errors)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)  # Only show warnings/errors on console
+console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+
+# Configure root logger
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(test_dir / 'pipeline_test.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
 
