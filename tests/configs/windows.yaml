@@ -1,0 +1,19 @@
+window_seconds: 10
+stride_seconds: 10
+filters:
+  ppg:        {type: cheby2, order: 4, band: [0.4, 7.0]}
+  ecg_analysis:{type: butter, order: 4, band: [0.5, 40.0]}
+  ecg_rpeak:  {type: cheby2, order: 4, lowpass: 8.0}
+  abp:        {type: butter, order: 4, band: [0.5, 20.0]}
+quality:
+  ecg_sqi_min: 0.9
+  template_corr_min: 0.8
+  ppg_ssqi_min: 0.8
+  ppg_abp_corr_min: 0.9
+  flatline_sec_max: 2.0
+  saturation_run_max: 30
+cycles:
+  min_cycles_per_segment: 3
+normalization:
+  method: zscore
+  baseline_correction: true

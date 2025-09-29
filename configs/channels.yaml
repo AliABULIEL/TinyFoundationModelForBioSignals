@@ -1,0 +1,5 @@
+target_fs_hz: 125
+core: [ART, PLETH, ECG_II]
+eeg: []
+acc: []
+allow_missing_optional: true

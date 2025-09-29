@@ -1,0 +1,16 @@
+seed: 42
+batch_size: 64
+epochs: 6
+lr: 5e-4
+num_workers: 4
+device: "auto"
+mixed_precision: true
+grad_clip_norm: 1.0
+val_ratio: 0.1
+output_dir: "artifacts"
+loss: {type: bce_with_logits, pos_weight: 2.0}
+sampler: "balanced"   # or "none"
+cv: {enabled: false, folds: 5}
+inference: {model_context_seconds: 30, infer_overlap: 0.5}
+calibration: {enabled: true, method: "temperature"}
+fasttrack: {enabled: true, max_train_cases: 50, max_test_cases: 20, epochs: 3, freeze_encoder: true, head: "linear-classifier"}
