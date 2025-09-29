@@ -213,8 +213,15 @@ def mae(
         
     Returns:
         MAE score
+        
+    Raises:
+        ValueError: If arrays are empty or mismatched.
     """
     y_true, y_pred = _check_shape(y_true, y_pred)
+    
+    if len(y_true) == 0:
+        raise ValueError("Cannot compute MAE for empty arrays")
+    
     return mean_absolute_error(y_true, y_pred)
 
 

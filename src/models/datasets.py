@@ -356,6 +356,20 @@ def custom_collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, Union[torch.Ten
     return data, targets
 
 
+def create_worker_init_fn(base_seed: int):
+    """Create a worker init function with the given base seed.
+    
+    Args:
+        base_seed: Base random seed.
+        
+    Returns:
+        Worker init function.
+    """
+    def init_fn(worker_id: int):
+        worker_init_fn(worker_id, base_seed)
+    return init_fn
+
+
 def create_dataloader(
     dataset: Dataset,
     batch_size: int = 32,
@@ -383,6 +397,9 @@ def create_dataloader(
     generator = torch.Generator()
     generator.manual_seed(seed)
     
+    # Create worker init function
+    worker_fn = create_worker_init_fn(seed) if num_workers > 0 else None
+    
     # Create dataloader
     dataloader = DataLoader(
         dataset,
@@ -392,7 +409,7 @@ def create_dataloader(
         pin_memory=pin_memory,
         drop_last=drop_last,
         collate_fn=custom_collate_fn,
-        worker_init_fn=lambda w_id: worker_init_fn(w_id, seed),
+        worker_init_fn=worker_fn,
         generator=generator if shuffle else None
     )
     

@@ -69,6 +69,7 @@ def load_npz(path: Union[str, Path], allow_pickle: bool = False) -> Dict[str, np
 
 def save_npz(
     path: Union[str, Path],
+    data: Optional[Dict[str, np.ndarray]] = None,
     compress: bool = True,
     **arrays: np.ndarray
 ) -> None:
@@ -76,17 +77,28 @@ def save_npz(
     
     Args:
         path: Path to save NPZ file.
+        data: Dictionary of arrays to save (alternative to **arrays).
         compress: Whether to compress the archive.
         **arrays: Named arrays to save.
         
     Example:
         >>> save_npz('data.npz', signals=signals_array, labels=labels_array)
+        >>> # or
+        >>> save_npz('data.npz', {'signals': signals_array, 'labels': labels_array})
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     
-    save_fn = np.savez_compressed if compress else np.savez
-    save_fn(path, **arrays)
+    # Combine data dict and kwargs
+    if data is not None:
+        save_dict = data
+    else:
+        save_dict = arrays
+    
+    if compress:
+        np.savez_compressed(path, **save_dict)
+    else:
+        np.savez(path, **save_dict)
 
 
 def load_json(path: Union[str, Path]) -> Dict[str, Any]:
