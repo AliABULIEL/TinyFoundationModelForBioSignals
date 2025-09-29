@@ -221,7 +221,10 @@ for split_name, case_ids in simple_splits.items():
                     method='zscore',
                     axis=(0, 1)  # Over windows and time
                 )
-                print(f"      Train stats: mean={train_stats.mean:.3f}, std={train_stats.std:.3f}")
+                # Handle array or scalar stats
+                mean_val = train_stats.mean.item() if train_stats.mean.size == 1 else train_stats.mean.mean()
+                std_val = train_stats.std.item() if train_stats.std.size == 1 else train_stats.std.mean()
+                print(f"      Train stats: mean={mean_val:.3f}, std={std_val:.3f}")
             
             if train_stats is not None:
                 # Apply normalization
