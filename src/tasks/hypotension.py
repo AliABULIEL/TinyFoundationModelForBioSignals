@@ -317,12 +317,16 @@ class HypotensionPredictionTask(ClassificationTask):
         }
         
         # Episode rate (assumes episodes span the full recording)
-        if episodes:
+        # Try to get recording duration from last episode's end_time_s
+        if episodes and 'end_time_s' in episodes[-1]:
             recording_duration_s = episodes[-1]['end_time_s']
             if recording_duration_s > 0:
                 stats['episode_rate_per_hour'] = (
                     len(episodes) / recording_duration_s * 3600
                 )
+        else:
+            # If end_time_s not available, can't compute episode rate
+            stats['episode_rate_per_hour'] = 0.0
         
         return stats
 

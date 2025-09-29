@@ -1,4 +1,4 @@
-"""Blood Pressure Estimation from PPG - WITH FIXES FOR TESTS.
+"""Blood Pressure Estimation from PPG.
 
 Estimates SBP/DBP from PPG waveform using ABP as ground truth.
 Benchmark: SBP MAE 2.16 mmHg, DBP MAE 1.12 mmHg (AAMI Grade A)
@@ -188,7 +188,7 @@ class BloodPressureEstimationTask(RegressionTask):
     ) -> np.ndarray:
         """Detect systolic peaks in ABP waveform.
         
-        Uses scipy.signal.find_peaks with adaptive parameters.
+        Uses scipy.signal.find_peaks with physiologically informed parameters.
         
         Args:
             abp: ABP waveform
@@ -197,23 +197,15 @@ class BloodPressureEstimationTask(RegressionTask):
         Returns:
             Array of peak indices
         """
-        # Adaptive minimum distance based on expected heart rate range
-        # Allow 40-150 bpm → 0.4-1.5 seconds between beats
-        min_distance = int(0.4 * fs)  # 150 bpm max
+        # Minimum distance between peaks (40 bpm = 1.5 seconds)
+        min_distance = int(1.5 * fs)
         
-        # Adaptive prominence based on signal range
-        signal_range = np.ptp(abp)  # peak-to-peak amplitude
-        min_prominence = max(5.0, signal_range * 0.15)  # 15% of range or 5 mmHg
-        
-        # Adaptive height - use lower percentile to be inclusive
-        min_height = np.percentile(abp, 20) if len(abp) > 0 else 50.0
-        
-        # Find peaks with adaptive constraints
+        # Find peaks with minimum distance constraint
         peaks, properties = scipy_signal.find_peaks(
             abp,
             distance=min_distance,
-            prominence=min_prominence,
-            height=min_height
+            prominence=10,  # Minimum 10 mmHg prominence
+            height=60  # Minimum 60 mmHg (typical diastolic minimum)
         )
         
         return peaks
@@ -237,15 +229,12 @@ class BloodPressureEstimationTask(RegressionTask):
         # Invert signal to find troughs as peaks
         inverted_abp = -abp
         
-        # Adaptive parameters
-        min_distance = int(0.4 * fs)
-        signal_range = np.ptp(abp)
-        min_prominence = max(5.0, signal_range * 0.15)
+        min_distance = int(1.5 * fs)
         
         troughs, properties = scipy_signal.find_peaks(
             inverted_abp,
             distance=min_distance,
-            prominence=min_prominence
+            prominence=10
         )
         
         return troughs
