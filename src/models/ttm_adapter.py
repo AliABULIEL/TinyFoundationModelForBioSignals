@@ -1,9 +1,6 @@
 """TTM (TinyTimeMixers) adapter for biosignal analysis.
 
-Wraps the TinyTimeMixers model from IBM's tsfm library with options for:
-- Frozen encoder (foundation model mode)
-- Partial unfreezing of last N blocks
-- LoRA adaptation for efficient fine-tuning
+Updated to use the REAL TTM model from tsfm_public library.
 """
 
 import warnings
@@ -12,29 +9,20 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-# Try to import from IBM's tsfm library
+# Try to import the REAL TTM from tsfm_public
 TTM_AVAILABLE = False
 try:
-    from tsfm import TinyTimeMixerForPrediction
+    from tsfm_public import get_model, count_parameters
+    from tsfm_public.models.tinytimemixer.modeling_tinytimemixer import (
+        TinyTimeMixerForPrediction
+    )
     TTM_AVAILABLE = True
-    print("✓ IBM tsfm library found - TTM models available")
-except ImportError:
+    print("✓ Real TTM (tsfm_public) available - using IBM's pre-trained model")
+except ImportError as e:
     warnings.warn(
-        "IBM tsfm library not installed. Install with: pip install tsfm[notebooks]",
+        f"tsfm_public not available: {e}\nUsing fallback model",
         ImportWarning
     )
-
-# Fallback: try HuggingFace transformers
-if not TTM_AVAILABLE:
-    try:
-        from transformers import AutoModel, AutoConfig
-        TRANSFORMERS_AVAILABLE = True
-    except ImportError:
-        TRANSFORMERS_AVAILABLE = False
-        warnings.warn(
-            "Neither tsfm nor transformers installed. Using fallback model.",
-            ImportWarning
-        )
 
 from .heads import (
     LinearClassifier, LinearRegressor,
@@ -54,7 +42,7 @@ class TTMAdapter(nn.Module):
     
     def __init__(
         self,
-        variant: str = "ibm-granite/granite-timeseries-ttm-v1",
+        variant: str = "ibm-granite/granite-timeseries-ttm-r1",
         task: str = "classification",
         num_classes: Optional[int] = None,
         out_features: Optional[int] = None,
@@ -63,28 +51,30 @@ class TTMAdapter(nn.Module):
         freeze_encoder: bool = True,
         unfreeze_last_n_blocks: int = 0,
         lora_config: Optional[Union[Dict, LoRAConfig]] = None,
-        input_channels: int = 1,
+        input_channels: int = 3,
         context_length: int = 512,
         prediction_length: int = 96,
-        use_tsfm: bool = True,
+        use_real_ttm: bool = True,
+        decoder_mode: str = "mix_channel",  # For channel mixing
         **ttm_kwargs
     ):
-        """Initialize TTM adapter.
+        """Initialize TTM adapter with REAL TTM model.
         
         Args:
-            variant: Model variant (IBM model ID or HuggingFace ID)
+            variant: Model variant (IBM HuggingFace ID)
             task: Task type ("classification", "regression", "prediction")
             num_classes: Number of classes for classification
             out_features: Output dimension for regression
             head_type: Type of head ("linear", "mlp", "sequence")
             head_config: Configuration for the head
-            freeze_encoder: Whether to freeze the encoder
+            freeze_encoder: Whether to freeze the encoder backbone
             unfreeze_last_n_blocks: Number of last blocks to unfreeze
             lora_config: LoRA configuration (dict or LoRAConfig)
-            input_channels: Number of input channels
+            input_channels: Number of input channels (3 for ECG/PPG/ABP)
             context_length: Length of input context
             prediction_length: Length of prediction horizon
-            use_tsfm: Whether to use IBM's tsfm library (True) or fallback
+            use_real_ttm: Whether to use real TTM (True) or fallback
+            decoder_mode: "mix_channel" for channel mixing in decoder
             **ttm_kwargs: Additional arguments for TTM model
         """
         super().__init__()
@@ -95,131 +85,145 @@ class TTMAdapter(nn.Module):
         self.unfreeze_last_n_blocks = unfreeze_last_n_blocks
         self.input_channels = input_channels
         self.context_length = context_length
-        self.prediction_length = prediction_length if task == "prediction" else 0
-        self.using_real_ttm = False  # Track if we're using real TTM
+        self.prediction_length = prediction_length if task == "prediction" else 96
+        self.using_real_ttm = False
         
         # Initialize encoder
-        if use_tsfm and TTM_AVAILABLE:
-            self._init_encoder_tsfm(variant, **ttm_kwargs)
+        if use_real_ttm and TTM_AVAILABLE:
+            self._init_real_ttm(variant, decoder_mode, **ttm_kwargs)
         else:
-            warnings.warn("TTM not available, using fallback model")
+            warnings.warn("Real TTM not available, using fallback model")
             self._create_fallback_encoder()
         
         # Get encoder output dimension
         self.encoder_dim = self._get_encoder_dim()
         
-        # Initialize task head
-        self._init_head(
-            task, num_classes, out_features,
-            head_type, head_config
-        )
+        # Initialize task head for classification/regression
+        if task != "prediction":
+            self._init_head(
+                task, num_classes, out_features,
+                head_type, head_config
+            )
+        else:
+            self.head = None  # Use TTM's built-in prediction head
         
         # Apply freezing configuration
-        self._configure_freezing(freeze_encoder, unfreeze_last_n_blocks)
+        if self.using_real_ttm:
+            self._configure_freezing(freeze_encoder, unfreeze_last_n_blocks)
         
         # Apply LoRA if configured
-        if lora_config is not None:
+        if lora_config is not None and self.using_real_ttm:
             self._apply_lora(lora_config)
     
-    def _init_encoder_tsfm(self, model_id: str, **kwargs):
-        """Initialize encoder from IBM's tsfm library.
+    def _init_real_ttm(self, model_id: str, decoder_mode: str, **kwargs):
+        """Initialize the REAL TTM model using tsfm_public.
         
         Args:
-            model_id: Model ID (e.g., "ibm-granite/granite-timeseries-ttm-v1")
+            model_id: HuggingFace model ID
+            decoder_mode: Decoder mode for channel mixing
             **kwargs: Additional model arguments
         """
         try:
-            from tsfm import TinyTimeMixerForPrediction
+            print(f"Loading real TTM model: {model_id}")
             
-            print(f"Loading TTM model: {model_id}")
-            
-            # Configure TTM model
-            self.encoder = TinyTimeMixerForPrediction.from_pretrained(
-                model_id,
-                context_length=self.context_length,
-                prediction_length=self.prediction_length if self.prediction_length > 0 else 96,
-                num_input_channels=self.input_channels,
-                **kwargs
-            )
-            
-            # Extract backbone if available
-            if hasattr(self.encoder, 'backbone'):
-                self.backbone = self.encoder.backbone
+            # For classification/regression, we need to adapt TTM
+            if self.task in ["classification", "regression"]:
+                # Load TTM for prediction first
+                self.encoder = get_model(
+                    model_id,
+                    context_length=self.context_length,
+                    prediction_length=self.prediction_length,
+                    num_input_channels=self.input_channels,
+                    decoder_mode=decoder_mode,
+                    **kwargs
+                )
+                
+                # Extract the backbone for feature extraction
+                if hasattr(self.encoder, 'backbone'):
+                    self.backbone = self.encoder.backbone
+                else:
+                    self.backbone = self.encoder
+                    
             else:
+                # For prediction tasks, use the full model
+                self.encoder = get_model(
+                    model_id,
+                    context_length=self.context_length,
+                    prediction_length=self.prediction_length,
+                    num_input_channels=self.input_channels,
+                    decoder_mode=decoder_mode,
+                    **kwargs
+                )
                 self.backbone = self.encoder
                 
             self.using_real_ttm = True
-            print(f"✓ Successfully loaded TTM model from {model_id}")
+            
+            # Print model info
+            param_count = count_parameters(self.encoder)
+            print(f"✓ Real TTM loaded successfully!")
+            print(f"  Model: {model_id}")
+            print(f"  Parameters: {param_count:,}")
             print(f"  Context length: {self.context_length}")
             print(f"  Input channels: {self.input_channels}")
+            print(f"  Decoder mode: {decoder_mode}")
             
         except Exception as e:
-            warnings.warn(f"Failed to load TTM from tsfm: {e}")
+            warnings.warn(f"Failed to load real TTM: {e}")
             warnings.warn("Falling back to simple encoder")
             self._create_fallback_encoder()
     
     def _create_fallback_encoder(self):
-        """Create a simple transformer encoder as fallback."""
-        print("⚠️ Using fallback encoder (not pre-trained TTM)")
-        hidden_size = 512  # Default hidden size
+        """Create a simple CNN encoder as fallback (much smaller than transformer)."""
+        print("⚠️ Using fallback CNN encoder (not pre-trained TTM)")
         
-        class SimpleEncoder(nn.Module):
-            def __init__(self, input_channels, context_length, hidden_size):
+        class SimpleCNNEncoder(nn.Module):
+            def __init__(self, input_channels, context_length, hidden_size=256):
                 super().__init__()
-                self.input_projection = nn.Linear(input_channels, hidden_size)
-                self.pos_embedding = nn.Parameter(
-                    torch.randn(1, context_length, hidden_size) * 0.02
-                )
-                encoder_layer = nn.TransformerEncoderLayer(
-                    d_model=hidden_size,
-                    nhead=8,
-                    dim_feedforward=hidden_size * 4,
-                    dropout=0.1,
-                    batch_first=True
-                )
-                self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
-                self.config = type('Config', (), {'hidden_size': hidden_size, 'd_model': hidden_size})()
+                # Use CNN for efficiency on CPU
+                self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=7, stride=2)
+                self.bn1 = nn.BatchNorm1d(64)
+                self.conv2 = nn.Conv1d(64, 128, kernel_size=5, stride=2)
+                self.bn2 = nn.BatchNorm1d(128)
+                self.conv3 = nn.Conv1d(128, hidden_size, kernel_size=3, stride=2)
+                self.bn3 = nn.BatchNorm1d(hidden_size)
+                self.pool = nn.AdaptiveAvgPool1d(1)
+                self.hidden_size = hidden_size
+                self.config = type('Config', (), {'hidden_size': hidden_size})()
             
             def forward(self, x, output_hidden_states=False):
-                # Handle different input shapes
-                if x.dim() == 3:
-                    # Ensure [B, T, C] format
-                    if x.size(-1) != self.input_projection.in_features:
-                        # [B, C, T] -> [B, T, C]
-                        x = x.transpose(1, 2)
+                # Handle input shape [B, T, C] or [B, C, T]
+                if x.dim() == 3 and x.size(-1) == self.conv1.in_channels:
+                    x = x.transpose(1, 2)  # [B, T, C] -> [B, C, T]
                 
-                x = self.input_projection(x)
-                x = x + self.pos_embedding[:, :x.size(1), :]
-                x = self.transformer(x)
+                x = torch.relu(self.bn1(self.conv1(x)))
+                x = torch.relu(self.bn2(self.conv2(x)))
+                x = torch.relu(self.bn3(self.conv3(x)))
+                features = self.pool(x).squeeze(-1)
                 
                 if output_hidden_states:
-                    return type('Output', (), {'last_hidden_state': x, 'hidden_states': (x,)})()
-                return x
+                    return type('Output', (), {'last_hidden_state': features})()
+                return features
         
-        self.encoder = SimpleEncoder(
-            self.input_channels, self.context_length, hidden_size
+        self.encoder = SimpleCNNEncoder(
+            self.input_channels, self.context_length
         )
         self.backbone = self.encoder
         self.using_real_ttm = False
     
     def _get_encoder_dim(self) -> int:
         """Get the output dimension of the encoder."""
-        # Try to get from model config
-        if hasattr(self.encoder, 'config'):
-            if hasattr(self.encoder.config, 'd_model'):
-                return self.encoder.config.d_model
-            elif hasattr(self.encoder.config, 'hidden_size'):
-                return self.encoder.config.hidden_size
-        
-        # Default based on variant name
-        if '512' in str(self.variant):
-            return 512
-        elif '1024' in str(self.variant):
-            return 1024
-        elif '1536' in str(self.variant):
-            return 1536
+        if self.using_real_ttm:
+            # Real TTM dimensions
+            if hasattr(self.backbone, 'config'):
+                if hasattr(self.backbone.config, 'd_model'):
+                    return self.backbone.config.d_model
+                elif hasattr(self.backbone.config, 'hidden_size'):
+                    return self.backbone.config.hidden_size
+            # Default TTM hidden size
+            return 192  # From the notebook architecture
         else:
-            return 512  # Default
+            # Fallback encoder dimension
+            return self.encoder.hidden_size
     
     def _init_head(
         self,
@@ -233,75 +237,57 @@ class TTMAdapter(nn.Module):
         if head_config is None:
             head_config = {}
         
+        # For real TTM, we need to pool the sequence output
+        input_dim = self.encoder_dim
+        
         if task == "classification":
             if num_classes is None:
                 raise ValueError("num_classes required for classification")
             
             if head_type == "linear":
                 self.head = LinearClassifier(
-                    self.encoder_dim, num_classes, **head_config
+                    input_dim, num_classes, **head_config
                 )
             elif head_type == "mlp":
                 self.head = MLPClassifier(
-                    self.encoder_dim, num_classes, **head_config
-                )
-            elif head_type == "sequence":
-                self.head = SequenceClassifier(
-                    self.encoder_dim, num_classes,
-                    head_type="linear" if "mlp" not in head_config else "mlp",
-                    **head_config
+                    input_dim, num_classes, **head_config
                 )
             else:
                 raise ValueError(f"Unknown head type: {head_type}")
         
         elif task == "regression":
             if out_features is None:
-                out_features = 1  # Default to scalar output
+                out_features = 1
             
             if head_type == "linear":
                 self.head = LinearRegressor(
-                    self.encoder_dim, out_features, **head_config
+                    input_dim, out_features, **head_config
                 )
             elif head_type == "mlp":
                 self.head = MLPRegressor(
-                    self.encoder_dim, out_features, **head_config
+                    input_dim, out_features, **head_config
                 )
             else:
                 raise ValueError(f"Unknown head type: {head_type}")
-        
-        elif task == "prediction":
-            # For time series prediction, use the built-in head if available
-            self.head = None
-        
-        else:
-            raise ValueError(f"Unknown task: {task}")
     
     def _configure_freezing(self, freeze_encoder: bool, unfreeze_last_n: int):
-        """Configure parameter freezing."""
-        if freeze_encoder:
-            # Freeze all encoder parameters
-            for param in self.encoder.parameters():
+        """Configure parameter freezing for the backbone."""
+        if freeze_encoder and self.using_real_ttm:
+            # Freeze backbone parameters (like in the notebook)
+            print("Freezing TTM backbone...")
+            for param in self.backbone.parameters():
                 param.requires_grad = False
             
-            # Unfreeze last N blocks if specified
-            if unfreeze_last_n > 0:
-                self._unfreeze_last_blocks(unfreeze_last_n)
-    
-    def _unfreeze_last_blocks(self, n_blocks: int):
-        """Unfreeze the last N transformer blocks."""
-        # Find transformer blocks in the model
-        blocks = []
-        for name, module in self.encoder.named_modules():
-            if 'block' in name.lower() or 'layer' in name.lower():
-                if isinstance(module, nn.Module) and len(list(module.children())) > 0:
-                    blocks.append((name, module))
-        
-        # Unfreeze last N blocks
-        if len(blocks) > 0:
-            blocks_to_unfreeze = blocks[-n_blocks:]
-            for name, block in blocks_to_unfreeze:
-                for param in block.parameters():
+            # Optionally unfreeze decoder if it exists
+            if hasattr(self.encoder, 'decoder'):
+                print("Keeping decoder unfrozen for fine-tuning")
+                for param in self.encoder.decoder.parameters():
                     param.requires_grad = True
+            
+            # Count parameters after freezing
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            print(f"After freezing: {trainable_params:,}/{total_params:,} trainable params")
     
     def _apply_lora(self, lora_config: Union[Dict, LoRAConfig]):
         """Apply LoRA to the model."""
@@ -323,7 +309,6 @@ class TTMAdapter(nn.Module):
         # Freeze non-LoRA parameters
         freeze_non_lora_parameters(self.encoder)
         
-        # Print summary
         print(f"Applied LoRA to {len(lora_modules)} modules")
         print_lora_summary(self)
     
@@ -339,42 +324,42 @@ class TTMAdapter(nn.Module):
             return_features: Whether to return encoder features
             
         Returns:
-            Output predictions or (predictions, features) if return_features=True
+            Output predictions or (predictions, features)
         """
-        # Handle input shape based on whether we're using real TTM
         if self.using_real_ttm:
-            # TTM expects specific input format
-            # Typically [batch_size, context_length, num_channels]
+            # Real TTM expects [batch, time, channels]
             if x.dim() == 3 and x.size(1) == self.input_channels:
-                # [B, C, T] -> [B, T, C]
-                x = x.transpose(1, 2)
+                x = x.transpose(1, 2)  # [B, C, T] -> [B, T, C]
             
-            # TTM forward pass
-            outputs = self.encoder(x)
+            # For prediction task, use the full model
+            if self.task == "prediction":
+                outputs = self.encoder(x)
+                if hasattr(outputs, 'prediction_outputs'):
+                    return outputs.prediction_outputs
+                return outputs
             
-            if hasattr(outputs, 'prediction_outputs'):
-                # For prediction task
-                features = outputs.last_hidden_state if hasattr(outputs, 'last_hidden_state') else None
-                predictions = outputs.prediction_outputs
+            # For classification/regression, extract features
+            outputs = self.backbone(x)
+            
+            # Pool the sequence output if needed
+            if hasattr(outputs, 'last_hidden_state'):
+                features = outputs.last_hidden_state
             else:
-                # For classification/regression
                 features = outputs
-                if self.head is not None:
-                    predictions = self.head(features)
-                else:
-                    predictions = features
+            
+            # Global average pooling over sequence
+            if features.dim() == 3:  # [B, T, D]
+                features = features.mean(dim=1)  # [B, D]
+            
+            # Pass through task head
+            if self.head is not None:
+                predictions = self.head(features)
+            else:
+                predictions = features
+                
         else:
             # Fallback encoder
-            if x.dim() == 3 and x.size(1) == self.input_channels:
-                # [B, C, T] -> [B, T, C]
-                x = x.transpose(1, 2)
-            
             features = self.encoder(x)
-            
-            # Pool over sequence dimension if needed
-            if features.dim() == 3 and self.head is not None:
-                # Use mean pooling
-                features = features.mean(dim=1)
             
             if self.head is not None:
                 predictions = self.head(features)
@@ -390,35 +375,16 @@ class TTMAdapter(nn.Module):
         """Check if using real TTM or fallback."""
         return self.using_real_ttm
     
-    def get_encoder_params(self) -> List[nn.Parameter]:
-        """Get encoder parameters."""
-        return list(self.encoder.parameters())
-    
-    def get_head_params(self) -> List[nn.Parameter]:
-        """Get head parameters."""
-        if self.head is not None:
-            return list(self.head.parameters())
-        return []
-    
-    def get_trainable_params(self) -> List[nn.Parameter]:
-        """Get all trainable parameters."""
-        return [p for p in self.parameters() if p.requires_grad]
-    
-    def freeze_encoder(self):
-        """Freeze encoder parameters."""
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-    
-    def unfreeze_encoder(self):
-        """Unfreeze encoder parameters."""
-        for param in self.encoder.parameters():
-            param.requires_grad = True
-    
     def print_parameter_summary(self):
         """Print summary of parameters."""
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        encoder_params = sum(p.numel() for p in self.encoder.parameters())
+        
+        if self.using_real_ttm:
+            backbone_params = sum(p.numel() for p in self.backbone.parameters())
+        else:
+            backbone_params = sum(p.numel() for p in self.encoder.parameters())
+            
         head_params = sum(p.numel() for p in self.head.parameters()) if self.head else 0
         
         print("=" * 50)
@@ -428,7 +394,7 @@ class TTMAdapter(nn.Module):
         print(f"Model variant: {self.variant}")
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
-        print(f"Encoder parameters: {encoder_params:,}")
+        print(f"Backbone parameters: {backbone_params:,}")
         print(f"Head parameters: {head_params:,}")
         print(f"Trainable percentage: {trainable_params/total_params*100:.2f}%")
         print("=" * 50)
@@ -441,7 +407,7 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
         config: Model configuration
         
     Returns:
-        Configured TTMAdapter
+        Configured TTMAdapter with real TTM
     """
     # Extract LoRA config if present
     lora_config = None
@@ -454,10 +420,10 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
             exclude_modules=config['lora'].get('exclude_modules')
         )
     
-    # Use IBM TTM model ID
-    variant = config.get('variant', 'ibm-granite/granite-timeseries-ttm-v1')
+    # Use IBM's real TTM model
+    variant = config.get('variant', 'ibm-granite/granite-timeseries-ttm-r1')
     
-    # Create model
+    # Create model with real TTM
     model = TTMAdapter(
         variant=variant,
         task=config.get('task', 'classification'),
@@ -468,10 +434,11 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
         freeze_encoder=config.get('freeze_encoder', True),
         unfreeze_last_n_blocks=config.get('unfreeze_last_n_blocks', 0),
         lora_config=lora_config,
-        input_channels=config.get('input_channels', 1),
+        input_channels=config.get('input_channels', 3),
         context_length=config.get('context_length', 512),
         prediction_length=config.get('prediction_length', 96),
-        use_tsfm=config.get('use_tsfm', True)  # Default to using tsfm
+        use_real_ttm=True,  # Always try to use real TTM
+        decoder_mode=config.get('decoder_mode', 'mix_channel')
     )
     
     return model
