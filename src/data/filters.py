@@ -10,6 +10,62 @@ import numpy as np
 from scipy import signal
 
 
+def apply_bandpass_filter(
+    data: np.ndarray,
+    fs: float,
+    lowcut: float,
+    highcut: float,
+    filter_type: str = 'butter',
+    order: int = 4,
+    axis: int = -1
+) -> np.ndarray:
+    """Apply bandpass filter to signal.
+    
+    Generic bandpass filter that can use Butterworth or Chebyshev Type II.
+    
+    Args:
+        data: Input signal
+        fs: Sampling frequency in Hz
+        lowcut: Low cutoff frequency in Hz
+        highcut: High cutoff frequency in Hz
+        filter_type: 'butter' or 'cheby2'
+        order: Filter order
+        axis: Axis along which to filter
+        
+    Returns:
+        Filtered signal
+    """
+    nyquist = fs / 2
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    
+    # Ensure frequencies are within valid range
+    low = max(0.001, min(low, 0.99))
+    high = max(low + 0.001, min(high, 0.99))
+    
+    if filter_type == 'butter':
+        b, a = signal.butter(
+            N=order,
+            Wn=[low, high],
+            btype='band',
+            analog=False,
+            output='ba'
+        )
+    elif filter_type == 'cheby2':
+        b, a = signal.cheby2(
+            N=order,
+            rs=20,  # Stopband ripple in dB
+            Wn=[low, high],
+            btype='band',
+            analog=False,
+            output='ba'
+        )
+    else:
+        raise ValueError(f"Unknown filter type: {filter_type}. Use 'butter' or 'cheby2'")
+    
+    return apply_filter(data, b, a, axis=axis)
+
+
 def design_ppg_filter(fs: float) -> Tuple[np.ndarray, np.ndarray]:
     """Design PPG filter: Chebyshev Type II order 4, bandpass 0.4-7.0 Hz.
     
