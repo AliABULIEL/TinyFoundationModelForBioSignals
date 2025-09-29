@@ -1,80 +1,46 @@
-# Channel Configuration for VitalDB Biosignals
+# Fixed Channel Configuration for VitalDB Biosignals
 
-channels:
-  ECG:
-    # Lead II ECG
-    vitaldb_name: "ECG_II"
-    sampling_rate: 125  # Target sampling rate (Hz)
-    original_rate: 500  # Common original rate in VitalDB
-    filter:
-      type: "butterworth"
-      order: 4
-      low_freq: 0.5   # High-pass for baseline wander
-      high_freq: 40   # Low-pass for noise
-    quality_metrics:
-      - "sqi"        # Signal Quality Index
-      - "bsqi"       # Beat SQI
-    min_quality: 0.9
+ECG:
+  vitaldb_track: "ECG_II"
+  sampling_rate: 125
+  original_rate: 500
+  filter:
+    type: "butter"  # FIXED: was "butterworth"
+    order: 4
+    lowcut: 0.5     # FIXED: renamed from low_freq
+    highcut: 40     # FIXED: renamed from high_freq
+  quality_metrics:
+    - "sqi"
+    - "bsqi"
+  min_quality: 0.9
+  type: "ecg"       # Added signal type
     
-  PPG:
-    # Photoplethysmography
-    vitaldb_name: "PLETH"
-    sampling_rate: 125
-    original_rate: 100
-    filter:
-      type: "chebyshev2"
-      order: 4
-      low_freq: 0.4   # Remove baseline drift
-      high_freq: 7    # Remove high-frequency noise
-      ripple_db: 20   # Chebyshev ripple
-    quality_metrics:
-      - "ssqi"        # Skewness SQI
-      - "psqi"        # Perfusion SQI
-    min_quality: 0.8
+PPG:
+  vitaldb_track: "PLETH"
+  sampling_rate: 125
+  original_rate: 100
+  filter:
+    type: "cheby2"   # Already correct
+    order: 4
+    lowcut: 0.4      # FIXED: renamed from low_freq
+    highcut: 7       # FIXED: renamed from high_freq
+    ripple_db: 20
+  quality_metrics:
+    - "ssqi"
+    - "psqi"
+  min_quality: 0.8
+  type: "ppg"        # Added signal type
     
-  ABP:
-    # Arterial Blood Pressure
-    vitaldb_name: "ABP"
-    sampling_rate: 125
-    original_rate: 100
-    filter:
-      type: "butterworth"
-      order: 4
-      low_freq: 0.5
-      high_freq: 20
-    quality_metrics:
-      - "template_match"
-    min_quality: 0.85
-    
-  # Optional additional channels
-  EEG:
-    vitaldb_name: "EEG1"
-    sampling_rate: 250  # Higher for EEG
-    original_rate: 128
-    filter:
-      type: "butterworth"
-      order: 4
-      low_freq: 0.5
-      high_freq: 50
-    quality_metrics:
-      - "artifact_ratio"
-    min_quality: 0.7
-    enabled: false  # Disabled by default
-
-# Channel synchronization settings
-synchronization:
-  method: "cross_correlation"  # or "peak_alignment"
-  max_lag_ms: 500  # Maximum lag to search
-  min_correlation: 0.8
-
-# Data augmentation (optional)
-augmentation:
-  enabled: false
-  methods:
-    - type: "amplitude_scale"
-      range: [0.9, 1.1]
-    - type: "gaussian_noise"
-      std: 0.01
-    - type: "baseline_wander"
-      amplitude: 0.05
-      frequency: 0.2
+ABP:
+  vitaldb_track: "ABP"
+  sampling_rate: 125
+  original_rate: 100
+  filter:
+    type: "butter"   # FIXED: was "butterworth"
+    order: 4
+    lowcut: 0.5      # FIXED: renamed from low_freq
+    highcut: 20      # FIXED: renamed from high_freq
+  quality_metrics:
+    - "template_match"
+  min_quality: 0.85
+  type: "abp"        # Added signal type

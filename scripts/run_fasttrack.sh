@@ -47,7 +47,7 @@ $PYTHON scripts/ttm_vitaldb.py build-windows \
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file data/splits_fasttrack.json \
+    --split-file configs/splits/splits_fasttrack.json \
     --split test \
     --outdir artifacts/raw_windows/test \
     --duration-sec 60 \
@@ -59,7 +59,7 @@ echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file data/splits_fasttrack.json \
+    --split-file configs/splits/splits_fasttrack.json \
     --outdir artifacts/raw_windows \
     --out artifacts/run_ft_fast \
     --fasttrack
@@ -71,7 +71,7 @@ $PYTHON scripts/ttm_vitaldb.py test \
     --ckpt artifacts/run_ft_fast/best_model.pt \
     --model-yaml configs/model.yaml \
     --run-yaml configs/run.yaml \
-    --split-file data/splits_fasttrack.json \
+    --split-file configs/splits/splits_fasttrack.json \
     --outdir artifacts/raw_windows \
     --out artifacts/run_ft_fast
 

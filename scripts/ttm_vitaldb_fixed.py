@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Fixed TTM × VitalDB pipeline CLI.
-Works with the actual codebase structure.
+Fixed TTM × VitalDB pipeline with proper configuration handling.
 """
 
 import argparse
@@ -10,6 +9,7 @@ import logging
 import os
 import sys
 import warnings
+import importlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -17,28 +17,31 @@ import numpy as np
 import torch
 import yaml
 from tqdm import tqdm
-from scipy import signal as scipy_signal
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Fixed imports that match your actual codebase
-from src.data.splits import create_patient_splits, load_splits, save_splits
-from src.data.vitaldb_loader import load_channel, list_cases, get_available_case_sets
+# FIXED IMPORTS - Match actual codebase
+from src.data.splits import make_patient_level_splits, load_splits, save_splits
+from src.data.vitaldb_loader import list_cases, load_channel, get_available_case_sets
+from src.data.windows import (
+    make_windows, 
+    compute_normalization_stats, 
+    normalize_windows,
+    validate_cardiac_cycles
+)
 from src.data.filters import apply_bandpass_filter
-from src.data.detect import find_ecg_rpeaks, find_ppg_peaks
-from src.data.quality import compute_sqi, compute_ssqi
+from src.data.detect import find_ppg_peaks, find_ecg_rpeaks
+from src.data.quality import compute_sqi
 from src.eval.calibration import (
-    CalibrationEvaluator,
     TemperatureScaling,
-    IsotonicCalibration
+    IsotonicCalibration,
+    expected_calibration_error
 )
 from src.eval.metrics import compute_classification_metrics, compute_regression_metrics
-from src.models.datasets import VitalDBDataset  # Use your actual dataset
-from src.models.ttm_adapter import TTMAdapter, create_ttm_model
+from src.models.datasets import RawWindowDataset
+from src.models.ttm_adapter import create_ttm_model
 from src.models.trainers import TrainerClf, TrainerReg
-from src.utils.logging import setup_logger
-from src.utils.paths import get_project_root
 from src.utils.seed import set_seed
 
 logger = logging.getLogger(__name__)
@@ -55,54 +58,71 @@ def prepare_splits_command(args):
     """Prepare train/val/test splits from VitalDB."""
     logger.info("Preparing patient splits...")
     
-    # Get VitalDB case IDs using the fixed loader
+    # Get VitalDB case sets
     case_sets = get_available_case_sets()
     
-    # Use BIS cases by default (high quality)
-    if 'bis' in case_sets:
-        all_case_ids = list(case_sets['bis'])
+    # Select case set
+    if args.case_set and args.case_set in case_sets:
+        available_cases = list(case_sets[args.case_set])
     else:
-        # Fallback to any available cases
-        all_case_ids = []
-        for cases in case_sets.values():
-            all_case_ids.extend(list(cases))
+        # Default to BIS cases
+        available_cases = list(case_sets.get('bis', []))
+    
+    logger.info(f"Available cases: {len(available_cases)}")
     
     # Filter based on mode
     if args.mode == "fasttrack":
         # Use first 70 cases for FastTrack mode
-        case_ids = all_case_ids[:70]
+        case_ids = available_cases[:70]
         train_ratio = 50/70  # 50 train
         val_ratio = 0/70     # 0 val (skip for FastTrack)
-        test_ratio = 20/70   # 20 test
     else:
-        # Full mode uses more cases
-        case_ids = all_case_ids[:500]  # Limit to 500 for manageable size
-        train_ratio = args.train_ratio or 0.7
-        val_ratio = args.val_ratio or 0.15
-        test_ratio = 1 - train_ratio - val_ratio
+        # Full mode uses all cases
+        case_ids = available_cases
+        train_ratio = 0.7
+        val_ratio = 0.15
+    
+    logger.info(f"Using {len(case_ids)} cases for {args.mode} mode")
+    
+    # Create case dictionaries
+    cases = [
+        {'case_id': str(cid), 'subject_id': str(cid)} 
+        for cid in case_ids
+    ]
     
     # Create splits
-    splits = create_patient_splits(
-        case_ids,
-        train_ratio=train_ratio,
-        val_ratio=val_ratio,
-        test_ratio=test_ratio,
-        seed=args.seed or 42
-    )
+    if val_ratio > 0:
+        splits = make_patient_level_splits(
+            cases=cases,
+            ratios=(train_ratio, val_ratio, 1.0 - train_ratio - val_ratio),
+            seed=args.seed
+        )
+    else:
+        splits = make_patient_level_splits(
+            cases=cases,
+            ratios=(train_ratio, 1.0 - train_ratio),
+            seed=args.seed
+        )
+    
+    # Convert to simple format (just case IDs)
+    simple_splits = {}
+    for split_name, split_cases in splits.items():
+        simple_splits[split_name] = [c['case_id'] for c in split_cases]
     
     # Save splits
-    output_file = Path(args.out)
+    output_file = Path(args.output) / f'splits_{args.mode}.json'
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    save_splits(splits, output_file)
+    
+    with open(output_file, 'w') as f:
+        json.dump(simple_splits, f, indent=2)
     
     logger.info(f"Splits saved to {output_file}")
-    logger.info(f"Train: {len(splits['train'])} cases")
-    logger.info(f"Val: {len(splits['val'])} cases")
-    logger.info(f"Test: {len(splits['test'])} cases")
+    for split_name, split_ids in simple_splits.items():
+        logger.info(f"  {split_name}: {len(split_ids)} cases")
 
 
 def build_windows_command(args):
-    """Build preprocessed windows from VitalDB data."""
+    """Build preprocessed windows from VitalDB data - FIXED VERSION."""
     logger.info("Building windows from VitalDB...")
     
     # Load configurations
@@ -110,111 +130,234 @@ def build_windows_command(args):
     windows_config = load_config(args.windows_yaml)
     
     # Load splits
-    splits = load_splits(args.split_file)
+    splits_file = Path(args.split_file)
+    with open(splits_file, 'r') as f:
+        splits = json.load(f)
     
-    # Get the requested split
+    # Select split to process
     if args.split not in splits:
-        raise ValueError(f"Split '{args.split}' not found in {args.split_file}")
+        raise ValueError(f"Split '{args.split}' not found in {splits_file}")
     
     case_ids = splits[args.split]
-    logger.info(f"Processing {len(case_ids)} cases from {args.split} split")
+    logger.info(f"Processing {args.split} split: {len(case_ids)} cases")
     
-    # Output directory
-    output_dir = Path(args.outdir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # FIX 1: Handle nested 'channels' structure
+    if 'channels' in channels_config:
+        channels_dict = channels_config['channels']
+    else:
+        channels_dict = channels_config
     
-    # Process each case
+    # Get channel configuration
+    channel_name = args.channel or 'PPG'  # Default to PPG
+    if channel_name not in channels_dict:
+        # Try case-insensitive match
+        channel_name_lower = channel_name.lower()
+        for key in channels_dict.keys():
+            if key.lower() == channel_name_lower:
+                channel_name = key
+                break
+        else:
+            logger.warning(f"Channel '{channel_name}' not found, using PPG")
+            channel_name = 'PPG'
+    
+    ch_config = channels_dict.get(channel_name, {})
+    
+    # Window parameters
+    window_s = windows_config.get('window_length_sec', 10.0)
+    stride_s = windows_config.get('stride_sec', 10.0)
+    min_cycles = windows_config.get('min_cycles', 3)
+    normalize_method = windows_config.get('normalize_method', 'zscore')
+    
+    # Get VitalDB track name with fallback
+    track_mapping = {
+        'PPG': 'PLETH',
+        'ECG': 'ECG_II',
+        'ABP': 'ABP',
+        'EEG': 'EEG1'
+    }
+    vitaldb_track = ch_config.get('vitaldb_track', track_mapping.get(channel_name.upper(), 'PLETH'))
+    
+    # Storage
     all_windows = []
-    all_metadata = []
-    window_size_sec = windows_config.get('window_size_sec', 10)
-    hop_size_sec = windows_config.get('hop_size_sec', 5)
+    all_labels = []
+    train_stats = None
+    successful_cases = 0
+    failed_cases = []
     
+    # Process cases
+    logger.info(f"Loading channel '{vitaldb_track}' from {len(case_ids)} cases...")
     for case_id in tqdm(case_ids, desc=f"Processing {args.split}"):
         try:
-            # Load PPG/PLETH signal (primary modality)
+            # Load signal
             signal, fs = load_channel(
-                case_id, 
-                'PLETH',
-                use_cache=True,
-                duration_sec=None,  # Load all available
-                auto_fix_alternating=True  # Use the fix we developed
+                case_id=case_id,
+                channel=vitaldb_track,
+                duration_sec=args.duration_sec,
+                auto_fix_alternating=True
             )
             
-            if signal is None or len(signal) < fs * window_size_sec:
+            if signal is None or len(signal) < fs * 2:  # At least 2 seconds
+                logger.debug(f"Case {case_id}: No valid signal")
+                failed_cases.append((case_id, "No signal"))
                 continue
             
-            # Resample to target rate if needed
-            target_fs = channels_config.get('ppg', {}).get('sampling_rate', 125)
-            if fs != target_fs:
-                num_samples = int(len(signal) * target_fs / fs)
-                signal = scipy_signal.resample(signal, num_samples)
-                fs = target_fs
-            
-            # Apply bandpass filter
-            if args.ecg_mode == 'analysis':  # Actually for PPG
-                # Use 0.5-10 Hz for PPG
-                filtered = apply_bandpass_filter(
-                    signal,
-                    low_freq=0.5,
-                    high_freq=10,
-                    fs=fs,
-                    filter_type='butterworth',
-                    order=4
+            # Apply filter
+            if 'filter' in ch_config:
+                filt = ch_config['filter']
+                
+                # FIX 2: Handle different filter parameter names
+                filter_type_map = {
+                    'butterworth': 'butter',
+                    'chebyshev2': 'cheby2',
+                    'cheby2': 'cheby2',
+                    'butter': 'butter'
+                }
+                filter_type = filter_type_map.get(filt.get('type', 'cheby2'), 'cheby2')
+                
+                # Handle both naming conventions
+                lowcut = filt.get('lowcut', filt.get('low_freq', 0.5))
+                highcut = filt.get('highcut', filt.get('high_freq', 10))
+                
+                signal = apply_bandpass_filter(
+                    signal, fs,
+                    lowcut=lowcut,
+                    highcut=highcut,
+                    filter_type=filter_type,
+                    order=filt.get('order', 4)
                 )
-            else:
-                filtered = signal
             
-            # Normalize (z-score)
-            mean = np.mean(filtered)
-            std = np.std(filtered) + 1e-8
-            normalized = (filtered - mean) / std
+            # Detect peaks based on signal type
+            signal_type = channel_name.lower()
+            peaks = None
+            
+            if signal_type in ['ppg', 'pleth']:
+                peaks = find_ppg_peaks(signal, fs)
+            elif signal_type in ['ecg']:
+                peaks, _ = find_ecg_rpeaks(signal, fs)
+            
+            # Quality check if peaks available
+            if peaks is not None and len(peaks) > 0:
+                sqi = compute_sqi(signal, fs, peaks=peaks, signal_type=signal_type)
+                if sqi < args.min_sqi:
+                    logger.debug(f"Case {case_id}: Low quality (SQI={sqi:.3f})")
+                    failed_cases.append((case_id, f"Low SQI: {sqi:.3f}"))
+                    continue
             
             # Create windows
-            window_size = int(window_size_sec * fs)
-            hop_size = int(hop_size_sec * fs)
+            signal_tc = signal.reshape(-1, 1)
+            peaks_tc = {0: peaks} if peaks is not None and len(peaks) > 0 else None
             
-            num_windows = (len(normalized) - window_size) // hop_size + 1
+            case_windows = make_windows(
+                X_tc=signal_tc,
+                fs=fs,
+                win_s=window_s,
+                stride_s=stride_s,
+                min_cycles=min_cycles if peaks_tc else 0,
+                peaks_tc=peaks_tc
+            )
             
-            for i in range(num_windows):
-                start = i * hop_size
-                end = start + window_size
-                window = normalized[start:end]
+            if case_windows is None or len(case_windows) == 0:
+                logger.debug(f"Case {case_id}: No valid windows")
+                failed_cases.append((case_id, "No valid windows"))
+                continue
+            
+            # Compute normalization stats on first successful train case
+            if args.split == 'train' and train_stats is None:
+                train_stats = compute_normalization_stats(
+                    X=case_windows,
+                    method=normalize_method,
+                    axis=(0, 1)
+                )
+                # Save train stats immediately
+                stats_file = Path(args.outdir) / 'train_stats.npz'
+                stats_file.parent.mkdir(parents=True, exist_ok=True)
+                np.savez(
+                    stats_file,
+                    mean=train_stats.mean,
+                    std=train_stats.std,
+                    method=normalize_method
+                )
+                logger.info(f"Train stats computed and saved to {stats_file}")
+            
+            # Load train stats if processing val/test
+            if args.split != 'train' and train_stats is None:
+                stats_file = Path(args.outdir).parent / 'train' / 'train_stats.npz'
+                if not stats_file.exists():
+                    # Try alternate location
+                    stats_file = Path(args.outdir).parent / 'train_stats.npz'
                 
-                # Quality check (optional)
-                if np.std(window) > 0.01:  # Has variation
-                    all_windows.append(window)
-                    all_metadata.append({
-                        'case_id': str(case_id),
-                        'window_idx': i,
-                        'fs': fs
-                    })
+                if stats_file.exists():
+                    stats_data = np.load(stats_file)
+                    from src.data.windows import NormalizationStats
+                    train_stats = NormalizationStats(
+                        mean=stats_data['mean'],
+                        std=stats_data['std'],
+                        method=str(stats_data['method']) if 'method' in stats_data else normalize_method
+                    )
+                    logger.info(f"Loaded train stats from {stats_file}")
+                else:
+                    logger.warning("Train stats not found, using local normalization")
+            
+            # Normalize windows
+            if train_stats is not None:
+                normalized = normalize_windows(
+                    W_ntc=case_windows,
+                    stats=train_stats,
+                    baseline_correction=False,
+                    per_channel=False
+                )
+            else:
+                # Fallback to per-batch normalization
+                normalized = case_windows
+                mean = np.mean(normalized)
+                std = np.std(normalized)
+                if std > 1e-8:
+                    normalized = (normalized - mean) / std
+            
+            # Store windows
+            for w in normalized:
+                all_windows.append(w)
+                all_labels.append(0)  # Placeholder label
+            
+            successful_cases += 1
             
         except Exception as e:
-            logger.warning(f"Error processing case {case_id}: {e}")
+            logger.warning(f"Case {case_id}: Error - {str(e)}")
+            failed_cases.append((case_id, str(e)))
             continue
+    
+    # Summary
+    logger.info(f"\nProcessing complete:")
+    logger.info(f"  Successful cases: {successful_cases}/{len(case_ids)}")
+    logger.info(f"  Total windows: {len(all_windows)}")
+    
+    if len(failed_cases) > 0:
+        logger.info(f"  Failed cases: {len(failed_cases)}")
+        if len(failed_cases) <= 10:
+            for case_id, reason in failed_cases[:10]:
+                logger.debug(f"    {case_id}: {reason}")
     
     # Save windows
     if all_windows:
-        # Convert to array
         windows_array = np.array(all_windows)
+        labels_array = np.array(all_labels)
         
-        # Add channel dimension
-        windows_array = np.expand_dims(windows_array, axis=1)  # (N, 1, T)
+        output_file = Path(args.outdir) / f'{args.split}_windows.npz'
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save
-        output_file = output_dir / f"{args.split}_windows.npz"
         np.savez_compressed(
             output_file,
-            windows=windows_array,
-            metadata=all_metadata,
-            fs=target_fs,
-            window_size_sec=window_size_sec
+            data=windows_array,
+            labels=labels_array
         )
         
-        logger.info(f"Saved {len(all_windows)} windows to {output_file}")
-        logger.info(f"Shape: {windows_array.shape}")
+        logger.info(f"\n✓ Saved {len(all_windows)} windows to {output_file}")
+        logger.info(f"  Shape: {windows_array.shape}")
+        logger.info(f"  Size: {output_file.stat().st_size / 1024 / 1024:.2f} MB")
     else:
-        logger.warning(f"No valid windows found for {args.split} split")
+        logger.error(f"\n✗ No valid windows created for {args.split} split")
+        logger.error(f"  Check case availability and signal quality")
+        sys.exit(1)
 
 
 def train_command(args):
@@ -228,228 +371,299 @@ def train_command(args):
     # Set seed
     set_seed(run_config.get('seed', 42))
     
-    # Load preprocessed windows
-    train_file = Path(args.out) / "train_windows.npz"
+    # Load splits
+    with open(args.split_file, 'r') as f:
+        splits = json.load(f)
+    
+    # Load training data
+    train_file = Path(args.outdir) / 'train_windows.npz'
+    if not train_file.exists():
+        # Try parent directory structure
+        train_file = Path(args.outdir) / 'train' / 'train_windows.npz'
     if not train_file.exists():
         raise FileNotFoundError(f"Training data not found: {train_file}")
     
     train_data = np.load(train_file)
-    train_windows = train_data['windows']
     
-    # Create simple dataset
-    class SimpleDataset(torch.utils.data.Dataset):
-        def __init__(self, windows, labels=None):
-            self.windows = torch.FloatTensor(windows)
-            # Create dummy labels if not provided
-            self.labels = torch.zeros(len(windows)) if labels is None else torch.FloatTensor(labels)
-        
-        def __len__(self):
-            return len(self.windows)
-        
-        def __getitem__(self, idx):
-            return self.windows[idx], self.labels[idx]
+    # Load validation data if exists
+    val_file = Path(args.outdir) / 'val_windows.npz'
+    if not val_file.exists():
+        val_file = Path(args.outdir) / 'val' / 'val_windows.npz'
     
-    train_dataset = SimpleDataset(train_windows)
+    val_data = None
+    if val_file.exists():
+        val_data = np.load(val_file)
+        logger.info(f"Loaded validation data: {val_data['data'].shape}")
     
-    # Create data loader
-    batch_size = run_config.get('batch_size', 32)
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=run_config.get('num_workers', 4),
-        pin_memory=True
-    )
+    logger.info(f"Loaded training data: {train_data['data'].shape}")
+    
+    # Create datasets
+    from torch.utils.data import TensorDataset, DataLoader
+    
+    X_train = torch.from_numpy(train_data['data']).float()
+    y_train = torch.from_numpy(train_data['labels']).long()
+    train_dataset = TensorDataset(X_train, y_train)
+    
+    val_dataset = None
+    if val_data is not None:
+        X_val = torch.from_numpy(val_data['data']).float()
+        y_val = torch.from_numpy(val_data['labels']).long()
+        val_dataset = TensorDataset(X_val, y_val)
     
     # Configure model
-    if args.fasttrack:
-        # FastTrack: frozen encoder
-        model_config['freeze_encoder'] = True
-        model_config['unfreeze_last_n_blocks'] = 0
+    model_config['input_channels'] = train_data['data'].shape[2]
+    model_config['context_length'] = train_data['data'].shape[1]
     
-    # Set dimensions based on data
-    model_config['input_channels'] = train_windows.shape[1]  # Should be 1 for PPG
-    model_config['context_length'] = train_windows.shape[2]  # Window size
+    # Handle FastTrack mode
+    if args.fasttrack:
+        model_config['freeze_encoder'] = True
+        model_config['head_type'] = 'linear'
+        run_config['num_epochs'] = run_config.get('num_epochs', 10)
+        logger.info("FastTrack mode: Frozen encoder, linear head, 10 epochs")
     
     # Create model
     model = create_ttm_model(model_config)
     
-    # Simple training loop for demonstration
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
+    # Create data loaders
+    batch_size = run_config.get('batch_size', 32)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False) if val_dataset else None
     
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=run_config.get('learning_rate', 1e-4),
-        weight_decay=run_config.get('weight_decay', 0.01)
+    # Select trainer based on task
+    task = model_config.get('task', 'classification')
+    if task == 'classification':
+        trainer = TrainerClf(
+            model=model,
+            lr=run_config.get('learning_rate', 1e-3),
+            weight_decay=run_config.get('weight_decay', 1e-4),
+            use_amp=run_config.get('use_amp', False),
+            grad_clip=run_config.get('grad_clip', 1.0),
+            patience=run_config.get('patience', 10),
+            save_dir=Path(args.out),
+            device=run_config.get('device', 'cpu')
+        )
+    else:
+        trainer = TrainerReg(
+            model=model,
+            lr=run_config.get('learning_rate', 1e-3),
+            weight_decay=run_config.get('weight_decay', 1e-4),
+            use_amp=run_config.get('use_amp', False),
+            grad_clip=run_config.get('grad_clip', 1.0),
+            patience=run_config.get('patience', 10),
+            save_dir=Path(args.out),
+            device=run_config.get('device', 'cpu')
+        )
+    
+    # Train
+    num_epochs = run_config.get('num_epochs', 10)
+    trainer.train(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        num_epochs=num_epochs,
+        save_best=True,
+        log_interval=10
     )
     
-    # Training loop
-    num_epochs = run_config.get('num_epochs', 10)
-    model.train()
-    
-    for epoch in range(num_epochs):
-        total_loss = 0
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            
-            optimizer.zero_grad()
-            
-            # Forward pass
-            outputs = model(inputs)
-            
-            # Simple loss (MSE for now)
-            if outputs.dim() > 2:
-                outputs = outputs.mean(dim=-1)  # Average over time if needed
-            
-            loss = torch.nn.functional.mse_loss(outputs.squeeze(), targets)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            
-            if batch_idx % 10 == 0:
-                logger.info(f"Epoch {epoch+1}/{num_epochs}, Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
-        
-        avg_loss = total_loss / len(train_loader)
-        logger.info(f"Epoch {epoch+1} completed. Average Loss: {avg_loss:.4f}")
-    
-    # Save model
-    output_dir = Path(args.out)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    checkpoint = {
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': num_epochs,
-        'model_config': model_config
-    }
-    
-    model_path = output_dir / "model.pt"
-    torch.save(checkpoint, model_path)
-    logger.info(f"Model saved to {model_path}")
+    logger.info(f"Training complete! Model saved to {args.out}")
 
 
 def test_command(args):
-    """Test model."""
+    """Test model on test set."""
     logger.info("Testing model...")
     
+    # Load configurations
+    model_config = load_config(args.model_yaml)
+    run_config = load_config(args.run_yaml)
+    
     # Load test data
-    test_file = Path(args.out) / "test_windows.npz"
+    test_file = Path(args.outdir) / 'test_windows.npz'
+    if not test_file.exists():
+        test_file = Path(args.outdir) / 'test' / 'test_windows.npz'
+    
     if not test_file.exists():
         raise FileNotFoundError(f"Test data not found: {test_file}")
     
     test_data = np.load(test_file)
-    test_windows = test_data['windows']
+    logger.info(f"Loaded test data: {test_data['data'].shape}")
+    
+    # Create dataset
+    from torch.utils.data import TensorDataset, DataLoader
+    X_test = torch.from_numpy(test_data['data']).float()
+    y_test = torch.from_numpy(test_data['labels']).long()
+    test_dataset = TensorDataset(X_test, y_test)
+    
+    # Create data loader
+    batch_size = run_config.get('batch_size', 32)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Load model
     checkpoint = torch.load(args.ckpt, map_location='cpu')
-    model_config = checkpoint.get('model_config', {})
     
-    # Create model
+    # Recreate model architecture
+    model_config['input_channels'] = test_data['data'].shape[2]
+    model_config['context_length'] = test_data['data'].shape[1]
     model = create_ttm_model(model_config)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Load weights
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    
+    logger.info(f"Loaded model from {args.ckpt}")
+    
+    # Move to device
+    device = torch.device(run_config.get('device', 'cpu'))
+    model = model.to(device)
     model.eval()
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    
-    # Simple inference
-    test_tensor = torch.FloatTensor(test_windows).to(device)
+    # Evaluate
+    all_preds = []
+    all_labels = []
+    all_probs = []
     
     with torch.no_grad():
-        outputs = model(test_tensor)
+        for batch_idx, (data, target) in enumerate(test_loader):
+            data, target = data.to(device), target.to(device)
+            
+            # Forward pass
+            output = model(data)
+            
+            # Get predictions
+            if model_config.get('task', 'classification') == 'classification':
+                probs = torch.softmax(output, dim=1)
+                preds = torch.argmax(output, dim=1)
+                all_probs.extend(probs.cpu().numpy())
+            else:
+                preds = output.squeeze()
+                all_probs = None
+            
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(target.cpu().numpy())
     
-    logger.info(f"Test completed. Output shape: {outputs.shape}")
+    # Calculate metrics
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    
+    if model_config.get('task', 'classification') == 'classification':
+        from src.eval.metrics import compute_classification_metrics
+        metrics = compute_classification_metrics(all_labels, all_preds)
+        
+        # Add calibration metrics
+        if all_probs:
+            all_probs = np.array(all_probs)
+            ece = expected_calibration_error(all_labels, all_probs[:, 1] if all_probs.shape[1] == 2 else all_probs)
+            metrics['ece'] = ece
+    else:
+        from src.eval.metrics import compute_regression_metrics
+        metrics = compute_regression_metrics(all_labels, all_preds)
     
     # Save results
+    output_dir = Path(args.out)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     results = {
-        'num_samples': len(test_windows),
-        'output_shape': list(outputs.shape),
-        'output_mean': float(outputs.mean().cpu()),
-        'output_std': float(outputs.std().cpu())
+        'metrics': metrics,
+        'predictions': all_preds.tolist(),
+        'labels': all_labels.tolist(),
+        'model_path': str(args.ckpt)
     }
     
-    results_file = Path(args.out) / "test_results.json"
+    results_file = output_dir / 'test_results.json'
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
     
-    logger.info(f"Results saved to {results_file}")
+    logger.info(f"\nTest Results:")
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            logger.info(f"  {key}: {value:.4f}")
+        else:
+            logger.info(f"  {key}: {value}")
+    
+    logger.info(f"\nResults saved to {results_file}")
+
+
+def inspect_command(args):
+    """Inspect data or model."""
+    if args.data:
+        data = np.load(args.data)
+        print(f"\nData file: {args.data}")
+        print(f"Arrays: {list(data.keys())}")
+        for key in data.keys():
+            arr = data[key]
+            print(f"  {key}: shape={arr.shape}, dtype={arr.dtype}")
+    
+    if args.model:
+        checkpoint = torch.load(args.model, map_location='cpu')
+        print(f"\nModel file: {args.model}")
+        print(f"Keys: {list(checkpoint.keys())}")
 
 
 def main():
-    """Main CLI entry point."""
-    parser = argparse.ArgumentParser(
-        description="TTM × VitalDB Pipeline (Fixed)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="TTM × VitalDB Pipeline")
+    
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s:%(process)d:%(thread)d:%(name)s:%(funcName)s:%(message)s'
     )
     
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
     
     # prepare-splits command
-    splits_parser = subparsers.add_parser("prepare-splits", help="Create train/val/test splits")
-    splits_parser.add_argument("--train-ratio", type=float, default=0.7)
-    splits_parser.add_argument("--val-ratio", type=float, default=0.15)
-    splits_parser.add_argument("--test-ratio", type=float, default=0.15)
-    splits_parser.add_argument("--seed", type=int, default=42)
-    splits_parser.add_argument("--out", type=str, default="configs/splits/train_test.json")
-    splits_parser.add_argument("--fasttrack", action="store_true", help="Use FastTrack mode")
-    splits_parser.add_argument("--mode", type=str, choices=["fasttrack", "full"], default="full")
+    splits_parser = subparsers.add_parser('prepare-splits', help='Prepare train/val/test splits')
+    splits_parser.add_argument('--mode', choices=['fasttrack', 'full'], default='fasttrack')
+    splits_parser.add_argument('--case-set', type=str, help='VitalDB case set')
+    splits_parser.add_argument('--output', type=str, default='data', help='Output directory')
+    splits_parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
     # build-windows command
-    windows_parser = subparsers.add_parser("build-windows", help="Build preprocessed windows")
-    windows_parser.add_argument("--channels-yaml", type=str, default="configs/channels.yaml")
-    windows_parser.add_argument("--windows-yaml", type=str, default="configs/windows.yaml")
-    windows_parser.add_argument("--split-file", type=str, default="configs/splits/train_test.json")
-    windows_parser.add_argument("--split", type=str, choices=["train", "val", "test"], required=True)
-    windows_parser.add_argument("--outdir", type=str, required=True)
-    windows_parser.add_argument("--ecg-mode", type=str, default="analysis")
-    windows_parser.add_argument("--fasttrack", action="store_true")
+    windows_parser = subparsers.add_parser('build-windows', help='Build preprocessed windows')
+    windows_parser.add_argument('--channels-yaml', type=str, required=True, help='Channels config')
+    windows_parser.add_argument('--windows-yaml', type=str, required=True, help='Windows config')
+    windows_parser.add_argument('--split-file', type=str, required=True, help='Splits JSON file')
+    windows_parser.add_argument('--split', type=str, required=True, help='Split to process')
+    windows_parser.add_argument('--channel', type=str, help='Channel to process')
+    windows_parser.add_argument('--duration-sec', type=float, default=60, help='Duration per case')
+    windows_parser.add_argument('--min-sqi', type=float, default=0.5, help='Minimum SQI')
+    windows_parser.add_argument('--outdir', type=str, required=True, help='Output directory')
     
     # train command
-    train_parser = subparsers.add_parser("train", help="Train TTM model")
-    train_parser.add_argument("--model-yaml", type=str, default="configs/model.yaml")
-    train_parser.add_argument("--run-yaml", type=str, default="configs/run.yaml")
-    train_parser.add_argument("--split-file", type=str, default="configs/splits/train_test.json")
-    train_parser.add_argument("--task", type=str, default="clf", choices=["clf", "reg"])
-    train_parser.add_argument("--out", type=str, required=True)
-    train_parser.add_argument("--fasttrack", action="store_true")
+    train_parser = subparsers.add_parser('train', help='Train model')
+    train_parser.add_argument('--model-yaml', type=str, required=True, help='Model config')
+    train_parser.add_argument('--run-yaml', type=str, required=True, help='Run config')
+    train_parser.add_argument('--split-file', type=str, required=True, help='Splits file')
+    train_parser.add_argument('--outdir', type=str, required=True, help='Data directory')
+    train_parser.add_argument('--out', type=str, required=True, help='Output directory')
+    train_parser.add_argument('--fasttrack', action='store_true', help='FastTrack mode')
     
     # test command
-    test_parser = subparsers.add_parser("test", help="Test model")
-    test_parser.add_argument("--model-yaml", type=str, default="configs/model.yaml")
-    test_parser.add_argument("--run-yaml", type=str, default="configs/run.yaml")
-    test_parser.add_argument("--split-file", type=str, default="configs/splits/train_test.json")
-    test_parser.add_argument("--split", type=str, default="test")
-    test_parser.add_argument("--task", type=str, default="clf")
-    test_parser.add_argument("--ckpt", type=str, required=True)
-    test_parser.add_argument("--out", type=str, required=True)
-    test_parser.add_argument("--calibration", type=str, default="temperature")
+    test_parser = subparsers.add_parser('test', help='Test model')
+    test_parser.add_argument('--ckpt', type=str, required=True, help='Model checkpoint')
+    test_parser.add_argument('--model-yaml', type=str, required=True, help='Model config')
+    test_parser.add_argument('--run-yaml', type=str, required=True, help='Run config')
+    test_parser.add_argument('--split-file', type=str, required=True, help='Splits file')
+    test_parser.add_argument('--outdir', type=str, required=True, help='Data directory')
+    test_parser.add_argument('--out', type=str, required=True, help='Output directory')
+    
+    # inspect command
+    inspect_parser = subparsers.add_parser('inspect', help='Inspect data or model')
+    inspect_parser.add_argument('--data', type=str, help='Data file to inspect')
+    inspect_parser.add_argument('--model', type=str, help='Model file to inspect')
     
     args = parser.parse_args()
     
-    if args.command is None:
-        parser.print_help()
-        return
-    
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
-    
-    # Execute command
-    if args.command == "prepare-splits":
+    if args.command == 'prepare-splits':
         prepare_splits_command(args)
-    elif args.command == "build-windows":
+    elif args.command == 'build-windows':
         build_windows_command(args)
-    elif args.command == "train":
+    elif args.command == 'train':
         train_command(args)
-    elif args.command == "test":
+    elif args.command == 'test':
         test_command(args)
+    elif args.command == 'inspect':
+        inspect_command(args)
     else:
         parser.print_help()
 
