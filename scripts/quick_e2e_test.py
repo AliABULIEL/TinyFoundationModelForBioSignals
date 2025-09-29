@@ -326,38 +326,54 @@ print(f"Model created: {sum(p.numel() for p in model.parameters())} parameters")
 print(f"Trainable: {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters")
 print()
 
-# Create trainer
-train_config = {
-    'num_epochs': 2,  # Just 2 epochs for speed
-    'batch_size': 4,
-    'learning_rate': 1e-3,
-    'weight_decay': 1e-4,
-    'use_amp': False,  # No AMP on CPU
-    'grad_clip': 1.0,
-    'patience': 10,
-    'num_workers': 0,
-    'device': 'cpu'
-}
+# Create data loaders
+train_loader = torch.utils.data.DataLoader(
+    train_dataset,
+    batch_size=4,
+    shuffle=True,
+    num_workers=0
+)
 
+# Create trainer
 trainer = TrainerClf(
     model=model,
-    train_dataset=train_dataset,
-    val_dataset=None,  # Skip validation for speed
-    config=train_config,
-    save_dir=str(test_dir)
+    train_loader=train_loader,
+    val_loader=None,  # Skip validation for speed
+    num_classes=2,
+    device='cpu',
+    use_amp=False,  # No AMP on CPU
+    gradient_clip=1.0,
+    checkpoint_dir=str(test_dir)
 )
 
 # Train
-print("Training...")
+print("Training for 2 epochs...")
 try:
-    train_metrics = trainer.train()
+    train_metrics = trainer.fit(
+        num_epochs=2,
+        save_best=True,
+        early_stopping_patience=10
+    )
     print("\nTraining completed!")
-    print(f"Final loss: {train_metrics['train_loss'][-1]:.4f}")
+    if train_metrics['train_history']:
+        final_loss = train_metrics['train_history'][-1]['loss']
+        print(f"Final loss: {final_loss:.4f}")
 except Exception as e:
     print(f"\nTraining error: {e}")
     logger.exception("Training failed")
     # Continue to test anyway
-    train_metrics = {'train_loss': [float('nan')]}
+    train_metrics = {'train_history': [{'loss': float('nan')}]}
+
+# Save config for results
+train_config = {
+    'num_epochs': 2,
+    'batch_size': 4,
+    'learning_rate': 5e-4,  # Default from TrainerBase
+    'weight_decay': 0.01,
+    'use_amp': False,
+    'gradient_clip': 1.0,
+    'device': 'cpu'
+}
 
 print()
 
@@ -426,8 +442,7 @@ print()
 # Save results
 results = {
     'test_metrics': {k: float(v) for k, v in metrics.items()},
-    'train_metrics': {k: [float(x) for x in v] if isinstance(v, list) else float(v) 
-                      for k, v in train_metrics.items()},
+    'train_metrics': train_metrics,
     'model_config': model_config,
     'train_config': train_config,
     'splits': simple_splits
