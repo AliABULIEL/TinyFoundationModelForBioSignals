@@ -75,7 +75,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_score_min = np.Inf if mode == "min" else -np.Inf
+        self.best_value = np.Inf if mode == "min" else -np.Inf
     
     def __call__(self, val_score: float, model: Optional[nn.Module] = None) -> bool:
         """Check if should stop.
@@ -87,21 +87,22 @@ class EarlyStopping:
         Returns:
             Whether to stop training
         """
-        score = -val_score if self.mode == "min" else val_score
+        if self.mode == "min":
+            is_improvement = val_score < self.best_value - self.min_delta
+        else:
+            is_improvement = val_score > self.best_value + self.min_delta
         
-        if self.best_score is None:
-            self.best_score = score
+        if self.best_score is None or is_improvement:
+            self.best_score = val_score
+            self.best_value = val_score
             self.save_checkpoint(val_score, model)
-        elif score < self.best_score + self.min_delta:
+            self.counter = 0
+        else:
             self.counter += 1
             if self.verbose:
                 logger.info(f"EarlyStopping counter: {self.counter} out of {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_score, model)
-            self.counter = 0
         
         return self.early_stop
     
@@ -109,11 +110,9 @@ class EarlyStopping:
         """Save model when validation score improves."""
         if self.verbose:
             if self.mode == "min":
-                logger.info(f"Validation score decreased ({self.val_score_min:.6f} --> {val_score:.6f})")
+                logger.info(f"Validation score decreased ({self.best_value:.6f} --> {val_score:.6f})")
             else:
-                logger.info(f"Validation score increased ({self.val_score_min:.6f} --> {val_score:.6f})")
-        
-        self.val_score_min = val_score
+                logger.info(f"Validation score increased ({self.best_value:.6f} --> {val_score:.6f})")
 
 
 class TrainerBase:
@@ -358,16 +357,23 @@ class TrainerBase:
         """
         checkpoint = torch.load(path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "model_state_dict" in checkpoint:
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
         if "scaler_state_dict" in checkpoint and self.scaler is not None:
             self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
         
-        self.epoch = checkpoint.get("epoch", 0)
-        self.train_history = checkpoint.get("train_history", [])
-        self.val_history = checkpoint.get("val_history", [])
-        self.best_val_metric = checkpoint.get("best_val_metric", None)
+        # Restore training state
+        if "epoch" in checkpoint:
+            self.epoch = checkpoint["epoch"]
+        if "train_history" in checkpoint:
+            self.train_history = checkpoint["train_history"]
+        if "val_history" in checkpoint:
+            self.val_history = checkpoint["val_history"]
+        if "best_val_metric" in checkpoint:
+            self.best_val_metric = checkpoint["best_val_metric"]
         
         logger.info(f"Loaded checkpoint from {path} (epoch {self.epoch})")
         

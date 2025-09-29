@@ -194,9 +194,9 @@ class IsotonicCalibration:
         """
         # Convert to numpy
         if isinstance(probs, torch.Tensor):
-            probs = probs.cpu().numpy()
+            probs = probs.detach().cpu().numpy()
         if isinstance(labels, torch.Tensor):
-            labels = labels.cpu().numpy()
+            labels = labels.detach().cpu().numpy()
         
         # Flatten if needed
         if probs.ndim > 1:
@@ -228,7 +228,7 @@ class IsotonicCalibration:
         
         # Convert to numpy
         if is_tensor:
-            probs_np = probs.cpu().numpy()
+            probs_np = probs.detach().cpu().numpy()
         else:
             probs_np = probs
         
@@ -269,9 +269,9 @@ def compute_reliability_diagram(
     """
     # Convert to numpy
     if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
+        y_true = y_true.detach().cpu().numpy()
     if isinstance(y_prob, torch.Tensor):
-        y_prob = y_prob.cpu().numpy()
+        y_prob = y_prob.detach().cpu().numpy()
     
     # Flatten
     y_true = y_true.ravel()
@@ -403,9 +403,9 @@ def adaptive_calibration_error(
     """
     # Convert to numpy
     if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
+        y_true = y_true.detach().cpu().numpy()
     if isinstance(y_prob, torch.Tensor):
-        y_prob = y_prob.cpu().numpy()
+        y_prob = y_prob.detach().cpu().numpy()
     
     # Flatten
     y_true = y_true.ravel()
@@ -465,9 +465,9 @@ def find_threshold_for_sensitivity(
     """
     # Convert to numpy
     if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
+        y_true = y_true.detach().cpu().numpy()
     if isinstance(y_prob, torch.Tensor):
-        y_prob = y_prob.cpu().numpy()
+        y_prob = y_prob.detach().cpu().numpy()
     
     # Get samples of class of interest
     class_mask = y_true == class_of_interest
@@ -513,9 +513,9 @@ def find_threshold_for_specificity(
     """
     # Convert to numpy
     if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
+        y_true = y_true.detach().cpu().numpy()
     if isinstance(y_prob, torch.Tensor):
-        y_prob = y_prob.cpu().numpy()
+        y_prob = y_prob.detach().cpu().numpy()
     
     # Get samples of negative class
     neg_mask = y_true == negative_class
@@ -573,12 +573,12 @@ class CalibrationEvaluator:
         
         # Compute Brier score
         if isinstance(y_true, torch.Tensor):
-            y_true_np = y_true.cpu().numpy()
+            y_true_np = y_true.detach().cpu().numpy()
         else:
             y_true_np = y_true
         
         if isinstance(y_prob, torch.Tensor):
-            y_prob_np = y_prob.cpu().numpy()
+            y_prob_np = y_prob.detach().cpu().numpy()
         else:
             y_prob_np = y_prob
         
