@@ -19,7 +19,7 @@ echo "Running in FastTrack mode (50 train, 20 test cases)"
 # Create output directories
 mkdir -p artifacts/raw_windows
 mkdir -p artifacts/checkpoints
-mkdir -p data
+mkdir -p configs/splits
 
 echo ""
 echo "Step 1/4: Preparing train/test splits..."
@@ -27,7 +27,7 @@ echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
     --mode fasttrack \
     --case-set bis \
-    --output data \
+    --output configs/splits \
     --seed 42
 
 echo ""
@@ -37,7 +37,7 @@ echo "------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py build-windows \
     --channels-yaml configs/channels.yaml \
     --windows-yaml configs/windows.yaml \
-    --split-file data/splits_fasttrack.json \
+    --split-file configs/splits/splits_fasttrack.json \
     --split train \
     --outdir artifacts/raw_windows/train \
     --duration-sec 60 \

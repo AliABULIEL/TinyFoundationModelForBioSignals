@@ -27,7 +27,7 @@ echo "----------------------------------------------"
 $PYTHON scripts/ttm_vitaldb.py prepare-splits \
     --mode full \
     --case-set bis \
-    --output configs/splits/splits_full.json \
+    --output configs/splits \
     --seed 42
 
 echo ""
