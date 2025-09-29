@@ -24,7 +24,7 @@ mkdir -p data
 echo ""
 echo "Step 1/5: Preparing train/val/test splits..."
 echo "----------------------------------------------"
-$PYTHON scripts/ttm_vitaldb_multiprocess.py prepare-splits \
+$PYTHON scripts/ttm_vitaldb.py prepare-splits \
     --mode full \
     --case-set bis \
     --output configs/splits \
@@ -88,7 +88,7 @@ task:
 training_mode:
   freeze_encoder: false
   unfreeze_last_n_blocks: 2  # Unfreeze last 2 transformer blocks
-  
+
   # Gradual unfreezing
   gradual_unfreeze:
     enabled: true
@@ -141,7 +141,7 @@ EOF
 echo ""
 echo "Step 4/5: Training with fine-tuning..."
 echo "----------------------------------------"
-$PYTHON scripts/ttm_vitaldb_multiprocess.py train \
+$PYTHON scripts/ttm_vitaldb.py train \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
     --split-file configs/splits/splits_full.json \
@@ -151,7 +151,7 @@ $PYTHON scripts/ttm_vitaldb_multiprocess.py train \
 echo ""
 echo "Step 5/5: Testing..."
 echo "-----------------------------------------------"
-$PYTHON scripts/ttm_vitaldb_multiprocess.py test \
+$PYTHON scripts/ttm_vitaldb.py test \
     --ckpt artifacts/run_ft_full/best_model.pt \
     --model-yaml configs/model_high_accuracy.yaml \
     --run-yaml configs/run.yaml \
