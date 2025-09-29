@@ -9,6 +9,50 @@ import numpy as np
 from scipy import signal, stats
 
 
+def compute_sqi(
+    sig: np.ndarray,
+    fs: float,
+    peaks: Optional[np.ndarray] = None,
+    signal_type: str = 'ppg'
+) -> float:
+    """Compute Signal Quality Index for any signal type.
+    
+    Generic wrapper that calls the appropriate signal-specific SQI function.
+    
+    Args:
+        sig: Signal array
+        fs: Sampling frequency
+        peaks: Detected peaks (optional, required for ECG)
+        signal_type: Type of signal ('ecg', 'ppg', 'abp')
+        
+    Returns:
+        SQI score between 0 and 1
+    """
+    signal_type = signal_type.lower()
+    
+    if signal_type == 'ecg':
+        if peaks is None or len(peaks) < 3:
+            return 0.0
+        return ecg_sqi(sig, peaks, fs)
+    elif signal_type == 'ppg':
+        return ppg_ssqi(sig, fs)
+    elif signal_type == 'abp':
+        # For ABP, check basic quality
+        artifacts = hard_artifacts(sig, fs)
+        if any(artifacts.values()):
+            return 0.0
+        # Check for reasonable variation
+        if np.std(sig) < 0.01 * (np.max(sig) - np.min(sig)):
+            return 0.0
+        return 0.8  # Default quality for ABP without specific SQI
+    else:
+        # Unknown signal type, return basic quality check
+        artifacts = hard_artifacts(sig, fs)
+        if any(artifacts.values()):
+            return 0.0
+        return 0.7
+
+
 def ecg_sqi(
     ecg: np.ndarray,
     peaks: np.ndarray,

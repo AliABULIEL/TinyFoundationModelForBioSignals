@@ -375,6 +375,26 @@ def classification_metrics(
     return metrics
 
 
+def compute_classification_metrics(
+    y_true: Union[torch.Tensor, np.ndarray],
+    y_pred: Union[torch.Tensor, np.ndarray],
+    y_prob: Optional[Union[torch.Tensor, np.ndarray]] = None,
+    threshold: float = 0.5
+) -> Dict[str, float]:
+    """Compute all classification metrics (alias for classification_metrics).
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        y_prob: Predicted probabilities (optional)
+        threshold: Threshold for binary classification
+        
+    Returns:
+        Dictionary of metrics
+    """
+    return classification_metrics(y_true, y_pred, y_prob, threshold)
+
+
 def regression_metrics(
     y_true: Union[torch.Tensor, np.ndarray],
     y_pred: Union[torch.Tensor, np.ndarray]
@@ -404,6 +424,22 @@ def regression_metrics(
     }
     
     return metrics
+
+
+def compute_regression_metrics(
+    y_true: Union[torch.Tensor, np.ndarray],
+    y_pred: Union[torch.Tensor, np.ndarray]
+) -> Dict[str, float]:
+    """Compute all regression metrics (alias for regression_metrics).
+    
+    Args:
+        y_true: True values
+        y_pred: Predicted values
+        
+    Returns:
+        Dictionary of metrics
+    """
+    return regression_metrics(y_true, y_pred)
 
 
 class MetricTracker:
