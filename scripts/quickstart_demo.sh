@@ -16,13 +16,13 @@ echo "🏥 VitalDB Downstream Tasks - Quick Start Demo"
 echo "============================================================"
 echo ""
 
-# Check Python is available
-if ! command -v python &> /dev/null; then
-    echo "❌ Error: Python not found"
+# Check python3 is available
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Error: python3 not found"
     exit 1
 fi
 
-echo "✓ Python found: $(python --version)"
+echo "✓ python3 found: $(python3 --version)"
 echo ""
 
 # Step 1: List available tasks
@@ -31,7 +31,7 @@ echo "📋 Step 1: Available Tasks"
 echo "============================================================"
 echo ""
 
-python scripts/evaluate_task.py --list-tasks
+python3 scripts/evaluate_task.py --list-tasks
 
 echo ""
 read -p "Press Enter to continue..."
@@ -43,7 +43,7 @@ echo "📖 Step 2: Task Information (Hypotension Prediction)"
 echo "============================================================"
 echo ""
 
-python scripts/evaluate_task.py --task-info hypotension_5min
+python3 scripts/evaluate_task.py --task-info hypotension_5min
 
 echo ""
 read -p "Press Enter to continue..."
@@ -61,7 +61,7 @@ echo "  - Evaluation metrics"
 echo "  - Benchmark comparison"
 echo ""
 
-python examples/quick_start_tasks.py
+python3 examples/quick_start_tasks.py
 
 echo ""
 echo "============================================================"
@@ -75,10 +75,10 @@ echo "  1. Review the HTML report:"
 echo "     open results/quick_start/benchmark_report.html"
 echo ""
 echo "  2. Train your model:"
-echo "     python scripts/ttm_vitaldb.py train --fasttrack"
+echo "     python3 scripts/ttm_vitaldb.py train --fasttrack"
 echo ""
 echo "  3. Evaluate on real data:"
-echo "     python scripts/evaluate_task.py \\"
+echo "     python3 scripts/evaluate_task.py \\"
 echo "       --task hypotension_5min \\"
 echo "       --checkpoint artifacts/model.pt \\"
 echo "       --compare-benchmarks"

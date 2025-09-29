@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Compare results across multiple downstream tasks and generate aggregate report.
 
 Usage:
-    python scripts/benchmark_comparison.py --results-dir results/
-    python scripts/benchmark_comparison.py --results-dir results/ --format html
+    python3 scripts/benchmark_comparison.py --results-dir results/
+    python3 scripts/benchmark_comparison.py --results-dir results/ --format html
 """
 
 import argparse

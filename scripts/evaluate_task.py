@@ -1,10 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Evaluate trained TTM model on VitalDB downstream tasks.
 
 Usage:
-    python scripts/evaluate_task.py --task hypotension_5min --checkpoint path/to/model.pt
-    python scripts/evaluate_task.py --task blood_pressure_both --checkpoint path/to/model.pt
-    python scripts/evaluate_task.py --list-tasks
+    python3 scripts/evaluate_task.py --task hypotension_5min --checkpoint path/to/model.pt
+    python3 scripts/evaluate_task.py --task blood_pressure_both --checkpoint path/to/model.pt
+    python3 scripts/evaluate_task.py --list-tasks
 """
 
 import argparse
