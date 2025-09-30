@@ -75,7 +75,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_value = np.Inf if mode == "min" else -np.Inf
+        self.best_value = np.inf if mode == "min" else -np.inf
     
     def __call__(self, val_score: float, model: Optional[nn.Module] = None) -> bool:
         """Check if should stop.
