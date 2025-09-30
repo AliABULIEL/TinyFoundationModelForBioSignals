@@ -15,56 +15,56 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON="${PYTHON:-python3}"
 
-# Create output directories
-mkdir -p artifacts/raw_windows
-mkdir -p artifacts/checkpoints
-mkdir -p configs/splits
-mkdir -p data
-
-echo ""
-echo "Step 1/5: Preparing train/val/test splits..."
-echo "----------------------------------------------"
-$PYTHON scripts/ttm_vitaldb.py prepare-splits \
-    --mode full \
-    --case-set bis \
-    --output configs/splits \
-    --seed 42
-
-echo ""
-echo "Step 2/5: Building preprocessed windows..."
-echo "--------------------------------------------"
-# Build training windows
-echo "Processing training set..."
-$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
-    --channels-yaml configs/channels.yaml \
-    --windows-yaml configs/windows.yaml \
-    --split-file configs/splits/splits_full.json \
-    --split train \
-    --outdir artifacts/raw_windows/train \
-    --duration-sec 60 \
-    --min-sqi 0.8
-
-# Build validation windows
-echo "Processing validation set..."
-$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
-    --channels-yaml configs/channels.yaml \
-    --windows-yaml configs/windows.yaml \
-    --split-file configs/splits/splits_full.json \
-    --split val \
-    --outdir artifacts/raw_windows/val \
-    --duration-sec 60 \
-    --min-sqi 0.8
-
-# Build test windows
-echo "Processing test set..."
-$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
-    --channels-yaml configs/channels.yaml \
-    --windows-yaml configs/windows.yaml \
-    --split-file configs/splits/splits_full.json \
-    --split test \
-    --outdir artifacts/raw_windows/test \
-    --duration-sec 60 \
-    --min-sqi 0.8
+## Create output directories
+#mkdir -p artifacts/raw_windows
+#mkdir -p artifacts/checkpoints
+#mkdir -p configs/splits
+#mkdir -p data
+#
+#echo ""
+#echo "Step 1/5: Preparing train/val/test splits..."
+#echo "----------------------------------------------"
+#$PYTHON scripts/ttm_vitaldb.py prepare-splits \
+#    --mode full \
+#    --case-set bis \
+#    --output configs/splits \
+#    --seed 42
+#
+#echo ""
+#echo "Step 2/5: Building preprocessed windows..."
+#echo "--------------------------------------------"
+## Build training windows
+#echo "Processing training set..."
+#$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
+#    --channels-yaml configs/channels.yaml \
+#    --windows-yaml configs/windows.yaml \
+#    --split-file configs/splits/splits_full.json \
+#    --split train \
+#    --outdir artifacts/raw_windows/train \
+#    --duration-sec 60 \
+#    --min-sqi 0.8
+#
+## Build validation windows
+#echo "Processing validation set..."
+#$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
+#    --channels-yaml configs/channels.yaml \
+#    --windows-yaml configs/windows.yaml \
+#    --split-file configs/splits/splits_full.json \
+#    --split val \
+#    --outdir artifacts/raw_windows/val \
+#    --duration-sec 60 \
+#    --min-sqi 0.8
+#
+## Build test windows
+#echo "Processing test set..."
+#$PYTHON scripts/ttm_vitaldb_multiprocess.py build-windows \
+#    --channels-yaml configs/channels.yaml \
+#    --windows-yaml configs/windows.yaml \
+#    --split-file configs/splits/splits_full.json \
+#    --split test \
+#    --outdir artifacts/raw_windows/test \
+#    --duration-sec 60 \
+#    --min-sqi 0.8
 
 echo ""
 echo "Step 3/5: Creating high-accuracy model config..."
