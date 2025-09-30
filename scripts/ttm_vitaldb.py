@@ -292,11 +292,17 @@ def build_windows_multiprocess(args):
     
     ch_config = channels_dict.get(channel_name, {})
     
-    # Window parameters
-    window_s = windows_config.get('window_length_sec', 10.0)
-    stride_s = windows_config.get('stride_sec', 10.0)
-    min_cycles = windows_config.get('min_cycles', 3)
-    normalize_method = windows_config.get('normalize_method', 'zscore')
+    # Window parameters - Fixed to read correct config structure
+    if 'window' in windows_config:
+        window_s = windows_config['window'].get('size_seconds', 4.096)  # TTM default: 512 samples at 125Hz
+        stride_s = windows_config['window'].get('step_seconds', 4.096)
+    else:
+        # Fallback for old config format
+        window_s = windows_config.get('window_length_sec', 4.096)
+        stride_s = windows_config.get('stride_sec', 4.096)
+    
+    min_cycles = windows_config.get('quality', {}).get('min_cycles', 3)
+    normalize_method = windows_config.get('normalization', {}).get('method', 'zscore')
     
     # Get VitalDB track name
     track_mapping = {
@@ -488,11 +494,17 @@ def build_windows_singleprocess(args):
 
     ch_config = channels_dict.get(channel_name, {})
 
-    # Window parameters
-    window_s = windows_config.get('window_length_sec', 10.0)
-    stride_s = windows_config.get('stride_sec', 10.0)
-    min_cycles = windows_config.get('min_cycles', 3)
-    normalize_method = windows_config.get('normalize_method', 'zscore')
+    # Window parameters - Fixed to read correct config structure
+    if 'window' in windows_config:
+        window_s = windows_config['window'].get('size_seconds', 4.096)  # TTM default: 512 samples at 125Hz
+        stride_s = windows_config['window'].get('step_seconds', 4.096)
+    else:
+        # Fallback for old config format
+        window_s = windows_config.get('window_length_sec', 4.096)
+        stride_s = windows_config.get('stride_sec', 4.096)
+    
+    min_cycles = windows_config.get('quality', {}).get('min_cycles', 3)
+    normalize_method = windows_config.get('normalization', {}).get('method', 'zscore')
 
     # Get VitalDB track name
     track_mapping = {

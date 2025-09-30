@@ -8,7 +8,7 @@ model:
   
   # Model architecture parameters
   input_channels: 3  # ECG, PPG, ABP
-  context_length: 1250  # 10 seconds at 125 Hz
+  context_length: 512  # 4.096 seconds at 125 Hz (TTM default)
   patch_size: 16
   stride: 8
   

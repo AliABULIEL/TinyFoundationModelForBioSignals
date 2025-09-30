@@ -2,9 +2,9 @@
 
 # Window extraction parameters
 window:
-  size_seconds: 10.0        # 10-second windows (standard for HRV)
-  step_seconds: 10.0        # Non-overlapping by default
-  min_duration: 10.0        # Minimum valid signal duration
+  size_seconds: 4.096       # 4.096-second windows (512 samples at 125 Hz for TTM)
+  step_seconds: 4.096       # Non-overlapping by default
+  min_duration: 4.096       # Minimum valid signal duration
   
   # For training vs inference
   training:
