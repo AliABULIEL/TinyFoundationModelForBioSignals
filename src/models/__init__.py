@@ -32,6 +32,13 @@ from .lora import (
     print_lora_summary
 )
 
+from .channel_utils import (
+    load_pretrained_with_channel_inflate,
+    unfreeze_last_n_blocks,
+    verify_channel_inflation,
+    get_channel_inflation_report
+)
+
 # Conditional import for TTM
 try:
     from .ttm_adapter import (
@@ -69,6 +76,11 @@ __all__ = [
     'freeze_non_lora_parameters',
     'mark_lora_parameters',
     'print_lora_summary',
+    # Channel utilities
+    'load_pretrained_with_channel_inflate',
+    'unfreeze_last_n_blocks',
+    'verify_channel_inflation',
+    'get_channel_inflation_report',
     # TTM
     'TTMAdapter',
     'create_ttm_model',
