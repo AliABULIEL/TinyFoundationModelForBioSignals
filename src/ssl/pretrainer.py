@@ -265,10 +265,9 @@ class SSLTrainer:
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
         
         for batch_idx, batch in enumerate(pbar):
-            # Handle paired or single inputs
-            if isinstance(batch, (tuple, list)) and len(batch) == 2:
-                # Use first view for SSL
-                inputs, _ = batch
+            # Unpack batch - handle single tensors, tuples from TensorDataset, and paired inputs
+            if isinstance(batch, (tuple, list)):
+                inputs = batch[0]  # Use first element
             else:
                 inputs = batch
             
@@ -389,9 +388,9 @@ class SSLTrainer:
         
         with torch.no_grad():
             for batch in val_loader:
-                # Handle paired or single inputs
-                if isinstance(batch, (tuple, list)) and len(batch) == 2:
-                    inputs, _ = batch
+                # Unpack batch - handle single tensors, tuples from TensorDataset, and paired inputs
+                if isinstance(batch, (tuple, list)):
+                    inputs = batch[0]  # Use first element
                 else:
                     inputs = batch
                 
