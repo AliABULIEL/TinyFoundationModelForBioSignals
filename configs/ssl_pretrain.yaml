@@ -1,0 +1,109 @@
+# SSL Pretraining Configuration for VitalDB
+
+# SSL Strategy
+ssl:
+  mask_ratio: 0.4           # 40% of patches masked
+  mask_type: random         # random or block
+  patch_size: 125           # 1 second at 125 Hz
+  
+  # Multi-Resolution STFT Loss
+  stft:
+    enabled: true
+    n_ffts: [512, 1024, 2048]
+    hop_lengths: [128, 256, 512]
+    loss_weight: 0.3        # Weight relative to MSM loss (1.0)
+
+# Model Configuration
+model:
+  encoder: ibm-granite/granite-timeseries-ttm-r1
+  input_channels: 2         # PPG + ECG
+  context_length: 1250      # 10 seconds at 125 Hz
+  patch_size: 125           # 1 second patches -> 10 patches per window
+  d_model: 192              # TTM hidden dimension
+  
+  # Decoder for reconstruction
+  decoder:
+    type: reconstruction_head
+    n_channels: 2           # Match input channels
+
+# Training Configuration
+training:
+  # Optimizer
+  optimizer: adamw
+  lr: 5e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1e-8
+  
+  # Learning rate schedule
+  schedule: cosine
+  warmup_epochs: 10
+  min_lr: 1e-6
+  
+  # Training hyperparameters
+  batch_size: 128
+  epochs: 100
+  gradient_clip: 1.0
+  
+  # Mixed precision
+  amp: true
+  
+  # Validation
+  val_freq: 1               # Validate every N epochs
+  val_samples: 1000         # Number of validation samples
+
+# Data Configuration
+data:
+  channels: [PPG, ECG]
+  fs: 125
+  window_sec: 10.0
+  n_channels: 2
+  
+  # Data augmentation (during SSL pretraining)
+  augmentation:
+    enabled: true
+    modality_dropout: 0.25  # Randomly drop channels 25% of time
+    amplitude_scale: [0.8, 1.2]
+    time_shift: 0.1         # Shift by ±10% of window
+  
+  # Data loading
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+
+# Checkpoint Configuration
+checkpoint:
+  save_freq: 10             # Save every N epochs
+  keep_best_only: true      # Only keep best checkpoint
+  monitor: val_loss         # Metric to monitor
+  mode: min                 # min for loss, max for accuracy
+  
+  # Checkpoint naming
+  save_top_k: 3             # Keep top 3 checkpoints
+  every_n_epochs: 10        # Save intermediate checkpoints
+
+# Logging
+logging:
+  log_freq: 100             # Log every N steps
+  use_wandb: false          # Weights & Biases integration
+  use_tensorboard: true     # TensorBoard logging
+  
+  # Metrics to track
+  metrics:
+    - "train_loss"
+    - "train_msm_loss"
+    - "train_stft_loss"
+    - "val_loss"
+    - "val_msm_loss"
+    - "val_stft_loss"
+    - "learning_rate"
+
+# Distributed Training (optional)
+distributed:
+  enabled: false
+  backend: nccl             # nccl for GPU, gloo for CPU
+  world_size: 1
+  rank: 0
+
+# Random seed for reproducibility
+seed: 42

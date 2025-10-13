@@ -1,4 +1,4 @@
-"""Fixed TTM adapter with proper dimension handling for classification"""
+"""Fixed TTM adapter with proper dimension handling for classification and SSL"""
 
 import warnings
 from typing import Dict, List, Optional, Tuple, Union
@@ -35,7 +35,49 @@ from .lora import (
 
 
 class TTMAdapter(nn.Module):
-    """Adapter for TinyTimeMixers with proper dimension handling."""
+    """Adapter for TinyTimeMixers with proper dimension handling.
+    
+    Supports:
+    - SSL pretraining with masked signal modeling
+    - Downstream classification/regression tasks
+    - Flexible context_length and patch_size configuration
+    
+    Args:
+        variant: HuggingFace model ID (default: ibm-granite/granite-timeseries-ttm-r1)
+        task: Task type (classification, regression, prediction, ssl)
+        num_classes: Number of classes for classification
+        out_features: Output features for regression
+        head_type: Type of task head (linear, mlp, sequence)
+        head_config: Configuration dict for task head
+        freeze_encoder: Whether to freeze encoder weights
+        unfreeze_last_n_blocks: Number of final blocks to unfreeze
+        lora_config: LoRA configuration for parameter-efficient fine-tuning
+        input_channels: Number of input channels (2 for SSL, 5 for fine-tuning)
+        context_length: Input sequence length (default: 1250 for 10s @ 125Hz)
+        patch_size: Size of each patch in samples (default: 125 for 1s patches)
+        prediction_length: Output length for prediction tasks
+        use_real_ttm: Whether to use real TTM or fallback
+        decoder_mode: TTM decoder mode (mix_channel, etc.)
+    
+    Example:
+        >>> # SSL pretraining setup
+        >>> model = TTMAdapter(
+        ...     task='ssl',
+        ...     input_channels=2,
+        ...     context_length=1250,
+        ...     patch_size=125,
+        ...     freeze_encoder=False
+        ... )
+        
+        >>> # Fine-tuning setup
+        >>> model = TTMAdapter(
+        ...     task='classification',
+        ...     num_classes=2,
+        ...     input_channels=5,
+        ...     context_length=1250,
+        ...     freeze_encoder=True
+        ... )
+    """
     
     def __init__(
         self,
@@ -48,8 +90,9 @@ class TTMAdapter(nn.Module):
         freeze_encoder: bool = True,
         unfreeze_last_n_blocks: int = 0,
         lora_config: Optional[Union[Dict, LoRAConfig]] = None,
-        input_channels: int = 3,
-        context_length: int = 1250,  # 10 seconds at 125 Hz
+        input_channels: int = 2,
+        context_length: int = 1250,
+        patch_size: int = 125,
         prediction_length: int = 96,
         use_real_ttm: bool = True,
         decoder_mode: str = "mix_channel",
@@ -63,9 +106,21 @@ class TTMAdapter(nn.Module):
         self.unfreeze_last_n_blocks = unfreeze_last_n_blocks
         self.input_channels = input_channels
         self.context_length = context_length
+        self.patch_size = patch_size
         self.prediction_length = prediction_length
         self.using_real_ttm = False
         self.encoder_dim = 192  # TTM hidden size
+        
+        # Calculate number of patches
+        self.num_patches = context_length // patch_size
+        assert context_length % patch_size == 0, \
+            f"context_length ({context_length}) must be divisible by patch_size ({patch_size})"
+        
+        print(f"Initializing TTM with:")
+        print(f"  - Input channels: {input_channels}")
+        print(f"  - Context length: {context_length}")
+        print(f"  - Patch size: {patch_size}")
+        print(f"  - Number of patches: {self.num_patches}")
         
         # Initialize encoder
         if use_real_ttm and TTM_AVAILABLE:
@@ -75,7 +130,7 @@ class TTMAdapter(nn.Module):
             self._create_fallback_encoder()
         
         # Initialize task head for classification/regression
-        if task != "prediction":
+        if task not in ["prediction", "ssl"]:
             self._init_head(
                 task, num_classes, out_features,
                 head_type, head_config
@@ -92,11 +147,17 @@ class TTMAdapter(nn.Module):
             self._apply_lora(lora_config)
     
     def _init_real_ttm(self, model_id: str, decoder_mode: str, **kwargs):
-        """Initialize the REAL TTM model using tsfm_public."""
+        """Initialize the REAL TTM model using tsfm_public.
+        
+        Args:
+            model_id: HuggingFace model identifier
+            decoder_mode: Decoder configuration for TTM
+            **kwargs: Additional arguments passed to get_model
+        """
         try:
             print(f"Loading real TTM model: {model_id}")
             
-            # Load TTM model
+            # Load TTM model with correct configuration
             self.encoder = get_model(
                 model_id,
                 context_length=self.context_length,
@@ -117,6 +178,7 @@ class TTMAdapter(nn.Module):
             print(f"  Context length: {self.context_length}")
             print(f"  Input channels: {self.input_channels}")
             print(f"  Decoder mode: {decoder_mode}")
+            print(f"  Expected patches: {self.num_patches}")
             
         except Exception as e:
             warnings.warn(f"Failed to load real TTM: {e}")
@@ -128,28 +190,38 @@ class TTMAdapter(nn.Module):
         print("⚠️ Using fallback CNN encoder (not pre-trained TTM)")
         
         class SimpleCNNEncoder(nn.Module):
-            def __init__(self, input_channels, hidden_size=192):
+            def __init__(self, input_channels, hidden_size=192, context_length=1250):
                 super().__init__()
-                self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=7, stride=2)
+                self.context_length = context_length
+                self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=7, stride=2, padding=3)
                 self.bn1 = nn.BatchNorm1d(64)
-                self.conv2 = nn.Conv1d(64, 128, kernel_size=5, stride=2)
+                self.conv2 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
                 self.bn2 = nn.BatchNorm1d(128)
-                self.conv3 = nn.Conv1d(128, hidden_size, kernel_size=3, stride=2)
+                self.conv3 = nn.Conv1d(128, hidden_size, kernel_size=3, stride=2, padding=1)
                 self.bn3 = nn.BatchNorm1d(hidden_size)
                 self.pool = nn.AdaptiveAvgPool1d(1)
                 self.hidden_size = hidden_size
             
             def forward(self, x):
                 # Handle input shape [B, T, C] or [B, C, T]
-                if x.dim() == 3 and x.size(-1) == self.conv1.in_channels:
-                    x = x.transpose(1, 2)  # [B, T, C] -> [B, C, T]
+                if x.dim() == 3:
+                    if x.size(1) == self.context_length:
+                        # [B, T, C] -> [B, C, T]
+                        x = x.transpose(1, 2)
+                    elif x.size(-1) != self.context_length:
+                        # Assume [B, C, T] is correct
+                        pass
                 
                 x = torch.relu(self.bn1(self.conv1(x)))
                 x = torch.relu(self.bn2(self.conv2(x)))
                 x = torch.relu(self.bn3(self.conv3(x)))
                 return self.pool(x).squeeze(-1)
         
-        self.encoder = SimpleCNNEncoder(self.input_channels)
+        self.encoder = SimpleCNNEncoder(
+            self.input_channels,
+            hidden_size=self.encoder_dim,
+            context_length=self.context_length
+        )
         self.backbone = self.encoder
         self.using_real_ttm = False
     
@@ -171,8 +243,7 @@ class TTMAdapter(nn.Module):
             head_config['use_batch_norm'] = head_config.get('use_batch_norm', False)
         
         # Calculate input dimension for head
-        # For real TTM: channels * patches * hidden = 3 * 8 * 192 after flattening
-        # We'll pool this down to just hidden_dim
+        # After pooling: [batch, hidden_dim]
         input_dim = self.encoder_dim
         
         if task == "classification":
@@ -307,32 +378,31 @@ class TTMAdapter(nn.Module):
                     return outputs.prediction_outputs
                 return outputs
             
-            # For classification/regression, extract backbone features
+            # For classification/regression/SSL, extract backbone features
             backbone_output = self.backbone(x)
             
-            # Extract last_hidden_state: [batch, channels, patches, hidden]
+            # Extract last_hidden_state
+            # Expected shape: [batch, channels, patches, hidden]
+            # For context_length=1250, patch_size=125: [batch, input_channels, 10, 192]
             if hasattr(backbone_output, 'last_hidden_state'):
                 features = backbone_output.last_hidden_state
-                # Shape: [batch, 3, 8, 192]
                 
                 # Pool over channels and patches to get [batch, hidden]
-                # Option 1: Mean pool over channels and patches
-                features = features.mean(dim=[1, 2])  # [batch, 192]
+                # Average pooling maintains scale better than flattening
+                features = features.mean(dim=[1, 2])  # [batch, encoder_dim]
                 
-                # Alternative Option 2: Flatten and use linear projection
-                # batch_size = features.size(0)
-                # features = features.view(batch_size, -1)  # [batch, 3*8*192]
-                # Then you'd need a projection layer to reduce dimensionality
             else:
                 # Fallback if structure is different
                 features = backbone_output
                 if features.dim() > 2:
                     batch_size = features.size(0)
+                    # Reshape to [batch, -1]
                     features = features.view(batch_size, -1)
-                    # Take first encoder_dim dimensions
-                    features = features[:, :self.encoder_dim]
+                    # Project or select first encoder_dim dimensions
+                    if features.size(1) > self.encoder_dim:
+                        features = features[:, :self.encoder_dim]
             
-            # Pass through task head
+            # Pass through task head if not SSL
             if self.head is not None:
                 predictions = self.head(features)
             else:
@@ -351,6 +421,40 @@ class TTMAdapter(nn.Module):
             return predictions, features
         else:
             return predictions
+    
+    def get_encoder_output(self, x: torch.Tensor) -> torch.Tensor:
+        """Get encoder output for SSL pretraining.
+        
+        Args:
+            x: Input tensor [B, C, T] or [B, T, C]
+            
+        Returns:
+            Encoder features [B, P, D] where:
+                B = batch size
+                P = number of patches
+                D = encoder dimension (d_model)
+        """
+        if self.using_real_ttm:
+            # Real TTM expects [batch, time, channels]
+            if x.dim() == 3 and x.size(1) == self.input_channels:
+                x = x.transpose(1, 2)  # [B, C, T] -> [B, T, C]
+            
+            backbone_output = self.backbone(x)
+            
+            # Extract last_hidden_state
+            if hasattr(backbone_output, 'last_hidden_state'):
+                # Shape: [batch, channels, patches, hidden]
+                features = backbone_output.last_hidden_state
+                
+                # For SSL, we want per-patch features
+                # Average over channels: [batch, patches, hidden]
+                features = features.mean(dim=1)  # [B, P, D]
+                
+                return features
+            else:
+                raise ValueError("Backbone output doesn't have expected structure for SSL")
+        else:
+            raise NotImplementedError("SSL not supported with fallback encoder")
     
     def is_using_real_ttm(self) -> bool:
         """Check if using real TTM or fallback."""
@@ -373,6 +477,9 @@ class TTMAdapter(nn.Module):
         print("=" * 50)
         print(f"Using real TTM: {self.using_real_ttm}")
         print(f"Model variant: {self.variant}")
+        print(f"Context length: {self.context_length}")
+        print(f"Patch size: {self.patch_size}")
+        print(f"Number of patches: {self.num_patches}")
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
         print(f"Backbone parameters: {backbone_params:,}")
@@ -420,15 +527,31 @@ class TTMAdapter(nn.Module):
         print("=" * 50 + "\n")
 
 
-def create_ttm_model(config: Dict) -> TTMAdapter:
-    """Create TTM model from configuration dictionary.
+def create_ttm_model(config: Dict):
+    """Create model from configuration dictionary.
     
     Args:
-        config: Model configuration
-        
+        config: Model configuration containing:
+            - variant: Model variant string
+            - task: Task type (classification, regression, prediction, ssl)
+            - input_channels: Number of input channels
+            - context_length: Input sequence length
+            - patch_size: Patch size in samples
+            - num_classes: Number of classes (for classification)
+            - freeze_encoder: Whether to freeze encoder
+            - lora: LoRA configuration
+            
     Returns:
-        Configured TTMAdapter with real TTM
+        Configured TTMAdapter model
     """
+    # Check model type
+    model_type = config.get('model_type', 'ttm')
+    
+    if model_type == 'vae':
+        # Use VAE model
+        from .vae_adapter import VAEAdapter
+        return VAEAdapter(**config)
+    
     # Extract LoRA config if present
     lora_config = None
     if 'lora' in config and config['lora'].get('enabled', False):
@@ -454,8 +577,9 @@ def create_ttm_model(config: Dict) -> TTMAdapter:
         freeze_encoder=config.get('freeze_encoder', True),
         unfreeze_last_n_blocks=config.get('unfreeze_last_n_blocks', 0),
         lora_config=lora_config,
-        input_channels=config.get('input_channels', 3),
-        context_length=config.get('context_length', 1250),  # Default: 10s at 125 Hz
+        input_channels=config.get('input_channels', 2),
+        context_length=config.get('context_length', 1250),
+        patch_size=config.get('patch_size', 125),
         prediction_length=config.get('prediction_length', 96),
         use_real_ttm=True,  # Always try to use real TTM
         decoder_mode=config.get('decoder_mode', 'mix_channel')

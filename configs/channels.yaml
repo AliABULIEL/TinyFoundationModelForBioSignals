@@ -1,46 +1,101 @@
-# Fixed Channel Configuration for VitalDB Biosignals
+# Channel Configuration for Biosignals
 
-ECG:
-  vitaldb_track: "ECG_II"
-  sampling_rate: 125
-  original_rate: 500
-  filter:
-    type: "butter"  # FIXED: was "butterworth"
-    order: 4
-    lowcut: 0.5     # FIXED: renamed from low_freq
-    highcut: 40     # FIXED: renamed from high_freq
-  quality_metrics:
-    - "sqi"
-    - "bsqi"
-  min_quality: 0.9
-  type: "ecg"       # Added signal type
+# SSL Pretraining Configuration (VitalDB)
+pretrain:
+  channels: [PPG, ECG]
+  n_channels: 2
+  fs: 125
+  
+  # Channel specifications
+  ECG:
+    vitaldb_track: "ECG_II"
+    sampling_rate: 125
+    original_rate: 500
+    filter:
+      type: "butter"
+      order: 4
+      lowcut: 0.5
+      highcut: 40
+    quality_metrics:
+      - "sqi"
+      - "bsqi"
+    min_quality: 0.9
+    type: "ecg"
+      
+  PPG:
+    vitaldb_track: "PLETH"
+    sampling_rate: 125
+    original_rate: 100
+    filter:
+      type: "cheby2"
+      order: 4
+      lowcut: 0.4
+      highcut: 7
+      ripple_db: 20
+    quality_metrics:
+      - "ssqi"
+      - "psqi"
+    min_quality: 0.8
+    type: "ppg"
+
+# Fine-tuning Configuration (BUT-PPG)
+finetune:
+  channels: [ACC_X, ACC_Y, ACC_Z, PPG, ECG]
+  n_channels: 5
+  fs: 125
+  
+  # Channel specifications
+  ACC_X:
+    type: "accelerometer"
+    axis: "x"
+    sampling_rate: 125
+    filter:
+      type: "butter"
+      order: 4
+      lowcut: 0.5
+      highcut: 10
     
-PPG:
-  vitaldb_track: "PLETH"
-  sampling_rate: 125
-  original_rate: 100
-  filter:
-    type: "cheby2"   # Already correct
-    order: 4
-    lowcut: 0.4      # FIXED: renamed from low_freq
-    highcut: 7       # FIXED: renamed from high_freq
-    ripple_db: 20
-  quality_metrics:
-    - "ssqi"
-    - "psqi"
-  min_quality: 0.8
-  type: "ppg"        # Added signal type
+  ACC_Y:
+    type: "accelerometer"
+    axis: "y"
+    sampling_rate: 125
+    filter:
+      type: "butter"
+      order: 4
+      lowcut: 0.5
+      highcut: 10
     
-ABP:
-  vitaldb_track: "ABP"
-  sampling_rate: 125
-  original_rate: 100
-  filter:
-    type: "butter"   # FIXED: was "butterworth"
-    order: 4
-    lowcut: 0.5      # FIXED: renamed from low_freq
-    highcut: 20      # FIXED: renamed from high_freq
-  quality_metrics:
-    - "template_match"
-  min_quality: 0.85
-  type: "abp"        # Added signal type
+  ACC_Z:
+    type: "accelerometer"
+    axis: "z"
+    sampling_rate: 125
+    filter:
+      type: "butter"
+      order: 4
+      lowcut: 0.5
+      highcut: 10
+  
+  PPG:
+    type: "ppg"
+    sampling_rate: 125
+    filter:
+      type: "cheby2"
+      order: 4
+      lowcut: 0.4
+      highcut: 7
+      ripple_db: 20
+    quality_metrics:
+      - "ssqi"
+    min_quality: 0.7
+  
+  ECG:
+    type: "ecg"
+    sampling_rate: 125
+    filter:
+      type: "butter"
+      order: 4
+      lowcut: 0.5
+      highcut: 40
+    quality_metrics:
+      - "sqi"
+    min_quality: 0.8
