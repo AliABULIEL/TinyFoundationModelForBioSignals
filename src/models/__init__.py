@@ -17,6 +17,11 @@ from .heads import (
     SequenceClassifier
 )
 
+from .decoders import (
+    ReconstructionHead1D,
+    create_reconstruction_head
+)
+
 from .lora import (
     LoRALinear,
     LoRAConfig,
@@ -53,6 +58,9 @@ __all__ = [
     'MLPRegressor',
     'AttentionPooling',
     'SequenceClassifier',
+    # Decoders
+    'ReconstructionHead1D',
+    'create_reconstruction_head',
     # LoRA
     'LoRALinear',
     'LoRAConfig',
