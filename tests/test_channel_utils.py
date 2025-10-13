@@ -20,6 +20,28 @@ from src.models.channel_utils import (
 )
 
 
+class DummyBackbone(nn.Module):
+    """Dummy backbone with transformer blocks."""
+    
+    def __init__(self, hidden_dim: int = 64):
+        super().__init__()
+        # Transformer blocks
+        self.blocks = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=4,
+                dim_feedforward=hidden_dim * 4,
+                batch_first=True
+            )
+            for _ in range(4)
+        ])
+    
+    def forward(self, x):
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
 class DummyModel(nn.Module):
     """Dummy model for testing channel inflation."""
     
@@ -30,16 +52,8 @@ class DummyModel(nn.Module):
         # Input projection (channel-dependent)
         self.input_proj = nn.Linear(input_channels, hidden_dim)
         
-        # Transformer blocks (channel-independent)
-        self.blocks = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=hidden_dim,
-                nhead=4,
-                dim_feedforward=hidden_dim * 4,
-                batch_first=True
-            )
-            for _ in range(4)
-        ])
+        # Backbone with transformer blocks (channel-independent)
+        self.backbone = DummyBackbone(hidden_dim)
         
         # Output head
         self.head = nn.Linear(hidden_dim, 2)  # Binary classification
@@ -47,8 +61,7 @@ class DummyModel(nn.Module):
     def forward(self, x):
         # x: [batch, time, channels]
         x = self.input_proj(x)
-        for block in self.blocks:
-            x = block(x)
+        x = self.backbone(x)
         x = x.mean(dim=1)  # Average over time
         return self.head(x)
 
@@ -154,6 +167,10 @@ def test_unfreeze_last_n_blocks():
     # Check that some parameters are now trainable
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     assert len(trainable_params) > 0
+    
+    # Check that backbone has some trainable params
+    backbone_trainable = sum(p.numel() for p in model.backbone.parameters() if p.requires_grad)
+    assert backbone_trainable > 0
     
     print("✓ Unfreeze last N blocks test passed")
 
