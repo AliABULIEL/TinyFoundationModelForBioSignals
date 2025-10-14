@@ -275,8 +275,8 @@ class TrainerBase:
             avg_loss = total_loss / (i + 1)
             pbar.set_postfix(loss=avg_loss)
             
-            # Log at intervals
-            if (i + 1) % self.log_interval == 0:
+            # Log at intervals (only if significant)
+            if (i + 1) % max(self.log_interval, num_batches // 10) == 0:
                 logger.info(f"Epoch {epoch} [{i+1}/{num_batches}] - Loss: {avg_loss:.4f}")
         
         return {"loss": total_loss / num_batches}
@@ -355,7 +355,7 @@ class TrainerBase:
         Returns:
             Checkpoint dictionary
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         if "model_state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["model_state_dict"])

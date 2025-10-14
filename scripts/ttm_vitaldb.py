@@ -916,7 +916,7 @@ def test_command(args):
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Load model
-    checkpoint = torch.load(args.ckpt, map_location='cpu')
+    checkpoint = torch.load(args.ckpt, map_location='cpu', weights_only=False)
 
     # Recreate model architecture
     model_config['input_channels'] = test_data['data'].shape[2]

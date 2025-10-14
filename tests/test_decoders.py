@@ -2,7 +2,11 @@
 
 Tests ReconstructionHead1D for SSL masked autoencoder pretraining.
 """
+import sys
+from pathlib import Path
 
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 import torch
 import torch.nn as nn
