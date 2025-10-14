@@ -11,13 +11,9 @@ Features:
 - Subject-level train/val/test splits (no leakage)
 """
 
-import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 import warnings
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 import torch

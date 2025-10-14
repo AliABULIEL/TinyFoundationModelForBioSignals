@@ -25,9 +25,6 @@ from scipy import signal as scipy_signal
 import wfdb
 
 # Import unified preprocessing components
-import sys
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
 from .butppg_loader import BUTPPGLoader
 from .quality import compute_sqi
 
