@@ -1,4 +1,7 @@
 """Data processing modules for VitalDB signals and BUT PPG."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from .detect import find_ecg_rpeaks, find_ppg_peaks
 from .filters import (
