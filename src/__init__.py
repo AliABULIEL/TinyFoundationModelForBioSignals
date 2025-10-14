@@ -2,6 +2,9 @@
 
 __version__ = "0.1.0"
 
-from . import data, eval, models, utils
+# Don't automatically import submodules to avoid circular import issues
+# Import them explicitly when needed:
+#   from src.data.vitaldb_dataset import VitalDBDataset
+#   from src.models import TTMAdapter
 
-__all__ = ["data", "eval", "models", "utils", "__version__"]
+__all__ = ["__version__"]
