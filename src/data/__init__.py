@@ -40,6 +40,8 @@ from .windows import (
     make_windows,
     normalize_windows,
     validate_cardiac_cycles,
+    save_normalization_stats,
+    load_normalization_stats,
 )
 
 # BUT PPG imports
@@ -84,6 +86,8 @@ __all__ = [
     'normalize_windows',
     'validate_cardiac_cycles',
     'NormalizationStats',
+    'save_normalization_stats',
+    'load_normalization_stats',
     # Splits
     'make_patient_level_splits',
     'verify_no_subject_leakage',
