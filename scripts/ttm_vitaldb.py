@@ -361,12 +361,34 @@ def build_windows_multiprocess(args):
         
         for case_id in first_batch:
             windows, status = process_single_case((case_id, config_dict))
-            if windows is not None:
-                first_windows.extend(windows)
+            if windows is not None and len(windows) > 0:
+                # Validate and fix window shapes before adding
+                for w in windows:
+                    # Ensure window is 2D [T, C]
+                    if w.ndim == 1:
+                        w = w.reshape(-1, 1)
+                    elif w.ndim == 3:
+                        w = w.squeeze(0)
+                    
+                    # Validate shape matches expected dimensions
+                    expected_samples = int(window_s * 125)  # Assuming 125Hz
+                    if w.shape[0] == expected_samples:
+                        first_windows.append(w)
+                    else:
+                        logger.debug(f"Skipping window with shape {w.shape}, expected {expected_samples} samples")
         
         if first_windows:
-            # Compute stats
-            first_array = np.array(first_windows)
+            # Compute stats - windows should now have consistent shapes
+            try:
+                first_array = np.array(first_windows)
+            except ValueError as e:
+                logger.error(f"Shape inconsistency in windows: {e}")
+                logger.error(f"Window shapes: {[w.shape for w in first_windows[:5]]}")  # Show first 5
+                # Fallback: stack only windows that match the first window's shape
+                ref_shape = first_windows[0].shape
+                first_windows = [w for w in first_windows if w.shape == ref_shape]
+                first_array = np.array(first_windows)
+                logger.info(f"Filtered to {len(first_windows)} windows with consistent shape {ref_shape}")
             train_stats = compute_normalization_stats(
                 X=first_array,
                 method=normalize_method,
@@ -413,10 +435,20 @@ def build_windows_multiprocess(args):
         # Process results with progress bar
         for case_id, (windows, status) in zip(case_ids, tqdm(results, total=len(case_ids), 
                                                               desc=f"Processing {args.split}")):
-            if windows is not None:
+            if windows is not None and len(windows) > 0:
+                # Validate window shapes before adding
                 for w in windows:
-                    all_windows.append(w)
-                    all_labels.append(0)  # Placeholder label
+                    # Ensure window is 2D [T, C]
+                    if w.ndim == 1:
+                        w = w.reshape(-1, 1)
+                    elif w.ndim == 3:
+                        w = w.squeeze(0)
+                    
+                    # Only add if shape is valid
+                    expected_samples = int(window_s * 125)  # Assuming 125Hz
+                    if w.shape[0] == expected_samples:
+                        all_windows.append(w)
+                        all_labels.append(0)  # Placeholder label
                 successful_cases += 1
             else:
                 failed_cases.append((case_id, status))
@@ -434,8 +466,25 @@ def build_windows_multiprocess(args):
     
     # Save windows
     if all_windows:
-        windows_array = np.array(all_windows)
-        labels_array = np.array(all_labels)
+        # Final shape validation before creating array
+        try:
+            windows_array = np.array(all_windows)
+            labels_array = np.array(all_labels)
+        except ValueError as e:
+            logger.error(f"Shape inconsistency when creating final array: {e}")
+            logger.error(f"Sample shapes: {[w.shape for w in all_windows[:10]]}")
+            # Filter to consistent shape
+            ref_shape = all_windows[0].shape
+            logger.info(f"Filtering windows to shape {ref_shape}")
+            filtered_windows = []
+            filtered_labels = []
+            for w, l in zip(all_windows, all_labels):
+                if w.shape == ref_shape:
+                    filtered_windows.append(w)
+                    filtered_labels.append(l)
+            logger.info(f"Kept {len(filtered_windows)}/{len(all_windows)} windows with consistent shape")
+            windows_array = np.array(filtered_windows)
+            labels_array = np.array(filtered_labels)
         
         output_file = Path(args.outdir) / f'{args.split}_windows.npz'
         output_file.parent.mkdir(parents=True, exist_ok=True)
