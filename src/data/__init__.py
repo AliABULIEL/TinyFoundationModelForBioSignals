@@ -36,7 +36,6 @@ from .vitaldb_loader import list_cases, load_channel
 from .windows import (
     NormalizationStats,
     compute_normalization_stats,
-    create_sliding_windows,
     make_windows,
     normalize_windows,
     validate_cardiac_cycles,
@@ -84,7 +83,6 @@ __all__ = [
     'normalize_windows',
     'validate_cardiac_cycles',
     'NormalizationStats',
-    'create_sliding_windows',
     # Splits
     'make_patient_level_splits',
     'verify_no_subject_leakage',

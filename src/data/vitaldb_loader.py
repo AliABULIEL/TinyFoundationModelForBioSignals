@@ -162,8 +162,8 @@ def list_cases(
     max_cases: Optional[int] = None
 ) -> List[Dict[str, any]]:
     """List available VitalDB cases using robust method."""
-    if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
-        return _mock_list_cases(min_duration_hours, required_channels)
+    if not VITALDB_AVAILABLE:
+        raise ImportError("VitalDB package not installed. Install with: pip install vitaldb")
     
     # Try using find_cases for specific channels
     if required_channels and len(required_channels) > 0:
@@ -206,8 +206,8 @@ def load_channel(
     Load a single channel from VitalDB case using robust API.
     FIXED: Uses vitaldb.load_case() instead of VitalFile to avoid track errors.
     """
-    if os.environ.get('VITALDB_MOCK', '0') == '1' or not VITALDB_AVAILABLE:
-        return _mock_load_channel(case_id, channel)
+    if not VITALDB_AVAILABLE:
+        raise ImportError("VitalDB package not installed. Install with: pip install vitaldb")
     
     try:
         case_id_int = int(case_id)
@@ -320,19 +320,3 @@ def load_channel(
         
     except Exception as e:
         raise ValueError(f"Error loading channel '{channel}' from case {case_id}: {e}")
-
-
-def _mock_list_cases(min_duration_hours: float = 0.5,
-                     required_channels: Optional[List[str]] = None) -> List[Dict]:
-    """Mock case list for testing."""
-    return [{'case_id': str(i), 'subject_id': str(i), 
-             'available_channels': ['PLETH'], 'duration_s': 3600} 
-            for i in range(1, 6)]
-
-
-def _mock_load_channel(case_id: str, channel: str) -> Tuple[np.ndarray, float]:
-    """Mock channel loading."""
-    fs = 100.0
-    t = np.arange(0, 10, 1/fs)
-    signal = np.sin(2 * np.pi * 1.2 * t) + 0.3 * np.sin(4 * np.pi * 1.2 * t)
-    return signal, fs
