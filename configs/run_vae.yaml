@@ -1,0 +1,62 @@
+# Run Configuration for VAE Training
+
+# General settings
+seed: 42
+device: cuda  # or 'cpu' if no GPU
+
+# Training hyperparameters
+batch_size: 32
+learning_rate: 0.001  # For unsupervised pretraining
+learning_rate_finetune: 0.0001  # For supervised fine-tuning
+weight_decay: 0.0001
+grad_clip: 1.0
+
+# VAE pretraining settings
+vae_pretrain_epochs: 50  # Unsupervised reconstruction training
+kl_annealing: true       # Gradually increase KL weight
+min_kl_weight: 0.01      # Start with low KL weight
+max_kl_weight: 1.0       # End with full KL weight
+annealing_epochs: 10     # Epochs to anneal over
+
+# Supervised fine-tuning settings
+num_epochs: 30           # For downstream task training
+vae_loss_weight: 0.1     # Weight VAE loss during fine-tuning (0 to disable)
+freeze_after_pretrain: true  # Freeze encoder after pretraining
+
+# Optimization
+optimizer: adam
+scheduler: reduce_on_plateau
+patience: 5
+factor: 0.5
+min_lr: 0.00001
+
+# Monitoring
+log_interval: 10
+save_best: true
+save_every: 10
+
+# Data augmentation (optional)
+augmentation:
+  enabled: false
+  noise_std: 0.01
+  scale_range: [0.9, 1.1]
+  shift_range: [-0.1, 0.1]
+
+# Early stopping
+early_stopping: true
+early_stopping_patience: 15
+min_delta: 0.0001
+
+# Evaluation settings
+eval_batch_size: 64
+compute_metrics: true
+save_predictions: true
+
+# Memory optimization
+gradient_accumulation_steps: 1
+mixed_precision: false  # Set to true for faster training with AMP
+
+# Distributed training (multi-GPU)
+distributed: false
+world_size: 1
+rank: 0
