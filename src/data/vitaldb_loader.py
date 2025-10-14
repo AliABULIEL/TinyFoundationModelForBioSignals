@@ -251,7 +251,20 @@ def load_channel(
                 data = vitaldb.load_case(case_id_int, [track])
                 
                 if data is not None and len(data) > 0:
-                    signal = data
+                    # vitaldb.load_case returns a DataFrame - extract the column
+                    if isinstance(data, pd.DataFrame):
+                        if track in data.columns:
+                            signal = data[track].values
+                        else:
+                            # Try finding column by name
+                            matching_cols = [c for c in data.columns if track.split('/')[-1] in c]
+                            if matching_cols:
+                                signal = data[matching_cols[0]].values
+                            else:
+                                signal = data.iloc[:, 0].values
+                    else:
+                        signal = data
+                    
                     actual_track = track
                     print(f"   ✓ Loaded from {track}")
                     break
