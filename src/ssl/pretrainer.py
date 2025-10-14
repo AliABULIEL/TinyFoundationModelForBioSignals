@@ -125,7 +125,7 @@ class SSLTrainer:
         self,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        num_epochs: int = 100,
+        qnum_epochs: int = 100,
         save_dir: str = 'artifacts/foundation_model',
         mask_ratio: float = 0.4,
         log_interval: int = 50,

@@ -12,7 +12,16 @@ import pandas as pd
 
 # Configure SSL for VitalDB access
 try:
+    # This helps with SSL certificate issues on macOS
     ssl._create_default_https_context = ssl._create_unverified_context
+    
+    # Also try to use certifi if available
+    try:
+        import certifi
+        os.environ['SSL_CERT_FILE'] = certifi.where()
+        os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    except ImportError:
+        pass
 except:
     pass
 

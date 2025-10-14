@@ -1,316 +1,350 @@
 """
-Windowing and normalization for biosignals.
+Windowing and normalization utilities for biosignal data.
 
-Evidence-aligned: 10-second non-overlapping windows with ≥3 cardiac cycles.
-Normalization using train stats only to prevent leakage.
+This module provides functions to:
+- Create fixed-size windows from continuous signals
+- Validate windows contain sufficient cardiac cycles  
+- Normalize windows using various strategies
+- Apply train-only statistics for proper test set evaluation
+
+Key Functions:
+    make_windows: Create 10-second windows from continuous signals
+    validate_cardiac_cycles: Ensure windows have ≥3 cardiac cycles
+    compute_normalization_stats: Calculate train set statistics
+    normalize_windows: Apply normalization with train-only stats
 """
 
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
-import warnings
+from typing import Dict, List, Optional, Tuple, Union
 
-from ..utils.io import load_yaml, save_npz
+import numpy as np
+from scipy import signal as scipy_signal
+
 from .detect import find_ecg_rpeaks, find_ppg_peaks
 
 
 @dataclass
 class NormalizationStats:
-    """Statistics for normalization."""
-    mean: np.ndarray
-    std: np.ndarray
-    min: Optional[np.ndarray] = None
-    max: Optional[np.ndarray] = None
-    method: str = "zscore"
+    """Statistics for normalization computed from training data only."""
+    
+    mean: Dict[str, float]
+    std: Dict[str, float]
+    min: Optional[Dict[str, float]] = None
+    max: Optional[Dict[str, float]] = None
+    patient_stats: Optional[Dict[str, Dict[str, Tuple[float, float]]]] = None
     
     def to_dict(self) -> Dict:
-        """Convert to dictionary for saving."""
+        """Convert to dictionary for serialization."""
         return {
             'mean': self.mean,
             'std': self.std,
             'min': self.min,
             'max': self.max,
-            'method': self.method
+            'patient_stats': self.patient_stats
         }
     
     @classmethod
-    def from_dict(cls, d: Dict) -> 'NormalizationStats':
-        """Create from dictionary."""
-        return cls(**d)
+    def from_dict(cls, data: Dict) -> 'NormalizationStats':
+        """Load from dictionary."""
+        return cls(**data)
 
 
 def make_windows(
-    X_tc: np.ndarray,
+    X: np.ndarray,
     fs: float,
     win_s: float = 10.0,
     stride_s: float = 10.0,
     min_cycles: int = 3,
-    peaks_tc: Optional[Dict[int, np.ndarray]] = None,
-    return_indices: bool = False
-) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    signal_type: str = 'ecg'
+) -> Tuple[np.ndarray, List[bool]]:
     """
-    Create fixed-size windows from time series data.
+    Create fixed-size windows from continuous signal.
     
     Args:
-        X_tc: Input data [time, channels]
+        X: Input signal array of shape (n_samples,) or (n_samples, n_channels)
         fs: Sampling frequency in Hz
-        win_s: Window size in seconds (default 10.0)
-        stride_s: Stride in seconds (default 10.0 for non-overlapping)
-        min_cycles: Minimum cardiac cycles per window (default 3)
-        peaks_tc: Optional dict of channel -> peak indices for cycle validation
-        return_indices: If True, also return start indices
+        win_s: Window size in seconds (default: 10s)
+        stride_s: Stride between windows in seconds (default: 10s, non-overlapping)
+        min_cycles: Minimum cardiac cycles per window (default: 3)
+        signal_type: Type of signal for peak detection ('ecg' or 'ppg')
         
     Returns:
-        W_ntc: Windowed data [n_windows, time_samples, channels]
-        indices: Start indices if return_indices=True
+        windows: Array of shape (n_windows, window_samples) or (n_windows, window_samples, n_channels)
+        valid_mask: Boolean mask indicating which windows have sufficient cycles
+        
+    Example:
+        >>> signal = np.random.randn(1250)  # 10s at 125 Hz
+        >>> windows, valid = make_windows(signal, fs=125, win_s=10)
+        >>> assert windows.shape[0] == 1
+        >>> assert windows.shape[1] == 1250
     """
-    if X_tc.ndim != 2:
-        raise ValueError(f"Expected 2D input [time, channels], got shape {X_tc.shape}")
+    # Ensure 2D array
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
     
-    T, C = X_tc.shape
+    n_samples, n_channels = X.shape
+    
+    # Calculate window parameters
     win_samples = int(win_s * fs)
     stride_samples = int(stride_s * fs)
     
     # Calculate number of windows
-    n_windows = (T - win_samples) // stride_samples + 1
+    n_windows = (n_samples - win_samples) // stride_samples + 1
+    
     if n_windows <= 0:
-        warnings.warn(f"Signal too short for windowing: {T} samples < {win_samples} window")
-        return np.array([]).reshape(0, win_samples, C)
+        return np.array([]), []
     
     # Create windows
     windows = []
-    valid_indices = []
+    valid_mask = []
     
     for i in range(n_windows):
-        start_idx = i * stride_samples
-        end_idx = start_idx + win_samples
+        start = i * stride_samples
+        end = start + win_samples
         
-        if end_idx > T:
+        if end > n_samples:
             break
             
-        window = X_tc[start_idx:end_idx]
-        
-        # Check minimum cycles if peaks provided
-        if peaks_tc is not None and min_cycles > 0:
-            valid = False
-            for ch_idx, peaks in peaks_tc.items():
-                if ch_idx < C:
-                    # Count peaks in this window
-                    window_peaks = peaks[(peaks >= start_idx) & (peaks < end_idx)]
-                    if len(window_peaks) >= min_cycles:
-                        valid = True
-                        break
-            
-            if not valid:
-                continue
-        
+        window = X[start:end]
         windows.append(window)
-        valid_indices.append(start_idx)
-    
-    if len(windows) == 0:
-        warnings.warn(f"No valid windows found (min_cycles={min_cycles})")
-        return np.array([]).reshape(0, win_samples, C)
-    
-    W_ntc = np.stack(windows, axis=0)
-    
-    if return_indices:
-        return W_ntc, np.array(valid_indices)
-    return W_ntc
-
-
-def compute_normalization_stats(
-    X: np.ndarray,
-    method: str = "zscore",
-    axis: Optional[Union[int, Tuple[int, ...]]] = (0,),
-    robust: bool = False
-) -> NormalizationStats:
-    """
-    Compute normalization statistics from training data.
-    
-    Args:
-        X: Input data
-        method: Normalization method ('zscore', 'minmax', 'patient_zscore')
-        axis: Axis/axes to compute stats over (None = all)
-        robust: Use median/MAD instead of mean/std for zscore
         
-    Returns:
-        NormalizationStats object
-    """
-    if method == "zscore" or method == "patient_zscore":
-        if robust:
-            # Use median and MAD for robust estimation
-            median = np.median(X, axis=axis, keepdims=True)
-            mad = np.median(np.abs(X - median), axis=axis, keepdims=True)
-            # Scale MAD to approximate std
-            std = mad * 1.4826
-            mean = np.squeeze(median)
-            std = np.squeeze(std)
-        else:
-            mean = np.mean(X, axis=axis, keepdims=False) if axis is not None else np.mean(X)
-            std = np.std(X, axis=axis, keepdims=False) if axis is not None else np.std(X)
-            # Avoid division by zero
-            std = np.where(std < 1e-8, 1.0, std) if isinstance(std, np.ndarray) else max(std, 1e-8)
-        
-        return NormalizationStats(mean=mean, std=std, method=method)
-    
-    elif method == "minmax":
-        min_val = np.min(X, axis=axis, keepdims=False) if axis is not None else np.min(X)
-        max_val = np.max(X, axis=axis, keepdims=False) if axis is not None else np.max(X)
-        # Avoid division by zero
-        range_val = max_val - min_val
-        range_val = np.where(range_val < 1e-8, 1.0, range_val) if isinstance(range_val, np.ndarray) else max(range_val, 1e-8)
-        
-        return NormalizationStats(
-            mean=min_val,  # Store min as mean for consistency
-            std=range_val,  # Store range as std
-            min=min_val,
-            max=max_val,
-            method=method
+        # Validate cardiac cycles for first channel (primary signal)
+        is_valid = validate_cardiac_cycles(
+            window[:, 0],
+            fs,
+            min_cycles=min_cycles,
+            signal_type=signal_type
         )
+        valid_mask.append(is_valid)
     
-    else:
-        raise ValueError(f"Unknown normalization method: {method}")
-
-
-def normalize_windows(
-    W_ntc: np.ndarray,
-    stats: NormalizationStats,
-    baseline_correction: bool = True,
-    per_channel: bool = True
-) -> np.ndarray:
-    """
-    Normalize windows using precomputed statistics.
+    # Stack windows
+    windows = np.array(windows)
     
-    Args:
-        W_ntc: Windowed data [n_windows, time, channels]
-        stats: Normalization statistics from training data
-        baseline_correction: Apply baseline correction per window
-        per_channel: Apply normalization per channel
-        
-    Returns:
-        Normalized windows
-    """
-    W_norm = W_ntc.copy()
+    # Reshape if single channel
+    if n_channels == 1:
+        windows = windows.squeeze(axis=-1)
     
-    # Baseline correction (per window)
-    if baseline_correction:
-        # Subtract mean of first 10% of samples
-        baseline_samples = max(1, W_ntc.shape[1] // 10)
-        baseline = np.mean(W_norm[:, :baseline_samples, :], axis=1, keepdims=True)
-        W_norm = W_norm - baseline
-    
-    # Apply normalization
-    if stats.method == "zscore":
-        if per_channel:
-            # Broadcast stats to match window dimensions
-            mean = stats.mean.reshape(1, 1, -1) if stats.mean.ndim == 1 else stats.mean
-            std = stats.std.reshape(1, 1, -1) if stats.std.ndim == 1 else stats.std
-        else:
-            mean = stats.mean
-            std = stats.std
-        
-        W_norm = (W_norm - mean) / std
-        
-    elif stats.method == "minmax":
-        min_val = stats.min.reshape(1, 1, -1) if per_channel and stats.min.ndim == 1 else stats.min
-        range_val = stats.std.reshape(1, 1, -1) if per_channel and stats.std.ndim == 1 else stats.std
-        
-        W_norm = (W_norm - min_val) / range_val
-        
-    elif stats.method == "patient_zscore":
-        # Compute patient-specific stats
-        patient_mean = np.mean(W_norm, axis=(1, 2), keepdims=True)
-        patient_std = np.std(W_norm, axis=(1, 2), keepdims=True)
-        patient_std = np.where(patient_std < 1e-8, 1.0, patient_std)
-        
-        W_norm = (W_norm - patient_mean) / patient_std
-    
-    return W_norm
+    return windows, valid_mask
 
 
 def validate_cardiac_cycles(
-    signal: np.ndarray,
+    window: np.ndarray,
     fs: float,
-    signal_type: str = "ecg",
-    min_cycles: int = 3
-) -> Tuple[bool, int]:
+    min_cycles: int = 3,
+    signal_type: str = 'ecg'
+) -> bool:
     """
-    Validate that a signal contains minimum cardiac cycles.
+    Validate that a window contains sufficient cardiac cycles.
     
     Args:
-        signal: 1D signal array
-        fs: Sampling frequency
+        window: Signal window array
+        fs: Sampling frequency in Hz
+        min_cycles: Minimum required cardiac cycles
         signal_type: Type of signal ('ecg' or 'ppg')
-        min_cycles: Minimum required cycles
         
     Returns:
-        (is_valid, n_cycles)
+        True if window has at least min_cycles cardiac cycles
+        
+    Example:
+        >>> # Create synthetic signal with 5 R-peaks
+        >>> fs = 125
+        >>> t = np.linspace(0, 10, int(10 * fs))
+        >>> signal = np.zeros_like(t)
+        >>> for i in range(5):
+        ...     peak_idx = int((i * 2 + 1) * fs)  # Peak every 2 seconds
+        ...     if peak_idx < len(signal):
+        ...         signal[peak_idx] = 1.0
+        >>> is_valid = validate_cardiac_cycles(signal, fs, min_cycles=3)
+        >>> assert is_valid  # Should have at least 3 cycles
     """
     try:
-        if signal_type.lower() == "ecg":
-            peaks, _ = find_ecg_rpeaks(signal, fs)
-        elif signal_type.lower() == "ppg":
-            peaks = find_ppg_peaks(signal, fs)
+        # Find peaks based on signal type
+        if signal_type.lower() == 'ecg':
+            peaks = find_ecg_rpeaks(window, fs)
+        elif signal_type.lower() == 'ppg':
+            peaks = find_ppg_peaks(window, fs)
         else:
-            return True, -1  # Unknown type, assume valid
+            # Default to simple peak finding
+            height = np.percentile(np.abs(window), 75)
+            peaks, _ = scipy_signal.find_peaks(
+                np.abs(window),
+                height=height,
+                distance=int(0.4 * fs)  # Min 0.4s between peaks
+            )
         
-        n_cycles = len(peaks)
-        return n_cycles >= min_cycles, n_cycles
+        # Check if we have enough peaks (cycles)
+        return len(peaks) >= min_cycles
         
     except Exception:
-        # If detection fails, be conservative
-        return False, 0
+        # If peak detection fails, be conservative
+        return False
 
 
-def create_sliding_windows(
-    X_tc: np.ndarray,
-    fs: float,
-    window_s: float = 30.0,
-    overlap: float = 0.5
-) -> np.ndarray:
+def compute_normalization_stats(
+    windows: np.ndarray,
+    channel_names: List[str],
+    patient_ids: Optional[List[str]] = None,
+    compute_patient_stats: bool = False
+) -> NormalizationStats:
     """
-    Create overlapping windows for inference.
+    Compute normalization statistics from training windows.
     
     Args:
-        X_tc: Input data [time, channels]
-        fs: Sampling frequency
-        window_s: Window size in seconds
-        overlap: Overlap fraction (0.5 = 50% overlap)
+        windows: Array of shape (n_windows, window_samples, n_channels)
+        channel_names: List of channel names
+        patient_ids: Optional list of patient IDs for each window
+        compute_patient_stats: Whether to compute per-patient statistics
         
     Returns:
-        Windows [n_windows, samples, channels]
+        NormalizationStats object with computed statistics
+        
+    Example:
+        >>> windows = np.random.randn(100, 1250, 2)  # 100 windows, 2 channels
+        >>> stats = compute_normalization_stats(windows, ['ecg', 'ppg'])
+        >>> assert 'ecg' in stats.mean
+        >>> assert 'ppg' in stats.std
     """
-    stride_s = window_s * (1 - overlap)
-    return make_windows(X_tc, fs, window_s, stride_s, min_cycles=0)
+    if windows.ndim == 2:
+        windows = windows[:, :, np.newaxis]
+    
+    n_windows, window_samples, n_channels = windows.shape
+    
+    if len(channel_names) != n_channels:
+        raise ValueError(f"Number of channel names ({len(channel_names)}) doesn't match channels ({n_channels})")
+    
+    # Initialize stats dictionaries
+    mean = {}
+    std = {}
+    min_vals = {}
+    max_vals = {}
+    patient_stats = {} if compute_patient_stats and patient_ids else None
+    
+    # Compute global statistics per channel
+    for i, channel in enumerate(channel_names):
+        channel_data = windows[:, :, i].flatten()
+        mean[channel] = float(np.mean(channel_data))
+        std[channel] = float(np.std(channel_data))
+        min_vals[channel] = float(np.min(channel_data))
+        max_vals[channel] = float(np.max(channel_data))
+    
+    # Compute per-patient statistics if requested
+    if compute_patient_stats and patient_ids:
+        unique_patients = np.unique(patient_ids)
+        for patient in unique_patients:
+            patient_mask = np.array(patient_ids) == patient
+            patient_windows = windows[patient_mask]
+            
+            patient_stats[patient] = {}
+            for i, channel in enumerate(channel_names):
+                patient_data = patient_windows[:, :, i].flatten()
+                patient_mean = float(np.mean(patient_data))
+                patient_std = float(np.std(patient_data))
+                patient_stats[patient][channel] = (patient_mean, patient_std)
+    
+    return NormalizationStats(
+        mean=mean,
+        std=std,
+        min=min_vals,
+        max=max_vals,
+        patient_stats=patient_stats
+    )
 
 
-def aggregate_window_predictions(
-    predictions: np.ndarray,
-    overlap: float = 0.5,
-    method: str = "mean"
+def normalize_windows(
+    windows: np.ndarray,
+    stats: NormalizationStats,
+    channel_names: List[str],
+    method: str = 'zscore',
+    patient_ids: Optional[List[str]] = None
 ) -> np.ndarray:
     """
-    Aggregate predictions from overlapping windows.
+    Normalize windows using pre-computed training statistics.
     
     Args:
-        predictions: Window predictions [n_windows, ...]
-        overlap: Overlap fraction used in windowing
-        method: Aggregation method ('mean', 'median', 'max')
+        windows: Array of shape (n_windows, window_samples, n_channels)
+        stats: Pre-computed normalization statistics from training set
+        channel_names: List of channel names
+        method: Normalization method ('zscore', 'patient_zscore', 'minmax', 'ppg_minmax')
+        patient_ids: Patient IDs for patient-level normalization
         
     Returns:
-        Aggregated predictions
+        Normalized windows array
+        
+    Example:
+        >>> windows = np.random.randn(10, 1250, 2) * 10 + 5
+        >>> stats = NormalizationStats(
+        ...     mean={'ecg': 5.0, 'ppg': 5.0},
+        ...     std={'ecg': 10.0, 'ppg': 10.0},
+        ...     min={'ecg': -30.0, 'ppg': -30.0},
+        ...     max={'ecg': 35.0, 'ppg': 35.0}
+        ... )
+        >>> norm_windows = normalize_windows(windows, stats, ['ecg', 'ppg'], method='zscore')
+        >>> assert np.abs(np.mean(norm_windows)) < 1.0  # Should be close to 0
     """
-    if method == "mean":
-        return np.mean(predictions, axis=0)
-    elif method == "median":
-        return np.median(predictions, axis=0)
-    elif method == "max":
-        return np.max(predictions, axis=0)
+    if windows.ndim == 2:
+        windows = windows[:, :, np.newaxis]
+        squeeze_output = True
     else:
-        raise ValueError(f"Unknown aggregation method: {method}")
+        squeeze_output = False
+    
+    n_windows, window_samples, n_channels = windows.shape
+    normalized = windows.copy()
+    
+    if len(channel_names) != n_channels:
+        raise ValueError(f"Number of channel names ({len(channel_names)}) doesn't match channels ({n_channels})")
+    
+    for i, channel in enumerate(channel_names):
+        if method == 'zscore':
+            # Standard z-score normalization using train stats
+            normalized[:, :, i] = (windows[:, :, i] - stats.mean[channel]) / (stats.std[channel] + 1e-8)
+            
+        elif method == 'patient_zscore':
+            # Patient-specific z-score normalization
+            if not patient_ids or not stats.patient_stats:
+                # Fall back to global zscore
+                normalized[:, :, i] = (windows[:, :, i] - stats.mean[channel]) / (stats.std[channel] + 1e-8)
+            else:
+                for j, patient_id in enumerate(patient_ids):
+                    if patient_id in stats.patient_stats and channel in stats.patient_stats[patient_id]:
+                        p_mean, p_std = stats.patient_stats[patient_id][channel]
+                        normalized[j, :, i] = (windows[j, :, i] - p_mean) / (p_std + 1e-8)
+                    else:
+                        # Use global stats as fallback
+                        normalized[j, :, i] = (windows[j, :, i] - stats.mean[channel]) / (stats.std[channel] + 1e-8)
+                        
+        elif method == 'minmax':
+            # Min-max normalization to [0, 1]
+            range_val = stats.max[channel] - stats.min[channel]
+            if range_val > 0:
+                normalized[:, :, i] = (windows[:, :, i] - stats.min[channel]) / range_val
+            else:
+                normalized[:, :, i] = 0.0
+                
+        elif method == 'ppg_minmax' and channel.lower() in ['ppg', 'pleth']:
+            # Special min-max for PPG signals
+            range_val = stats.max[channel] - stats.min[channel]
+            if range_val > 0:
+                normalized[:, :, i] = (windows[:, :, i] - stats.min[channel]) / range_val
+            else:
+                normalized[:, :, i] = 0.0
+        elif method == 'ppg_minmax':
+            # For non-PPG channels when using ppg_minmax, use zscore
+            normalized[:, :, i] = (windows[:, :, i] - stats.mean[channel]) / (stats.std[channel] + 1e-8)
+        else:
+            raise ValueError(f"Unknown normalization method: {method}")
+    
+    if squeeze_output:
+        normalized = normalized.squeeze(axis=-1)
+    
+    return normalized
 
 
-# Load window config
-def load_window_config(config_path: str = "configs/windows.yaml") -> Dict:
-    """Load window configuration."""
-    return load_yaml(config_path)
+def save_normalization_stats(stats: NormalizationStats, path: str) -> None:
+    """Save normalization statistics to a numpy file."""
+    np.save(path, stats.to_dict())
+
+
+def load_normalization_stats(path: str) -> NormalizationStats:
+    """Load normalization statistics from a numpy file."""
+    data = np.load(path, allow_pickle=True).item()
+    return NormalizationStats.from_dict(data)

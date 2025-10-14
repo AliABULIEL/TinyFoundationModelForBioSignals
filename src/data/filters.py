@@ -67,7 +67,7 @@ def apply_bandpass_filter(
 
 
 def design_ppg_filter(fs: float) -> Tuple[np.ndarray, np.ndarray]:
-    """Design PPG filter: Chebyshev Type II order 4, bandpass 0.4-7.0 Hz.
+    """Design PPG filter: Chebyshev Type II order 4, bandpass 0.5-8.0 Hz.
     
     Args:
         fs: Sampling frequency in Hz.
@@ -76,8 +76,8 @@ def design_ppg_filter(fs: float) -> Tuple[np.ndarray, np.ndarray]:
         Tuple of (b, a) filter coefficients.
     """
     nyquist = fs / 2
-    low = 0.4 / nyquist
-    high = 7.0 / nyquist
+    low = 0.5 / nyquist
+    high = 8.0 / nyquist
     
     # Chebyshev Type II with 20 dB stopband ripple
     b, a = signal.cheby2(
@@ -354,9 +354,9 @@ def get_filter_specs(filter_type: str) -> dict:
         'ppg': {
             'type': 'cheby2',
             'order': 4,
-            'passband': [0.4, 7.0],
+            'passband': [0.5, 8.0],
             'stopband_ripple_db': 20,
-            'description': 'PPG Chebyshev Type II bandpass 0.4-7.0 Hz'
+            'description': 'PPG Chebyshev Type II bandpass 0.5-8.0 Hz'
         },
         'ecg': {
             'type': 'butter',

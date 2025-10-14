@@ -1,7 +1,14 @@
-"""BUT PPG Dataset with unified preprocessing matching VitalDB.
+"""BUT PPG Dataset with multi-modal support.
 
-This dataset ensures BUT PPG uses IDENTICAL preprocessing as VitalDB
-for proper transfer learning.
+This dataset supports loading multiple modalities from BUT PPG:
+- PPG (photoplethysmography) 
+- ECG (electrocardiogram)
+- ACC (accelerometer - 3 axes)
+
+Features:
+- Multi-modal loading (PPG + ECG + ACC)
+- Participant-level positive pairs (same participant, different recordings)
+- Unified preprocessing matching VitalDB for transfer learning
 """
 
 import hashlib
@@ -9,623 +16,572 @@ import json
 import warnings
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from scipy import signal as scipy_signal
+import wfdb
 
 # Import unified preprocessing components
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-try:
-    # Try to import from biosignal module if available
-    from biosignal.data import WaveformQualityControl, SPEC_VERSION
-    BIOSIGNAL_AVAILABLE = True
-except ImportError:
-    BIOSIGNAL_AVAILABLE = False
-    SPEC_VERSION = "v1.0-2025-09"
-    warnings.warn("biosignal module not available, using local WaveformQualityControl")
-
 from .butppg_loader import BUTPPGLoader
-
-
-# If biosignal not available, create local QC
-if not BIOSIGNAL_AVAILABLE:
-    class WaveformQualityControl:
-        """Local copy of quality control for BUT PPG."""
-        
-        @staticmethod
-        def check_flatline(signal: np.ndarray, variance_threshold: float = 0.01, 
-                           consecutive_threshold: int = 50) -> bool:
-            if len(signal) == 0:
-                return True
-            if np.var(signal) < variance_threshold:
-                return True
-            if len(signal) > consecutive_threshold:
-                diff = np.diff(signal)
-                change_indices = np.where(np.abs(diff) > 1e-10)[0]
-                if len(change_indices) == 0:
-                    return True
-                elif len(change_indices) == 1:
-                    return max(change_indices[0], len(signal) - change_indices[0] - 1) > consecutive_threshold
-                else:
-                    gaps = np.diff(change_indices)
-                    if len(gaps) > 0 and np.max(gaps) > consecutive_threshold:
-                        return True
-            return False
-        
-        @staticmethod
-        def check_spikes(signal: np.ndarray, z_threshold: float = 3.0, 
-                         consecutive_samples: int = 5) -> np.ndarray:
-            if len(signal) < consecutive_samples:
-                return np.zeros(len(signal), dtype=bool)
-            mean = np.mean(signal)
-            std = np.std(signal)
-            if std < 1e-8:
-                return np.zeros(len(signal), dtype=bool)
-            z_scores = np.abs((signal - mean) / std)
-            large_spikes = z_scores > 6.0
-            moderate_mask = z_scores > z_threshold
-            consecutive_spikes = np.convolve(moderate_mask.astype(float), 
-                                            np.ones(consecutive_samples), 'same') >= consecutive_samples
-            return large_spikes | consecutive_spikes
-        
-        @staticmethod
-        def check_physiologic_bounds(signal: np.ndarray, signal_type: str) -> np.ndarray:
-            bounds = {
-                'hr': (30, 200),
-                'ppg': (-5, 5),
-                'ecg': (-5, 5),
-            }
-            if signal_type not in bounds:
-                return np.ones(len(signal), dtype=bool)
-            min_val, max_val = bounds[signal_type]
-            extreme_threshold = 1e-5
-            is_extreme = (np.abs(signal) < extreme_threshold) | (np.abs(signal) > 1e5)
-            return (signal >= min_val) & (signal <= max_val) & ~is_extreme
-        
-        @staticmethod
-        def calculate_ppg_sqi(signal: np.ndarray) -> float:
-            if len(signal) < 10:
-                return 0.0
-            if np.var(signal) < 1e-10:
-                return 0.0
-            from scipy import stats
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                skewness = stats.skew(signal)
-            if np.isnan(skewness):
-                return 0.0
-            return skewness
-        
-        @staticmethod
-        def get_quality_mask(signal: np.ndarray, signal_type: str = 'ppg',
-                            min_valid_ratio: float = 0.7) -> Dict:
-            qc_results = {
-                'is_flatline': False,
-                'has_spikes': False,
-                'in_bounds': True,
-                'sqi': 0.0,
-                'valid_ratio': 0.0,
-                'overall_valid': False,
-                'mask': np.ones(len(signal), dtype=bool)
-            }
-            
-            if len(signal) == 0:
-                return qc_results
-            
-            qc_results['is_flatline'] = WaveformQualityControl.check_flatline(signal)
-            spike_mask = WaveformQualityControl.check_spikes(signal)
-            qc_results['has_spikes'] = np.any(spike_mask)
-            bounds_mask = WaveformQualityControl.check_physiologic_bounds(signal, signal_type)
-            qc_results['in_bounds'] = np.all(bounds_mask)
-            
-            if signal_type == 'ppg':
-                qc_results['sqi'] = WaveformQualityControl.calculate_ppg_sqi(signal)
-            
-            valid_mask = bounds_mask & ~spike_mask
-            qc_results['mask'] = valid_mask
-            qc_results['valid_ratio'] = np.mean(valid_mask)
-            
-            if signal_type == 'ppg':
-                qc_results['overall_valid'] = (
-                    not qc_results['is_flatline'] and
-                    qc_results['valid_ratio'] >= (min_valid_ratio * 0.8)
-                )
-            else:
-                qc_results['overall_valid'] = (
-                    not qc_results['is_flatline'] and
-                    qc_results['valid_ratio'] >= min_valid_ratio
-                )
-            
-            return qc_results
+from .quality import compute_sqi
 
 
 class BUTPPGDataset(Dataset):
-    """
-    BUT PPG dataset with UNIFIED preprocessing matching VitalDB.
+    """BUT PPG dataset with multi-modal support.
     
-    CRITICAL: Uses SAME preprocessing, filtering, QC, and windowing as VitalDB
-    to ensure proper transfer learning.
+    Supports loading PPG, ECG, and ACC simultaneously for multi-modal learning.
+    
+    Args:
+        data_dir: Root directory containing BUT PPG data
+        modality: Single modality string, list of modalities, or 'all' for PPG+ECG+ACC
+                 Options: 'ppg', 'ecg', 'acc', ['ppg', 'ecg'], 'ppg,ecg,acc', 'all'
+        split: 'train', 'val', or 'test'
+        window_sec: Window duration in seconds (default: 10.0)
+        fs: Target sampling rate in Hz (default: 125 to match VitalDB)
+        quality_filter: If True, filter out low quality signals
+        return_participant_id: If True, return participant ID with segments
+        return_labels: If True, return demographic labels
+        segment_overlap: Overlap between consecutive windows (0.0-1.0)
+        random_seed: Random seed for reproducible splits
+        train_ratio: Ratio of data for training (default: 0.7)
+        val_ratio: Ratio of data for validation (default: 0.15)
+    
+    Returns:
+        (seg1, seg2): Two segments from same participant
+        Each segment has shape [C, T] where:
+        - C = number of channels (1 for PPG/ECG, 3 for ACC, or sum for multi-modal)
+        - T = window_sec * fs samples
     """
     
-    # UNIFIED preprocessing configuration - MUST match VitalDB
-    UNIFIED_CONFIG = {
-        'ppg': {
-            'filter_type': 'cheby2',
-            'filter_order': 4,
-            'filter_band': [0.5, 8.0],  # Article-aligned: 0.5-8.0 Hz
-            'ripple': 20,  # Standard 20dB stopband ripple
-            'target_fs': 125,  # SAME as VitalDB (was incorrectly 25)
-            'window_sec': 10.0,
-            'hop_sec': 5.0,
-            'normalization': 'z-score',
-            'min_valid_ratio': 0.7
-        }
+    SUPPORTED_MODALITIES = ['ppg', 'ecg', 'acc']
+    
+    # Original sampling rates in BUT PPG
+    ORIGINAL_FS = {
+        'ppg': 30,   # Smartphone camera PPG
+        'ecg': 1000, # ECG sensor
+        'acc': 100   # Accelerometer
+    }
+    
+    # Band-pass filter settings per modality
+    FILTER_BANDS = {
+        'ppg': (0.5, 8.0),   # PPG heart rate band
+        'ecg': (0.5, 40.0),  # ECG standard band
+        'acc': (0.1, 20.0)   # ACC movement band
     }
     
     def __init__(
         self,
         data_dir: str,
+        modality: Union[str, List[str]] = 'ppg',
         split: str = 'train',
-        modality: str = 'ppg',
+        window_sec: float = 10.0,
+        fs: int = 125,
+        quality_filter: bool = False,
+        return_participant_id: bool = False,
+        return_labels: bool = False,
+        segment_overlap: float = 0.5,
+        random_seed: Optional[int] = 42,
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
-        random_seed: int = 42,
-        window_sec: float = 10.0,
-        hop_sec: float = 5.0,
-        enable_qc: bool = True,
-        min_valid_ratio: float = 0.7,
-        cache_dir: Optional[str] = None,
         use_cache: bool = True,
-        segments_per_subject: int = 20,
-        return_labels: bool = False,
-        return_participant_id: bool = False,
-        **kwargs
+        cache_size: int = 500
     ):
-        """Initialize BUT PPG dataset with unified preprocessing.
-        
-        Args:
-            data_dir: Path to BUT PPG database
-            split: 'train', 'val', or 'test'
-            modality: Signal type (currently only 'ppg' supported)
-            train_ratio: Training split ratio
-            val_ratio: Validation split ratio
-            random_seed: Random seed for reproducible splits
-            window_sec: Window size in seconds (MUST be 10.0 for compatibility)
-            hop_sec: Hop size in seconds (MUST be 5.0 for compatibility)
-            enable_qc: Enable quality control
-            min_valid_ratio: Minimum valid ratio for QC
-            cache_dir: Cache directory
-            use_cache: Whether to use caching
-            segments_per_subject: Number of segments per subject
-            return_labels: Whether to return labels
-            return_participant_id: Whether to return participant ID
-        """
         super().__init__()
         
         self.data_dir = Path(data_dir)
+        if not self.data_dir.exists():
+            raise ValueError(f"Data directory not found: {data_dir}")
+            
+        # Parse modalities
+        self.modalities = self._parse_modalities(modality)
+        self.n_channels = self._get_total_channels()
+        self.is_multimodal = len(self.modalities) > 1
+        
         self.split = split
-        self.modality = modality.lower()
-        self.random_seed = random_seed
-        self.enable_qc = enable_qc
-        self.min_valid_ratio = min_valid_ratio
-        self.segments_per_subject = segments_per_subject
-        self.return_labels = return_labels
-        self.return_participant_id = return_participant_id
-        
-        # CRITICAL: Enforce unified configuration
-        if window_sec != 10.0:
-            warnings.warn(f"window_sec={window_sec} differs from VitalDB standard (10.0). Setting to 10.0 for compatibility.")
-            window_sec = 10.0
-        
-        if hop_sec != 5.0:
-            warnings.warn(f"hop_sec={hop_sec} differs from VitalDB standard (5.0). Setting to 5.0 for compatibility.")
-            hop_sec = 5.0
-        
         self.window_sec = window_sec
-        self.hop_sec = hop_sec
+        self.fs = fs  # Target sampling rate
+        self.T = int(window_sec * fs)  # Samples per window
         
-        # Get unified preprocessing config
-        self.preprocessing_config = self.UNIFIED_CONFIG[self.modality]
-        self.target_fs = self.preprocessing_config['target_fs']
-        self.segment_length = int(self.window_sec * self.target_fs)
+        self.quality_filter = quality_filter
+        self.return_participant_id = return_participant_id
+        self.return_labels = return_labels
+        self.segment_overlap = segment_overlap
+        self.random_seed = random_seed
         
-        # Setup cache
-        if cache_dir is None:
-            cache_dir = self.data_dir / 'cache'
-        self.cache_dir = Path(cache_dir) / f"butppg_cache_{SPEC_VERSION}"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Caching
         self.use_cache = use_cache
+        self.cache_size = cache_size
+        self.signal_cache = OrderedDict()
+        self._failed_records = set()
         
-        # Write cache metadata
-        self._write_cache_metadata()
+        # Load annotations
+        self._load_annotations()
         
-        # Initialize QC
-        self.qc = WaveformQualityControl()
+        # Create participant splits
+        self._create_splits(train_ratio, val_ratio)
         
-        # Initialize loader WITHOUT windowing (dataset handles windowing)
-        self.loader = BUTPPGLoader(
-            self.data_dir,
-            fs=self.target_fs,
-            window_duration=self.window_sec,
-            window_stride=self.hop_sec,
-            apply_windowing=False  # CRITICAL: Dataset handles windowing, not loader
-        )
+        # Build segment pairs for SSL
+        self._build_segment_pairs()
         
-        # Get all subjects
-        all_subjects = self.loader.get_subject_list()
+        print(f"\nBUT PPG Dataset initialized for {split}:")
+        print(f"  Modalities: {self.modalities} ({self.n_channels} channels)")
+        print(f"  Participants: {len(self.split_participants)}")
+        print(f"  Records: {len(self.split_records)}")
+        print(f"  Positive pairs: {len(self.segment_pairs)}")
+        print(f"  Window: {window_sec}s @ {fs}Hz = {self.T} samples")
+        print(f"  Output shape: [{self.n_channels}, {self.T}]")
         
-        if len(all_subjects) == 0:
-            raise ValueError(f"No subjects found in {self.data_dir}")
+    def _parse_modalities(self, modality: Union[str, List[str]]) -> List[str]:
+        """Parse modality specification into list."""
+        if isinstance(modality, str):
+            if modality.lower() == 'all':
+                return self.SUPPORTED_MODALITIES.copy()
+            elif ',' in modality:
+                return [m.strip().lower() for m in modality.split(',')]
+            else:
+                return [modality.lower()]
+        elif isinstance(modality, list):
+            return [m.lower() for m in modality]
+        else:
+            return ['ppg']  # Default
+            
+    def _get_total_channels(self) -> int:
+        """Get total number of channels across all modalities."""
+        total = 0
+        for mod in self.modalities:
+            if mod == 'acc':
+                total += 3  # 3-axis accelerometer
+            else:
+                total += 1  # Single channel for PPG/ECG
+        return total
         
-        # Create reproducible splits
+    def _load_annotations(self):
+        """Load quality annotations and subject info."""
+        # Load subject info
+        subject_path = self.data_dir / 'subject-info.csv'
+        if subject_path.exists():
+            import pandas as pd
+            self.subject_df = pd.read_csv(subject_path)
+            print(f"  Loaded subject info: {len(self.subject_df)} entries")
+        else:
+            self.subject_df = None
+            
+        # Build participant mapping
+        self.participant_records = {}
+        
+        # Find all records by looking for WFDB files
+        for modality in self.modalities:
+            pattern = f"*/*_{modality.upper()}.hea"
+            for hea_file in self.data_dir.glob(pattern):
+                record_id = hea_file.parent.name
+                # Extract participant ID (first 3 digits)
+                participant_id = record_id[:3] if len(record_id) >= 3 else record_id
+                
+                if participant_id not in self.participant_records:
+                    self.participant_records[participant_id] = []
+                if record_id not in self.participant_records[participant_id]:
+                    self.participant_records[participant_id].append(record_id)
+                    
+        print(f"  Found {len(self.participant_records)} participants")
+        
+    def _create_splits(self, train_ratio: float, val_ratio: float):
+        """Create train/val/test splits at participant level."""
+        all_participants = list(self.participant_records.keys())
+        
+        if len(all_participants) == 0:
+            print("  Warning: No participants found!")
+            self.split_participants = []
+            self.split_records = []
+            return
+            
+        # Sort and shuffle
+        all_participants.sort()
         np.random.seed(self.random_seed)
-        shuffled_subjects = np.random.permutation(all_subjects)
+        np.random.shuffle(all_participants)
         
-        n = len(shuffled_subjects)
-        train_end = int(train_ratio * n)
-        val_end = int((train_ratio + val_ratio) * n)
+        # Calculate splits
+        n_total = len(all_participants)
+        n_train = int(n_total * train_ratio)
+        n_val = int(n_total * val_ratio)
         
-        if split == 'train':
-            self.subjects = shuffled_subjects[:train_end].tolist()
-        elif split == 'val':
-            self.subjects = shuffled_subjects[train_end:val_end].tolist()
+        # Assign participants to splits
+        if self.split == 'train':
+            self.split_participants = all_participants[:n_train]
+        elif self.split == 'val':
+            self.split_participants = all_participants[n_train:n_train + n_val]
         else:  # test
-            self.subjects = shuffled_subjects[val_end:].tolist()
-        
-        # Build segment pairs (for SSL compatibility)
-        self.segment_pairs = self._build_segment_pairs()
-        
-        print(f"\nBUT PPG Dataset initialized (SPEC {SPEC_VERSION}):")
-        print(f"  Split: {split}")
-        print(f"  Modality: {modality}")
-        print(f"  Subjects: {len(self.subjects)}")
-        print(f"  Segments: {len(self.segment_pairs)}")
-        print(f"  Filter: {self.preprocessing_config['filter_type']} "
-              f"{self.preprocessing_config['filter_order']}th order")
-        print(f"  Sampling: ANY → {self.target_fs}Hz (unified)")
-        print(f"  Window: {self.window_sec}s, Hop: {self.hop_sec}s")
-        print(f"  QC enabled: {self.enable_qc}")
-        print(f"  ⚠️  UNIFIED PREPROCESSING: Matches VitalDB exactly")
-    
-    def _write_cache_metadata(self):
-        """Write cache metadata for version tracking."""
-        metadata = {
-            'spec_version': SPEC_VERSION,
-            'modality': self.modality,
-            'preprocessing_config': self.preprocessing_config,
-            'window_sec': self.window_sec,
-            'hop_sec': self.hop_sec,
-            'qc_enabled': self.enable_qc,
-            'min_valid_ratio': self.min_valid_ratio,
-            'note': 'UNIFIED preprocessing matching VitalDB for transfer learning'
-        }
-        
-        metadata_file = self.cache_dir / 'metadata.json'
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-    
-    def _apply_unified_filter(self, signal: np.ndarray, original_fs: float) -> np.ndarray:
-        """Apply UNIFIED filter - MUST match VitalDB exactly."""
-        config = self.preprocessing_config
-        
-        if config['filter_type'] == 'cheby2':
-            # Chebyshev Type-II (same as VitalDB PPG)
-            sos = scipy_signal.cheby2(
-                config['filter_order'],
-                config['ripple'],
-                config['filter_band'],
-                btype='band',
-                fs=original_fs,
-                output='sos'
-            )
-            filtered = scipy_signal.sosfiltfilt(sos, signal)
-        else:
-            # Fallback to butterworth
-            sos = scipy_signal.butter(
-                config['filter_order'],
-                config['filter_band'],
-                btype='band',
-                fs=original_fs,
-                output='sos'
-            )
-            filtered = scipy_signal.sosfiltfilt(sos, signal)
-        
-        return filtered
-    
-    def _preprocess_with_qc(
-        self,
-        signal: np.ndarray,
-        original_fs: float,
-        subject_id: str
-    ) -> Tuple[Optional[np.ndarray], Dict]:
-        """Preprocess signal with UNIFIED pipeline matching VitalDB."""
-        
-        # Remove NaN
-        signal = signal[~np.isnan(signal)]
-        
-        if len(signal) < original_fs * 2:  # Less than 2 seconds
-            return None, {'overall_valid': False}
-        
-        # Apply UNIFIED filter
-        filtered = self._apply_unified_filter(signal, original_fs)
-        
-        # Resample to UNIFIED target rate (25 Hz)
-        if original_fs != self.target_fs:
-            n_samples = int(len(filtered) * self.target_fs / original_fs)
-            resampled = scipy_signal.resample(filtered, n_samples)
-        else:
-            resampled = filtered
-        
-        # Z-score normalization (UNIFIED)
-        mean = np.mean(resampled)
-        std = np.std(resampled)
-        if std > 1e-8:
-            normalized = (resampled - mean) / std
-        else:
-            normalized = resampled
-        
-        # Quality control (UNIFIED)
-        if self.enable_qc:
-            qc_results = self.qc.get_quality_mask(
-                normalized,
-                self.modality,
-                self.min_valid_ratio
-            )
-        else:
-            qc_results = {
-                'overall_valid': True,
-                'mask': np.ones(len(normalized), dtype=bool)
-            }
-        
-        return normalized, qc_results
-    
-    def _extract_window(
-        self,
-        subject_id: str,
-        window_idx: int
-    ) -> Dict:
-        """Extract a window with QC."""
-        window_data = {
-            'signal': None,
-            'qc': None,
-            'valid': False,
-            'subject_id': subject_id
-        }
-        
-        try:
-            # Load signal WITHOUT windowing (we do windowing here)
-            result = self.loader.load_subject(
-                subject_id,
-                self.modality,
-                return_windows=False,  # CRITICAL: Get raw signal, not windows
-                normalize=False,  # We handle normalization
-                compute_quality=False  # Skip quality for now
-            )
-            if result is None:
-                return window_data
+            self.split_participants = all_participants[n_train + n_val:]
             
-            signal, metadata = result
-            original_fs = metadata.get('fs', 100)
+        # Get all records for split participants
+        self.split_records = []
+        for participant_id in self.split_participants:
+            self.split_records.extend(self.participant_records[participant_id])
             
-            # Ensure signal is 2D [T, C]
-            if signal.ndim == 1:
-                signal = signal.reshape(-1, 1)
-            elif signal.ndim > 2:
-                warnings.warn(f"Signal has {signal.ndim} dimensions, reshaping to 2D")
-                signal = signal.reshape(signal.shape[0], -1)
-            
-            # For now, take only first channel if multi-channel
-            if signal.shape[1] > 1:
-                signal = signal[:, 0]
-            
-            # Flatten for preprocessing (expects 1D)
-            signal = signal.flatten()
-            
-            # Preprocess with QC
-            processed, qc_results = self._preprocess_with_qc(
-                signal, original_fs, subject_id
-            )
-            
-            if processed is None:
-                return window_data
-            
-            # Extract window
-            window_start = int(window_idx * self.hop_sec * self.target_fs)
-            window_end = window_start + self.segment_length
-            
-            if window_end > len(processed):
-                return window_data
-            
-            window_signal = processed[window_start:window_end]
-            
-            # Window-level QC
-            window_qc = self.qc.get_quality_mask(
-                window_signal,
-                self.modality,
-                self.min_valid_ratio
-            )
-            
-            window_data = {
-                'signal': window_signal,
-                'qc': window_qc,
-                'valid': window_qc['overall_valid'],
-                'subject_id': subject_id
-            }
-            
-        except Exception as e:
-            warnings.warn(f"Error processing subject {subject_id}, window {window_idx}: {e}")
+    def _build_segment_pairs(self):
+        """Build positive pairs from same participant."""
+        self.segment_pairs = []
         
-        return window_data
-    
-    def _build_segment_pairs(self) -> List[Dict]:
-        """Build segment pairs (for SSL compatibility with VitalDB)."""
-        pairs = []
-        for subject_id in self.subjects:
-            for _ in range(self.segments_per_subject):
-                pairs.append({
-                    'subject_id': subject_id,
-                    'pair_type': 'same_subject'  # Same as VitalDB
+        for participant_id in self.split_participants:
+            records = self.participant_records[participant_id]
+            n_records = len(records)
+            
+            if n_records == 0:
+                continue
+            elif n_records == 1:
+                # Self-pair for single recording
+                self.segment_pairs.append({
+                    'participant_id': participant_id,
+                    'record1': records[0],
+                    'record2': records[0],
+                    'is_self_pair': True
                 })
-        return pairs
-    
-    def __len__(self) -> int:
-        return len(self.segment_pairs)
-    
-    def __getitem__(self, idx: int) -> Tuple:
-        """Get item with same interface as VitalDB."""
-        # Get subject for this index
-        subject_idx = idx % len(self.subjects)
-        subject_id = self.subjects[subject_idx]
+            else:
+                # Create pairs from different recordings
+                n_pairs = min(20, (n_records * (n_records - 1)) // 2)
+                
+                pairs_created = set()
+                for _ in range(n_pairs):
+                    attempts = 0
+                    while attempts < 100:
+                        idx1 = np.random.randint(0, n_records)
+                        idx2 = np.random.randint(0, n_records)
+                        if idx1 != idx2:
+                            pair = (min(idx1, idx2), max(idx1, idx2))
+                            if pair not in pairs_created:
+                                pairs_created.add(pair)
+                                self.segment_pairs.append({
+                                    'participant_id': participant_id,
+                                    'record1': records[idx1],
+                                    'record2': records[idx2],
+                                    'is_self_pair': False
+                                })
+                                break
+                        attempts += 1
+                        
+        # Shuffle pairs
+        if self.segment_pairs:
+            np.random.seed(self.random_seed)
+            np.random.shuffle(self.segment_pairs)
+            
+    def __len__(self):
+        return len(self.segment_pairs) if self.segment_pairs else 1
         
-        # Extract two windows (for SSL compatibility)
-        window1_data = self._extract_window(subject_id, 0)
-        window2_data = self._extract_window(subject_id, 1)
+    def __getitem__(self, idx):
+        """Get pair of segments from same participant."""
+        if not self.segment_pairs:
+            # Return zeros if no pairs
+            zeros = torch.zeros(self.n_channels, self.T, dtype=torch.float32)
+            return zeros, zeros
+            
+        pair_info = self.segment_pairs[idx % len(self.segment_pairs)]
+        participant_id = pair_info['participant_id']
+        record1 = pair_info['record1']
+        record2 = pair_info['record2']
+        is_self_pair = pair_info.get('is_self_pair', False)
         
-        # Create tensors
-        if window1_data['valid'] and window1_data['signal'] is not None:
-            seg1 = torch.from_numpy(window1_data['signal']).float().unsqueeze(0)
+        # Load multi-modal signals
+        signals1 = self._load_multimodal_signals(record1)
+        
+        if is_self_pair:
+            signals2 = signals1  # Use same signals
         else:
-            seg1 = torch.zeros(1, self.segment_length, dtype=torch.float32)
+            signals2 = self._load_multimodal_signals(record2)
+            
+        # Create segments
+        seg1 = self._create_segment(signals1, seed=idx)
+        seg2 = self._create_segment(signals2, seed=idx + 1000 if is_self_pair else idx)
         
-        if window2_data['valid'] and window2_data['signal'] is not None:
-            seg2 = torch.from_numpy(window2_data['signal']).float().unsqueeze(0)
-        else:
-            seg2 = torch.zeros(1, self.segment_length, dtype=torch.float32)
+        # Stack modalities into multi-channel tensor
+        seg1 = self._stack_modalities(seg1)
+        seg2 = self._stack_modalities(seg2)
         
-        # Prepare context (for compatibility)
-        context = {
-            'subject_id': subject_id,
-            'qc': {
-                'seg1': window1_data['qc'],
-                'seg2': window2_data['qc']
-            },
-            'dataset': 'butppg'  # Mark as BUT PPG
-        }
+        # Convert to tensors
+        seg1 = torch.from_numpy(seg1).float()
+        seg2 = torch.from_numpy(seg2).float()
         
-        # Return based on flags (same as VitalDB)
+        # Return with optional metadata
         if self.return_labels and self.return_participant_id:
-            return seg1, seg2, subject_id, context
-        elif self.return_labels:
-            return seg1, seg2, context
+            labels = self._get_participant_info(participant_id)
+            return seg1, seg2, participant_id, labels
         elif self.return_participant_id:
-            return seg1, seg2, subject_id
+            return seg1, seg2, participant_id
+        elif self.return_labels:
+            labels = self._get_participant_info(participant_id)
+            return seg1, seg2, labels
         else:
             return seg1, seg2
-    
-    def validate_compatibility_with_vitaldb(self, vitaldb_dataset) -> Dict:
-        """Validate that preprocessing matches VitalDB exactly.
-        
-        Args:
-            vitaldb_dataset: VitalDBDataset instance to compare against
             
-        Returns:
-            Dict with compatibility check results
-        """
-        checks = {}
+    def _load_multimodal_signals(self, record_id: str) -> Dict[str, np.ndarray]:
+        """Load all modality signals for a record."""
+        signals = {}
+        record_dir = self.data_dir / record_id
         
-        # Check filter type
-        checks['filter_type'] = (
-            self.preprocessing_config['filter_type'] ==
-            vitaldb_dataset.filter_params.get('type', 'unknown')
-        )
+        if not record_dir.exists():
+            return signals
+            
+        for modality in self.modalities:
+            # Check cache first
+            cache_key = f"{record_id}_{modality}"
+            if cache_key in self.signal_cache:
+                signals[modality] = self.signal_cache[cache_key]
+                continue
+                
+            # Load from WFDB files
+            try:
+                record_path = record_dir / f"{record_id}_{modality.upper()}"
+                if not record_path.with_suffix('.hea').exists():
+                    signals[modality] = None
+                    continue
+                    
+                # Read WFDB record
+                record = wfdb.rdrecord(str(record_path))
+                signal_data = record.p_signal.T  # [channels, samples]
+                
+                # Handle channel specifics
+                if modality == 'ppg':
+                    # PPG might have RGB channels, average them
+                    if signal_data.shape[0] > 1:
+                        signal_data = np.mean(signal_data, axis=0, keepdims=True)
+                elif modality == 'ecg':
+                    # ECG should be single channel
+                    if signal_data.shape[0] > 1:
+                        signal_data = signal_data[0:1, :]
+                elif modality == 'acc':
+                    # ACC should have 3 channels (X, Y, Z)
+                    if signal_data.shape[0] != 3:
+                        # Pad or trim to 3 channels
+                        if signal_data.shape[0] < 3:
+                            padding = np.zeros((3 - signal_data.shape[0], signal_data.shape[1]))
+                            signal_data = np.vstack([signal_data, padding])
+                        else:
+                            signal_data = signal_data[:3, :]
+                            
+                # Preprocess
+                processed = self._preprocess_signal(signal_data, modality)
+                
+                # Cache
+                if self.use_cache and len(self.signal_cache) < self.cache_size:
+                    self.signal_cache[cache_key] = processed
+                    
+                signals[modality] = processed
+                
+            except Exception as e:
+                print(f"Error loading {modality} for {record_id}: {e}")
+                signals[modality] = None
+                
+        return signals
         
-        # Check filter order
-        checks['filter_order'] = (
-            self.preprocessing_config['filter_order'] ==
-            vitaldb_dataset.filter_params.get('order', -1)
-        )
+    def _preprocess_signal(self, signal_data: np.ndarray, modality: str) -> Optional[np.ndarray]:
+        """Preprocess signal with modality-specific parameters."""
+        if signal_data is None or signal_data.size == 0:
+            return None
+            
+        try:
+            # Remove NaN/Inf
+            signal_data = np.nan_to_num(signal_data, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Ensure 2D
+            if signal_data.ndim == 1:
+                signal_data = signal_data[np.newaxis, :]
+                
+            # Get modality-specific parameters
+            original_fs = self.ORIGINAL_FS[modality]
+            band_low, band_high = self.FILTER_BANDS[modality]
+            
+            # Check minimum length
+            if signal_data.shape[1] < original_fs:
+                return None
+                
+            # Bandpass filter
+            if signal_data.shape[1] >= 100:
+                nyquist = original_fs / 2
+                if band_high < nyquist * 0.95:
+                    sos = scipy_signal.butter(
+                        4, [band_low, band_high],
+                        btype='band', fs=original_fs, output='sos'
+                    )
+                    signal_data = scipy_signal.sosfiltfilt(sos, signal_data, axis=1)
+                    
+            # Resample to target fs
+            if original_fs != self.fs:
+                n_samples = signal_data.shape[1]
+                n_resampled = int(n_samples * self.fs / original_fs)
+                
+                resampled = np.zeros((signal_data.shape[0], n_resampled))
+                for i in range(signal_data.shape[0]):
+                    resampled[i] = scipy_signal.resample(signal_data[i], n_resampled)
+                signal_data = resampled
+                
+            # Z-score normalization (per channel)
+            mean = np.mean(signal_data, axis=1, keepdims=True)
+            std = np.std(signal_data, axis=1, keepdims=True)
+            std = np.where(std < 1e-8, 1.0, std)
+            signal_data = (signal_data - mean) / std
+            
+            return signal_data.astype(np.float32)
+            
+        except Exception as e:
+            print(f"Preprocessing error for {modality}: {e}")
+            return None
+            
+    def _create_segment(self, signals: Dict[str, np.ndarray], seed: Optional[int] = None) -> Dict[str, np.ndarray]:
+        """Create segments from signals."""
+        if seed is not None:
+            np.random.seed(seed)
+            
+        segments = {}
         
-        # Check filter band
-        checks['filter_band'] = (
-            self.preprocessing_config['filter_band'] ==
-            vitaldb_dataset.filter_params.get('band', [])
-        )
+        for modality, signal in signals.items():
+            if signal is None:
+                # Create zeros for missing modality
+                if modality == 'acc':
+                    segments[modality] = np.zeros((3, self.T), dtype=np.float32)
+                else:
+                    segments[modality] = np.zeros((1, self.T), dtype=np.float32)
+                continue
+                
+            n_samples = signal.shape[1]
+            
+            if n_samples < self.T:
+                # Tile if too short
+                n_repeats = (self.T // n_samples) + 1
+                extended = np.tile(signal, (1, n_repeats))
+                segment = extended[:, :self.T]
+            elif n_samples == self.T:
+                segment = signal
+            else:
+                # Random crop if longer
+                max_start = n_samples - self.T
+                start = np.random.randint(0, max_start + 1)
+                segment = signal[:, start:start + self.T]
+                
+            segments[modality] = segment
+            
+        return segments
         
-        # Check target sampling rate
-        checks['target_fs'] = (
-            self.target_fs == vitaldb_dataset.target_fs
-        )
+    def _stack_modalities(self, segments: Dict[str, np.ndarray]) -> np.ndarray:
+        """Stack all modality segments into multi-channel array."""
+        stacked = []
         
-        # Check window size
-        checks['window_size'] = (
-            self.segment_length == vitaldb_dataset.segment_length
-        )
+        for modality in self.modalities:
+            if modality in segments:
+                stacked.append(segments[modality])
+            else:
+                # Add zeros for missing modality
+                if modality == 'acc':
+                    stacked.append(np.zeros((3, self.T), dtype=np.float32))
+                else:
+                    stacked.append(np.zeros((1, self.T), dtype=np.float32))
+                    
+        # Stack all channels
+        return np.vstack(stacked)
         
-        # Check QC enabled
-        checks['qc_enabled'] = (
-            self.enable_qc == vitaldb_dataset.enable_qc
-        )
-        
-        # Overall compatibility
-        checks['overall_compatible'] = all(checks.values())
-        
-        return checks
+    def _get_participant_info(self, participant_id: str) -> Dict:
+        """Get demographic info for participant."""
+        if self.subject_df is None:
+            return {'age': -1, 'sex': -1, 'bmi': -1}
+            
+        # Find records for this participant
+        records = self.participant_records.get(participant_id, [])
+        if not records:
+            return {'age': -1, 'sex': -1, 'bmi': -1}
+            
+        # Get first record ID to look up demographics
+        try:
+            record_num = int(records[0])
+            mask = self.subject_df['ID'] == record_num
+            
+            if mask.any():
+                row = self.subject_df[mask].iloc[0]
+                
+                # Extract demographics
+                age = row.get('Age [years]', row.get('Age', -1))
+                gender = row.get('Gender', '')
+                sex = 1 if gender == 'M' else (0 if gender == 'F' else -1)
+                
+                # Calculate BMI
+                height = row.get('Height [cm]', row.get('Height', 0))
+                weight = row.get('Weight [kg]', row.get('Weight', 0))
+                
+                if height > 0 and weight > 0:
+                    bmi = weight / ((height / 100) ** 2)
+                else:
+                    bmi = -1
+                    
+                return {
+                    'age': float(age) if age != -1 else -1,
+                    'sex': sex,
+                    'bmi': float(bmi) if bmi != -1 else -1
+                }
+                
+        except Exception as e:
+            print(f"Error getting participant info: {e}")
+            
+        return {'age': -1, 'sex': -1, 'bmi': -1}
 
 
 def create_butppg_dataloaders(
     data_dir: str,
-    batch_size: int = 64,
+    modality: Union[str, List[str]] = 'ppg',
+    batch_size: int = 32,
     num_workers: int = 4,
+    pin_memory: bool = True,
+    quality_filter: bool = False,
     **dataset_kwargs
-):
-    """Create BUT PPG dataloaders with unified preprocessing.
-    
-    Returns train, val, test loaders compatible with VitalDB loaders.
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
+    Create train/val/test dataloaders for BUT PPG.
+    
+    Args:
+        data_dir: Root directory containing BUT PPG data
+        modality: Modalities to load ('ppg', 'ecg', 'acc', ['ppg', 'ecg'], 'all')
+        batch_size: Batch size for DataLoader
+        num_workers: Number of workers for data loading
+        pin_memory: Pin memory for GPU transfer
+        quality_filter: If True, filter out low quality signals
+        **dataset_kwargs: Additional arguments for BUTPPGDataset
+        
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader)
+    """
+    # Create datasets
     train_dataset = BUTPPGDataset(
         data_dir=data_dir,
+        modality=modality,
         split='train',
+        quality_filter=quality_filter,
         **dataset_kwargs
     )
     
     val_dataset = BUTPPGDataset(
         data_dir=data_dir,
+        modality=modality,
         split='val',
+        quality_filter=quality_filter,
         **dataset_kwargs
     )
     
     test_dataset = BUTPPGDataset(
         data_dir=data_dir,
+        modality=modality,
         split='test',
+        quality_filter=quality_filter,
         **dataset_kwargs
     )
     
-    from torch.utils.data import DataLoader
-    
-    # Custom collate for context
-    def collate_fn_with_context(batch):
-        """Collate that handles QC and context (same as VitalDB)."""
-        valid_batch = [item for item in batch if item[0].numel() > 0]
-        
-        if len(valid_batch) == 0:
-            dummy = torch.zeros(1, 1, train_dataset.segment_length)
-            return dummy, dummy
-        
-        # Check format
-        if len(valid_batch[0]) >= 3:  # With context
-            segs1 = torch.stack([item[0] for item in valid_batch])
-            segs2 = torch.stack([item[1] for item in valid_batch])
-            
-            contexts = []
-            for item in valid_batch:
-                if len(item) > 2:
-                    contexts.append(item[2])
-            
-            return segs1, segs2, contexts
-        else:
-            return torch.utils.data.dataloader.default_collate(valid_batch)
-    
+    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_fn_with_context,
+        pin_memory=pin_memory,
         drop_last=True
     )
     
@@ -634,7 +590,7 @@ def create_butppg_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_fn_with_context
+        pin_memory=pin_memory
     )
     
     test_loader = DataLoader(
@@ -642,7 +598,7 @@ def create_butppg_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_fn_with_context
+        pin_memory=pin_memory
     )
     
     return train_loader, val_loader, test_loader

@@ -29,8 +29,8 @@ pretrain:
     filter:
       type: "cheby2"
       order: 4
-      lowcut: 0.4
-      highcut: 7
+      lowcut: 0.5
+      highcut: 8
       ripple_db: 20
     quality_metrics:
       - "ssqi"
@@ -81,8 +81,8 @@ finetune:
     filter:
       type: "cheby2"
       order: 4
-      lowcut: 0.4
-      highcut: 7
+      lowcut: 0.5
+      highcut: 8
       ripple_db: 20
     quality_metrics:
       - "ssqi"

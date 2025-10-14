@@ -18,9 +18,44 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
+import pytest
 
 
-def test_butppg_loading(data_dir: str):
+# Pytest test functions (using fixtures from conftest.py)
+def test_butppg_loading(data_dir):
+    """Pytest version of BUT PPG loading test."""
+    assert run_butppg_loading_test(data_dir)
+
+
+def test_vitaldb_loading():
+    """Pytest version of VitalDB loading test (skipped for now)."""
+    # This test is skipped since we don't have VitalDB data in fixtures
+    pytest.skip("VitalDB dataset not available in test fixtures")
+
+
+def test_dataset_compatibility(butppg_dir, vitaldb_dataset):
+    """Pytest version of dataset compatibility test."""
+    # Skip if VitalDB not available
+    if vitaldb_dataset is None:
+        pytest.skip("VitalDB dataset not available")
+    assert run_dataset_compatibility_test(butppg_dir, vitaldb_dataset)
+
+
+def test_mixed_batching(butppg_dir, vitaldb_dataset):
+    """Pytest version of mixed batching test."""
+    # Skip if VitalDB not available
+    if vitaldb_dataset is None:
+        pytest.skip("VitalDB dataset not available")
+    assert run_mixed_batching_test(butppg_dir, vitaldb_dataset)
+
+
+def test_preprocessing_consistency(butppg_dir):
+    """Pytest version of preprocessing consistency test."""
+    assert run_preprocessing_consistency_test(butppg_dir)
+
+
+# Original test functions (now renamed to avoid pytest auto-discovery)
+def run_butppg_loading_test(data_dir: str):
     """Test BUT PPG dataset loading."""
     print("\n" + "="*70)
     print("TEST 1: BUT PPG Dataset Loading")
@@ -83,7 +118,7 @@ def test_butppg_loading(data_dir: str):
         return False
 
 
-def test_vitaldb_loading():
+def run_vitaldb_loading_test():
     """Test VitalDB dataset loading."""
     print("\n" + "="*70)
     print("TEST 2: VitalDB Dataset Loading")
@@ -103,7 +138,7 @@ def test_vitaldb_loading():
         return False
 
 
-def test_dataset_compatibility(butppg_dir: str, vitaldb_dataset=None):
+def run_dataset_compatibility_test(butppg_dir: str, vitaldb_dataset=None):
     """Test compatibility between BUT PPG and VitalDB."""
     print("\n" + "="*70)
     print("TEST 3: Cross-Dataset Compatibility")
@@ -152,7 +187,7 @@ def test_dataset_compatibility(butppg_dir: str, vitaldb_dataset=None):
         return False
 
 
-def test_mixed_batching(butppg_dir: str, vitaldb_dataset=None):
+def run_mixed_batching_test(butppg_dir: str, vitaldb_dataset=None):
     """Test mixed batching of VitalDB and BUT PPG."""
     print("\n" + "="*70)
     print("TEST 4: Mixed Batch Processing")
@@ -204,7 +239,7 @@ def test_mixed_batching(butppg_dir: str, vitaldb_dataset=None):
         return False
 
 
-def test_preprocessing_consistency(butppg_dir: str):
+def run_preprocessing_consistency_test(butppg_dir: str):
     """Test that preprocessing is consistent across multiple samples."""
     print("\n" + "="*70)
     print("TEST 5: Preprocessing Consistency")
@@ -300,20 +335,20 @@ def main():
     results = {}
     
     if args.test in ['all', 'butppg']:
-        results['butppg_loading'] = test_butppg_loading(args.butppg_dir)
+        results['butppg_loading'] = run_butppg_loading_test(args.butppg_dir)
     
     if args.test in ['all', 'compatibility']:
-        results['compatibility'] = test_dataset_compatibility(
+        results['compatibility'] = run_dataset_compatibility_test(
             args.butppg_dir, vitaldb_dataset
         )
     
     if args.test in ['all', 'mixed']:
-        results['mixed_batching'] = test_mixed_batching(
+        results['mixed_batching'] = run_mixed_batching_test(
             args.butppg_dir, vitaldb_dataset
         )
     
     if args.test in ['all', 'preprocessing']:
-        results['preprocessing'] = test_preprocessing_consistency(args.butppg_dir)
+        results['preprocessing'] = run_preprocessing_consistency_test(args.butppg_dir)
     
     # Print summary
     print("\n" + "="*70)

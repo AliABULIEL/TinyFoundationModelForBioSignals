@@ -35,7 +35,6 @@ from .sync import align_streams, resample_to_fs
 from .vitaldb_loader import list_cases, load_channel
 from .windows import (
     NormalizationStats,
-    aggregate_window_predictions,
     compute_normalization_stats,
     create_sliding_windows,
     make_windows,
@@ -86,7 +85,6 @@ __all__ = [
     'validate_cardiac_cycles',
     'NormalizationStats',
     'create_sliding_windows',
-    'aggregate_window_predictions',
     # Splits
     'make_patient_level_splits',
     'verify_no_subject_leakage',
