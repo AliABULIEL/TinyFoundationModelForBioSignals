@@ -104,7 +104,7 @@ def test_dataloaders():
     print("=" * 60)
     
     try:
-        from src.data import create_vitaldb_dataloaders, create_butppg_dataloaders
+        from src.data.vitaldb_dataset import create_vitaldb_dataloaders, create_butppg_dataloaders
         
         # Test VitalDB dataloaders
         train_loader, val_loader, test_loader = create_vitaldb_dataloaders(

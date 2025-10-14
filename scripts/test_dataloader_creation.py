@@ -88,7 +88,7 @@ def test_import_from_init():
     print("\nTesting imports from __init__.py...")
     
     try:
-        from src.data import create_vitaldb_dataloaders, create_butppg_dataloaders
+        from src.data.vitaldb_dataset import create_vitaldb_dataloaders, create_butppg_dataloaders
         print("✓ Successfully imported dataloader creation functions from __init__.py")
         return True
         
