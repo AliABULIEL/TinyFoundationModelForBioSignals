@@ -95,8 +95,16 @@ class BUTPPGDataset(Dataset):
         else:
             raise KeyError(f"Expected 'signals' or 'data' key in {data_file}, found: {list(data.keys())}")
 
-        self.signals = torch.from_numpy(signals_array).float()  # [N, 5, 1024]
+        self.signals = torch.from_numpy(signals_array).float()
         self.labels = torch.from_numpy(data['labels']).long()     # [N]
+
+        # Handle different axis orders: [N, T, C] vs [N, C, T]
+        if len(self.signals.shape) == 3:
+            # Check if we need to transpose
+            if self.signals.shape[1] == 1024 and self.signals.shape[2] == 5:
+                # Data is [N, T, C] but we need [N, C, T]
+                print(f"  ⚠️  Transposing from [N, T, C] to [N, C, T]")
+                self.signals = self.signals.transpose(1, 2)  # [N, 1024, 5] → [N, 5, 1024]
 
         # Validate shapes
         N, C, T = self.signals.shape
