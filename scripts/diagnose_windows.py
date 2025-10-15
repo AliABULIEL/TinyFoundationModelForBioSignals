@@ -76,7 +76,8 @@ def test_single_case(case_id: str = "440", channel: str = "PPG"):
         channel=vitaldb_track,
         duration_sec=duration_sec,
         auto_fix_alternating=True,
-        target_fs=target_fs  # Use resampling
+        target_fs=target_fs,  # Use resampling
+        use_cache=False  # ← CRITICAL: Disable cache to test fresh data!
     )
     
     if signal is None:

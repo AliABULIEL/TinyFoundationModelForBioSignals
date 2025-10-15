@@ -158,12 +158,14 @@ def process_single_case(args_tuple):
         warnings.filterwarnings('ignore')
         
         # Load signal with resampling to target fs (125 Hz)
+        # IMPORTANT: use_cache=False to ensure fresh data after bug fixes
         signal, fs = load_channel(
             case_id=case_id,
             channel=vitaldb_track,
             duration_sec=duration_sec,
             auto_fix_alternating=True,
-            target_fs=125.0  # Always resample to 125 Hz
+            target_fs=125.0,  # Always resample to 125 Hz
+            use_cache=False  # Disable cache to use latest bug fixes
         )
         
         if signal is None or len(signal) < fs * 2:  # At least 2 seconds
