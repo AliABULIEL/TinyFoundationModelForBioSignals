@@ -302,19 +302,19 @@ class SSLTrainer:
                 # If this triggers, it means the decoder was created with wrong patch_size
                 # and new parameters are created that are NOT tracked by the optimizer!
                 if hasattr(self.encoder, 'patch_size') and self.decoder.patch_size != self.encoder.patch_size:
-                    print("\n" + "="*70)
-                    print("❌ CRITICAL ERROR: Decoder patch_size mismatch detected!")
-                    print("="*70)
-                    print(f"  Decoder patch_size: {self.decoder.patch_size}")
-                    print(f"  Encoder patch_size: {self.encoder.patch_size}")
-                    print(f"\n⚠️  This will cause NaN losses because:")
-                    print(f"  1. update_patch_size() creates NEW projection layer weights")
-                    print(f"  2. Optimizer still references OLD weights")
-                    print(f"  3. Gradients don't flow to new weights")
-                    print(f"  4. Random uninitialized weights → NaN loss")
-                    print(f"\n✅ FIX: Run a dummy forward pass BEFORE creating decoder/optimizer")
-                    print(f"  See scripts/pretrain_vitaldb_ssl.py for the fix")
-                    print("="*70 + "\n")
+                    # print("\n" + "="*70)
+                    # print("❌ CRITICAL ERROR: Decoder patch_size mismatch detected!")
+                    # print("="*70)
+                    # print(f"  Decoder patch_size: {self.decoder.patch_size}")
+                    # print(f"  Encoder patch_size: {self.encoder.patch_size}")
+                    # print(f"\n⚠️  This will cause NaN losses because:")
+                    # print(f"  1. update_patch_size() creates NEW projection layer weights")
+                    # print(f"  2. Optimizer still references OLD weights")
+                    # print(f"  3. Gradients don't flow to new weights")
+                    # print(f"  4. Random uninitialized weights → NaN loss")
+                    # print(f"\n✅ FIX: Run a dummy forward pass BEFORE creating decoder/optimizer")
+                    # print(f"  See scripts/pretrain_vitaldb_ssl.py for the fix")
+                    # print("="*70 + "\n")
 
                     raise RuntimeError(
                         f"Decoder patch_size ({self.decoder.patch_size}) doesn't match "
