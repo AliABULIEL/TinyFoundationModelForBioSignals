@@ -7,10 +7,10 @@ model:
   # Other options: Use different context lengths as needed
   
   # Model architecture parameters
-  input_channels: 3  # ECG, PPG, ABP
-  context_length: 512  # 4.096 seconds at 125 Hz (TTM default)
-  patch_size: 16
-  stride: 8
+  input_channels: 2  # PPG, ECG (VitalDB pretraining)
+  context_length: 1024  # 8.192 seconds at 125 Hz (TTM-Enhanced)
+  patch_size: 128  # 1.024 seconds per patch
+  stride: 128  # Non-overlapping patches for SSL
   
   # Hidden dimensions (depends on variant)
   d_model: 512

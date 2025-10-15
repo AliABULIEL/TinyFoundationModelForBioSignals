@@ -197,10 +197,58 @@ class DataPreparationPipeline:
         for dir_path in self.dirs.values():
             dir_path.mkdir(parents=True, exist_ok=True)
 
+        # ✅ LOAD CONFIGURATIONS FROM YAML FILES - NO HARD-CODED VALUES!
+        self._load_configs()
+
         logger.info(f"Initialized pipeline in {self.mode} mode")
         logger.info(f"Output directory: {self.output_dir}")
         logger.info(f"Workers: {self.num_workers}")
         logger.info(f"Datasets: {', '.join(self.datasets)}")
+
+    def _load_configs(self):
+        """Load configuration from YAML files - NO HARD-CODED VALUES!"""
+        # Load window configuration
+        windows_config_path = project_root / 'configs' / 'windows.yaml'
+        model_config_path = project_root / 'configs' / 'model.yaml'
+        
+        # Load windows config
+        if windows_config_path.exists():
+            with open(windows_config_path, 'r') as f:
+                windows_config = yaml.safe_load(f)
+            
+            # Extract window size for SSL pretraining (non-overlapping)
+            self.window_sec = windows_config.get('window', {}).get('size_seconds', 8.192)
+            
+            logger.info(f"✓ Loaded window config: {self.window_sec}s windows")
+        else:
+            logger.warning(f"Config not found: {windows_config_path}")
+            self.window_sec = 8.192  # Fallback to TTM-Enhanced default
+            logger.warning(f"Using default: {self.window_sec}s windows")
+        
+        # Load model config
+        if model_config_path.exists():
+            with open(model_config_path, 'r') as f:
+                model_config = yaml.safe_load(f)
+            
+            # Extract model parameters
+            self.context_length = model_config.get('model', {}).get('context_length', 1024)
+            self.patch_size = model_config.get('model', {}).get('patch_size', 128)
+            self.sampling_rate = 125  # Fixed for biosignals
+            
+            # Calculate expected samples from window size
+            self.expected_samples = int(self.window_sec * self.sampling_rate)
+            
+            logger.info(f"✓ Loaded model config:")
+            logger.info(f"    context_length={self.context_length}")
+            logger.info(f"    patch_size={self.patch_size}")
+            logger.info(f"    expected_samples={self.expected_samples} ({self.window_sec}s @ {self.sampling_rate}Hz)")
+        else:
+            logger.warning(f"Config not found: {model_config_path}")
+            self.context_length = 1024
+            self.patch_size = 128
+            self.sampling_rate = 125
+            self.expected_samples = 1024
+            logger.warning(f"Using defaults: context={self.context_length}, patch={self.patch_size}")
 
     def run_full_pipeline(self) -> Dict:
         """
@@ -571,6 +619,7 @@ class DataPreparationPipeline:
 
             output_dir = self.dirs['butppg_windows'] / split_name
 
+            # ✅ USE CONFIG VALUE - NO HARD-CODED!
             # Call the BUT-PPG window builder script
             cmd = [
                 sys.executable,
@@ -579,7 +628,7 @@ class DataPreparationPipeline:
                 '--splits-file', splits_file,
                 '--output-dir', str(output_dir),
                 '--modality', 'all',  # PPG + ECG + ACC (5 channels)
-                '--window-sec', '10.0',
+                '--window-sec', str(self.window_sec),  # ✅ FROM CONFIG!
                 '--fs', '125',
                 '--batch-size', '32'
             ]
@@ -744,8 +793,9 @@ class DataPreparationPipeline:
                 has_nan = np.any(np.isnan(windows))
                 has_inf = np.any(np.isinf(windows))
 
+                # ✅ USE CONFIG VALUE - NO HARD-CODED!
                 # Check shape consistency
-                expected_samples = 1250  # 10s at 125Hz
+                expected_samples = self.expected_samples  # ✅ FROM CONFIG!
                 valid_shape = windows.shape[1] == expected_samples
 
                 validation['splits'][split_name] = {
@@ -809,8 +859,9 @@ class DataPreparationPipeline:
                 has_nan = np.any(np.isnan(windows))
                 has_inf = np.any(np.isinf(windows))
 
+                # ✅ USE CONFIG VALUE - NO HARD-CODED!
                 # Check shape consistency
-                expected_samples = 1250  # 10s at 125Hz
+                expected_samples = self.expected_samples  # ✅ FROM CONFIG!
                 expected_channels = 5  # PPG + ECG + ACC (3-axis)
                 valid_shape = windows.shape[1] == expected_samples
                 valid_channels = windows.shape[2] == expected_channels if windows.ndim >= 3 else False
