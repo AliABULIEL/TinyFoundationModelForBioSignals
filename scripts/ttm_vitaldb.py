@@ -231,10 +231,10 @@ def process_single_case(args_tuple):
         # Normalize if train_stats provided
         if train_stats is not None:
             normalized = normalize_windows(
-                W_ntc=case_windows,
+                windows=case_windows,
                 stats=train_stats,
-                baseline_correction=False,
-                per_channel=False
+                channel_names=[channel_name],
+                method=normalize_method
             )
         else:
             # Return raw windows for train stats computation
@@ -354,11 +354,10 @@ def build_windows_multiprocess(args):
             stats_file = Path(args.outdir).parent / 'train_stats.npz'
         
         if stats_file.exists():
-            stats_data = np.load(stats_file)
+            stats_data = np.load(stats_file, allow_pickle=True)
             train_stats = NormalizationStats(
-                mean=stats_data['mean'],
-                std=stats_data['std'],
-                method=str(stats_data['method']) if 'method' in stats_data else normalize_method
+                mean=stats_data['mean'].item() if hasattr(stats_data['mean'], 'item') else stats_data['mean'],
+                std=stats_data['std'].item() if hasattr(stats_data['std'], 'item') else stats_data['std']
             )
             config_dict['train_stats'] = train_stats
             logger.info(f"Loaded train stats from {stats_file}")
@@ -409,9 +408,8 @@ def build_windows_multiprocess(args):
                 first_array = np.array(first_windows)
                 logger.info(f"Filtered to {len(first_windows)} windows with consistent shape {ref_shape}")
             train_stats = compute_normalization_stats(
-                X=first_array,
-                method=normalize_method,
-                axis=(0, 1)
+                windows=first_array,
+                channel_names=[channel_name]
             )
             config_dict['train_stats'] = train_stats
             
@@ -429,10 +427,10 @@ def build_windows_multiprocess(args):
             # Normalize and store first batch
             for w in first_windows:
                 normalized = normalize_windows(
-                    W_ntc=w.reshape(1, *w.shape),
-                    stats=train_stats,
-                    baseline_correction=False,
-                    per_channel=False
+                windows=w.reshape(1, *w.shape),
+                stats=train_stats,
+                channel_names=[channel_name],
+                method=normalize_method
                 )[0]
                 all_windows.append(normalized)
                 all_labels.append(0)
@@ -683,9 +681,8 @@ def build_windows_singleprocess(args):
             # Compute normalization stats on first successful train case
             if args.split == 'train' and train_stats is None:
                 train_stats = compute_normalization_stats(
-                    X=case_windows,
-                    method=normalize_method,
-                    axis=(0, 1)
+                    windows=case_windows,
+                    channel_names=[channel_name]
                 )
                 stats_file = Path(args.outdir) / 'train_stats.npz'
                 stats_file.parent.mkdir(parents=True, exist_ok=True)
@@ -704,21 +701,20 @@ def build_windows_singleprocess(args):
                     stats_file = Path(args.outdir).parent / 'train_stats.npz'
 
                 if stats_file.exists():
-                    stats_data = np.load(stats_file)
+                    stats_data = np.load(stats_file, allow_pickle=True)
                     train_stats = NormalizationStats(
-                        mean=stats_data['mean'],
-                        std=stats_data['std'],
-                        method=str(stats_data['method']) if 'method' in stats_data else normalize_method
+                        mean=stats_data['mean'].item() if hasattr(stats_data['mean'], 'item') else stats_data['mean'],
+                        std=stats_data['std'].item() if hasattr(stats_data['std'], 'item') else stats_data['std']
                     )
                     logger.info(f"Loaded train stats from {stats_file}")
 
             # Normalize windows
             if train_stats is not None:
                 normalized = normalize_windows(
-                    W_ntc=case_windows,
+                    windows=case_windows,
                     stats=train_stats,
-                    baseline_correction=False,
-                    per_channel=False
+                    channel_names=[channel_name],
+                    method=normalize_method
                 )
             else:
                 normalized = case_windows
