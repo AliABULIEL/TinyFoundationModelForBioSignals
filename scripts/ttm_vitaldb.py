@@ -212,13 +212,14 @@ def process_single_case(args_tuple):
         signal_tc = signal.reshape(-1, 1)
         peaks_tc = {0: peaks} if peaks is not None and len(peaks) > 0 else None
         
-        case_windows = make_windows(
-            X_tc=signal_tc,
+        # make_windows returns (windows, valid_mask)
+        case_windows, valid_mask = make_windows(
+            X=signal_tc,
             fs=fs,
             win_s=window_s,
             stride_s=stride_s,
             min_cycles=min_cycles if peaks_tc else 0,
-            peaks_tc=peaks_tc
+            signal_type=signal_type
         )
         
         if case_windows is None or len(case_windows) == 0:
@@ -626,17 +627,18 @@ def build_windows_singleprocess(args):
                     failed_cases.append((case_id, f"Low SQI: {sqi:.3f}"))
                     continue
 
-            # Create windows
+            # Create windows  
             signal_tc = signal.reshape(-1, 1)
             peaks_tc = {0: peaks} if peaks is not None and len(peaks) > 0 else None
 
-            case_windows = make_windows(
-                X_tc=signal_tc,
+            # make_windows returns (windows, valid_mask)
+            case_windows, valid_mask = make_windows(
+                X=signal_tc,
                 fs=fs,
                 win_s=window_s,
                 stride_s=stride_s,
                 min_cycles=min_cycles if peaks_tc else 0,
-                peaks_tc=peaks_tc
+                signal_type=signal_type
             )
 
             if case_windows is None or len(case_windows) == 0:

@@ -4,3 +4,9 @@
 window:
   size_seconds: 10.0        # 10-second windows (1250 samples at 125 Hz)
   step_seconds: 10.0        # Non-overlapping during SSL pretrain
+
+# Supervised task configuration (for fine-tuning)
+# Article recommends 50% overlap for supervised tasks
+supervised:
+  size_seconds: 10.0        # Same window size
+  step_seconds: 5.0         # 50% overlap (5s step) for more training samples
