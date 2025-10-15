@@ -457,71 +457,101 @@ class DataPreparationPipeline:
         }
 
     def build_vitaldb_windows(self, split_info: Dict) -> Dict:
-        """Build preprocessed windows for VitalDB (PPG + ECG)."""
-        splits_file = split_info['file']
-        results = {}
+        """Build preprocessed windows for VitalDB (PPG + ECG) with proper synchronization.
 
-        # Process both PPG and ECG channels for SSL pre-training
-        channels_to_process = ['PPG', 'ECG']
-        
-        # Process each split
+        CRITICAL FIX: Uses rebuild_vitaldb_paired.py to ensure PPG and ECG are temporally aligned.
+        This fixes the bug where PPG and ECG were processed independently, causing misalignment.
+        """
+        splits_file = split_info['file']
+
+        logger.info("Building synchronized PPG+ECG windows...")
+        logger.info("CRITICAL: Using rebuild_vitaldb_paired.py for proper temporal alignment")
+
+        # Determine number of cases based on mode
+        if self.mode == 'fasttrack':
+            max_cases = 70
+        else:
+            max_cases = None  # Process all cases
+
+        # Output directory for paired data
+        paired_output = self.dirs['vitaldb_windows'] / 'paired'
+
+        # Build command to call the paired data builder
+        cmd = [
+            sys.executable,
+            'scripts/rebuild_vitaldb_paired.py',
+            '--output', str(paired_output),
+            '--window-size', str(self.context_length),  # Use config value (1024)
+            '--fs', str(self.sampling_rate),  # 125 Hz
+            '--splits-file', splits_file,
+            '--train-ratio', '0.7' if self.mode == 'fasttrack' else '0.7',
+            '--val-ratio', '0.15' if self.mode == 'fasttrack' else '0.15'
+        ]
+
+        if max_cases:
+            cmd.extend(['--max-cases', str(max_cases)])
+
+        logger.info(f"Running: {' '.join(cmd)}")
+
+        # Run the paired data builder
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            logger.error("Failed to build paired windows")
+            logger.error(result.stderr)
+            return {'error': 'Paired window building failed', 'stderr': result.stderr}
+
+        logger.info(result.stdout)
+
+        # Check outputs for each split
+        results = {}
         for split_name in ['train', 'val', 'test']:
-            if split_name not in split_info['splits']:
-                logger.info(f"Skipping {split_name} (not in splits)")
+            split_dir = paired_output / split_name
+
+            if not split_dir.exists():
+                logger.warning(f"Split directory not found: {split_dir}")
                 continue
 
-            logger.info(f"\nProcessing {split_name} split...")
-            split_results = {}
-            
-            # Process each channel
-            for channel in channels_to_process:
-                logger.info(f"  Processing {channel} channel...")
-                
-                # Build command to call existing pipeline
-                cmd = [
-                    sys.executable,
-                    'scripts/ttm_vitaldb.py',
-                    'build-windows',
-                    '--channels-yaml', 'configs/channels.yaml',
-                    '--windows-yaml', 'configs/windows.yaml',
-                    '--split-file', splits_file,
-                    '--split', split_name,
-                    '--channel', channel,
-                    '--duration-sec', '60' if self.mode == 'fasttrack' else '300',
-                    '--min-sqi', '0.5',  # Lowered for surgical data (was 0.7)
-                    '--outdir', str(self.dirs['vitaldb_windows'] / split_name / channel.lower()),
-                    '--multiprocess',
-                    '--num-workers', str(self.num_workers)
-                ]
+            # Find all case files
+            case_files = list(split_dir.glob('case_*.npz'))
 
-                logger.info(f"  Running: {' '.join(cmd)}")
+            if len(case_files) == 0:
+                logger.warning(f"No case files found in {split_dir}")
+                results[split_name] = {'error': 'No cases found'}
+                continue
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
+            # Load first file to check format
+            sample_file = case_files[0]
+            data = np.load(sample_file)
 
-                if result.returncode != 0:
-                    logger.error(f"  Failed to process {split_name}/{channel}")
-                    logger.error(result.stderr)
-                    split_results[channel] = {'error': result.stderr}
-                    continue
+            # Count total windows across all cases
+            total_windows = 0
+            total_size = 0
+            for case_file in case_files:
+                case_data = np.load(case_file)
+                total_windows += case_data['data'].shape[0]
+                total_size += case_file.stat().st_size
 
-                logger.info(result.stdout)
+            results[split_name] = {
+                'dir': str(split_dir),
+                'num_cases': len(case_files),
+                'total_windows': total_windows,
+                'shape_per_window': data['data'].shape[1:],  # [2, 1024]
+                'size_mb': total_size / 1024 / 1024,
+                'format': '[N, 2, 1024] - Channel 0=PPG, Channel 1=ECG'
+            }
 
-                # Check output
-                output_file = self.dirs['vitaldb_windows'] / split_name / channel.lower() / f'{split_name}_windows.npz'
-                if output_file.exists():
-                    data = np.load(output_file)
-                    split_results[channel] = {
-                        'file': str(output_file),
-                        'shape': data['data'].shape,
-                        'size_mb': output_file.stat().st_size / 1024 / 1024
-                    }
-                    logger.info(f"  ✓ {channel}: {data['data'].shape} "
-                                f"({split_results[channel]['size_mb']:.1f} MB)")
-                else:
-                    logger.warning(f"  Output file not found: {output_file}")
-                    split_results[channel] = {'error': 'File not created'}
-            
-            results[split_name] = split_results
+            logger.info(f"  ✓ {split_name}: {len(case_files)} cases, "
+                        f"{total_windows} windows, shape={data['data'].shape[1:]}, "
+                        f"({results[split_name]['size_mb']:.1f} MB)")
+
+        # Save summary
+        summary_file = paired_output / 'dataset_summary.json'
+        if summary_file.exists():
+            with open(summary_file, 'r') as f:
+                summary = json.load(f)
+            logger.info("\n✓ Paired dataset summary:")
+            logger.info(f"  Success rate: {summary.get('summary', {})}")
 
         return results
 
@@ -661,64 +691,100 @@ class DataPreparationPipeline:
         return results
 
     def compute_vitaldb_stats(self, windows_info: Dict) -> Dict:
-        """Compute normalization statistics from VitalDB training set."""
+        """Compute normalization statistics from VitalDB training set (paired data)."""
         if 'train' not in windows_info:
             logger.warning("No training data found")
             return {'error': 'No training data'}
-        
-        # Handle nested channel structure
+
         train_info = windows_info['train']
-        
-        # Check if we have data for PPG channel (primary for stats)
-        if 'PPG' in train_info and 'file' in train_info['PPG']:
-            train_file = Path(train_info['PPG']['file'])
-        elif 'ECG' in train_info and 'file' in train_info['ECG']:
-            # Fallback to ECG if PPG not available
-            train_file = Path(train_info['ECG']['file'])
-        elif 'file' in train_info:
-            # Old flat structure
-            train_file = Path(train_info['file'])
+
+        # New paired data structure - directory with case files
+        if 'dir' in train_info:
+            train_dir = Path(train_info['dir'])
+
+            if not train_dir.exists():
+                logger.error(f"Training directory not found: {train_dir}")
+                return {'error': 'Directory not found'}
+
+            logger.info(f"Loading paired training data from {train_dir}...")
+
+            # Load all case files from training set
+            case_files = list(train_dir.glob('case_*.npz'))
+
+            if len(case_files) == 0:
+                logger.error(f"No case files found in {train_dir}")
+                return {'error': 'No case files'}
+
+            # Collect all windows from all cases
+            all_windows = []
+            for case_file in case_files:
+                data = np.load(case_file)
+                all_windows.append(data['data'])  # [N, 2, 1024]
+
+            # Concatenate all windows
+            windows = np.concatenate(all_windows, axis=0)  # [Total_N, 2, 1024]
+
+            logger.info(f"Training data shape: {windows.shape}")
+            logger.info(f"  {len(case_files)} cases, {windows.shape[0]} windows")
+            logger.info(f"  Format: [N, 2, 1024] - Channel 0=PPG, Channel 1=ECG")
+
+            # Compute per-channel statistics
+            ppg_windows = windows[:, 0, :]  # [N, 1024]
+            ecg_windows = windows[:, 1, :]  # [N, 1024]
+
+            stats = {
+                'mean': float(np.mean(windows)),
+                'std': float(np.std(windows)),
+                'min': float(np.min(windows)),
+                'max': float(np.max(windows)),
+                'n_windows': len(windows),
+                'n_channels': 2,
+                'channel_stats': {
+                    'PPG': {
+                        'mean': float(np.mean(ppg_windows)),
+                        'std': float(np.std(ppg_windows)),
+                        'min': float(np.min(ppg_windows)),
+                        'max': float(np.max(ppg_windows))
+                    },
+                    'ECG': {
+                        'mean': float(np.mean(ecg_windows)),
+                        'std': float(np.std(ecg_windows)),
+                        'min': float(np.min(ecg_windows)),
+                        'max': float(np.max(ecg_windows))
+                    }
+                }
+            }
+
+            # Save statistics
+            stats_file = self.dirs['vitaldb_windows'] / 'paired' / 'train_stats.npz'
+            stats_file.parent.mkdir(parents=True, exist_ok=True)
+
+            np.savez(
+                stats_file,
+                mean=stats['mean'],
+                std=stats['std'],
+                min=stats['min'],
+                max=stats['max'],
+                ppg_mean=stats['channel_stats']['PPG']['mean'],
+                ppg_std=stats['channel_stats']['PPG']['std'],
+                ecg_mean=stats['channel_stats']['ECG']['mean'],
+                ecg_std=stats['channel_stats']['ECG']['std'],
+                method='zscore'
+            )
+
+            logger.info(f"✓ Saved normalization stats to {stats_file}")
+            logger.info(f"  Overall: Mean={stats['mean']:.4f}, Std={stats['std']:.4f}")
+            logger.info(f"  PPG: Mean={stats['channel_stats']['PPG']['mean']:.4f}, "
+                       f"Std={stats['channel_stats']['PPG']['std']:.4f}")
+            logger.info(f"  ECG: Mean={stats['channel_stats']['ECG']['mean']:.4f}, "
+                       f"Std={stats['channel_stats']['ECG']['std']:.4f}")
+
+            return stats
+
         else:
-            logger.error("No valid training data files found")
-            logger.error(f"Training info structure: {train_info}")
-            return {'error': 'No training files'}
-        if not train_file.exists():
-            logger.error(f"Training file not found: {train_file}")
-            return {'error': 'File not found'}
-
-        logger.info(f"Loading training data from {train_file}...")
-        data = np.load(train_file)
-        windows = data['data']
-
-        logger.info(f"Training data shape: {windows.shape}")
-
-        # Compute per-channel statistics
-        if windows.ndim == 2:
-            windows = windows[:, :, np.newaxis]
-
-        stats = {
-            'mean': float(np.mean(windows)),
-            'std': float(np.std(windows)),
-            'min': float(np.min(windows)),
-            'max': float(np.max(windows)),
-            'n_windows': len(windows)
-        }
-
-        # Save statistics
-        stats_file = self.dirs['vitaldb_windows'] / 'train_stats.npz'
-        np.savez(
-            stats_file,
-            mean=stats['mean'],
-            std=stats['std'],
-            min=stats['min'],
-            max=stats['max'],
-            method='zscore'
-        )
-
-        logger.info(f"✓ Saved normalization stats to {stats_file}")
-        logger.info(f"  Mean: {stats['mean']:.4f}, Std: {stats['std']:.4f}")
-
-        return stats
+            # Legacy single file structure (shouldn't reach here with new code)
+            logger.error("Old data structure detected. Please rebuild data with new paired format.")
+            return {'error': 'Legacy structure not supported'}
 
     def compute_butppg_stats(self, windows_info: Dict) -> Dict:
         """Compute normalization statistics from BUT-PPG training set."""
@@ -768,61 +834,95 @@ class DataPreparationPipeline:
         return stats
 
     def validate_vitaldb_data(self, windows_info: Dict) -> Dict:
-        """Validate VitalDB data integrity."""
+        """Validate VitalDB paired data integrity."""
         validation = {
             'splits': {},
             'issues': []
         }
 
         for split_name, split_info in windows_info.items():
-            if 'file' not in split_info:
-                continue
+            # Handle new paired data structure (directory with case files)
+            if 'dir' in split_info:
+                split_dir = Path(split_info['dir'])
 
-            file_path = Path(split_info['file'])
-            if not file_path.exists():
-                validation['issues'].append(f"{split_name}: file not found")
-                continue
+                if not split_dir.exists():
+                    validation['issues'].append(f"{split_name}: directory not found")
+                    continue
 
-            # Load and validate
-            try:
-                data = np.load(file_path)
-                windows = data['data']
-                labels = data.get('labels', None)
+                # Load and validate case files
+                try:
+                    case_files = list(split_dir.glob('case_*.npz'))
 
-                # Check for NaN/Inf
-                has_nan = np.any(np.isnan(windows))
-                has_inf = np.any(np.isinf(windows))
+                    if len(case_files) == 0:
+                        validation['issues'].append(f"{split_name}: no case files found")
+                        continue
 
-                # ✅ USE CONFIG VALUE - NO HARD-CODED!
-                # Check shape consistency
-                expected_samples = self.expected_samples  # ✅ FROM CONFIG!
-                valid_shape = windows.shape[1] == expected_samples
+                    # Validate sample cases
+                    all_has_nan = []
+                    all_has_inf = []
+                    all_means = []
+                    all_stds = []
+                    total_windows = 0
 
-                validation['splits'][split_name] = {
-                    'shape': windows.shape,
-                    'has_nan': bool(has_nan),
-                    'has_inf': bool(has_inf),
-                    'valid_shape': valid_shape,
-                    'mean': float(np.mean(windows)),
-                    'std': float(np.std(windows))
-                }
+                    for case_file in case_files:
+                        data = np.load(case_file)
+                        windows = data['data']  # [N, 2, 1024]
 
-                if has_nan:
-                    validation['issues'].append(f"{split_name}: contains NaN")
-                if has_inf:
-                    validation['issues'].append(f"{split_name}: contains Inf")
-                if not valid_shape:
-                    validation['issues'].append(
-                        f"{split_name}: wrong shape {windows.shape[1]} (expected {expected_samples})"
-                    )
+                        total_windows += windows.shape[0]
 
-                logger.info(f"✓ {split_name}: {windows.shape}, "
-                            f"mean={validation['splits'][split_name]['mean']:.3f}, "
-                            f"std={validation['splits'][split_name]['std']:.3f}")
+                        # Check for NaN/Inf
+                        all_has_nan.append(np.any(np.isnan(windows)))
+                        all_has_inf.append(np.any(np.isinf(windows)))
+                        all_means.append(np.mean(windows))
+                        all_stds.append(np.std(windows))
 
-            except Exception as e:
-                validation['issues'].append(f"{split_name}: {str(e)}")
-                logger.error(f"Error validating {split_name}: {e}")
+                        # Check shape consistency
+                        expected_channels = 2
+                        expected_samples = self.expected_samples  # From config
+
+                        if windows.ndim != 3:
+                            validation['issues'].append(
+                                f"{split_name}/{case_file.name}: wrong ndim {windows.ndim} (expected 3)"
+                            )
+                        elif windows.shape[1] != expected_channels:
+                            validation['issues'].append(
+                                f"{split_name}/{case_file.name}: wrong channels {windows.shape[1]} (expected 2)"
+                            )
+                        elif windows.shape[2] != expected_samples:
+                            validation['issues'].append(
+                                f"{split_name}/{case_file.name}: wrong samples {windows.shape[2]} (expected {expected_samples})"
+                            )
+
+                    # Aggregate results
+                    has_nan = any(all_has_nan)
+                    has_inf = any(all_has_inf)
+
+                    validation['splits'][split_name] = {
+                        'num_cases': len(case_files),
+                        'total_windows': total_windows,
+                        'format': '[N, 2, 1024]',
+                        'has_nan': bool(has_nan),
+                        'has_inf': bool(has_inf),
+                        'mean': float(np.mean(all_means)),
+                        'std': float(np.mean(all_stds))
+                    }
+
+                    if has_nan:
+                        validation['issues'].append(f"{split_name}: contains NaN in some cases")
+                    if has_inf:
+                        validation['issues'].append(f"{split_name}: contains Inf in some cases")
+
+                    logger.info(f"✓ {split_name}: {len(case_files)} cases, {total_windows} windows, "
+                                f"mean={validation['splits'][split_name]['mean']:.3f}, "
+                                f"std={validation['splits'][split_name]['std']:.3f}")
+
+                except Exception as e:
+                    validation['issues'].append(f"{split_name}: {str(e)}")
+                    logger.error(f"Error validating {split_name}: {e}")
+
+            elif 'file' in split_info:
+                # Legacy single file structure
+                validation['issues'].append(f"{split_name}: legacy structure detected, use new paired format")
 
         if validation['issues']:
             logger.warning(f"Found {len(validation['issues'])} validation issues")
@@ -913,13 +1013,21 @@ class DataPreparationPipeline:
             'recommendations': []
         }
 
-        # Check VitalDB
+        # Check VitalDB (new paired data structure)
         if 'vitaldb' in self.datasets:
-            vitaldb_train = self.dirs['vitaldb_windows'] / 'train' / 'train_windows.npz'
-            if vitaldb_train.exists():
-                data = np.load(vitaldb_train)
-                n_windows = len(data['data'])
+            vitaldb_train_dir = self.dirs['vitaldb_windows'] / 'paired' / 'train'
+
+            if vitaldb_train_dir.exists():
+                # Count windows across all case files
+                case_files = list(vitaldb_train_dir.glob('case_*.npz'))
+                n_windows = 0
+
+                for case_file in case_files:
+                    data = np.load(case_file)
+                    n_windows += data['data'].shape[0]
+
                 validation['summary']['vitaldb_train_windows'] = n_windows
+                validation['summary']['vitaldb_train_cases'] = len(case_files)
 
                 # Check if we have enough windows for SSL
                 target = 500000 if self.mode == 'full' else 10000
@@ -929,7 +1037,9 @@ class DataPreparationPipeline:
                         f"Consider increasing duration_sec or using more cases."
                     )
                 else:
-                    logger.info(f"✓ VitalDB: {n_windows} windows (target: {target})")
+                    logger.info(f"✓ VitalDB: {n_windows} windows from {len(case_files)} cases (target: {target})")
+            else:
+                logger.warning(f"VitalDB training data not found at {vitaldb_train_dir}")
 
         # Check BUT-PPG
         if 'butppg' in self.datasets:
