@@ -440,7 +440,7 @@ class DataPreparationPipeline:
                     '--split', split_name,
                     '--channel', channel,
                     '--duration-sec', '60' if self.mode == 'fasttrack' else '300',
-                    '--min-sqi', '0.7',
+                    '--min-sqi', '0.5',  # Lowered for surgical data (was 0.7)
                     '--outdir', str(self.dirs['vitaldb_windows'] / split_name / channel.lower()),
                     '--multiprocess',
                     '--num-workers', str(self.num_workers)

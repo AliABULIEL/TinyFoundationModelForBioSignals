@@ -19,7 +19,7 @@ pretrain:
     quality_metrics:
       - "sqi"
       - "bsqi"
-    min_quality: 0.9
+    min_quality: 0.5  # Lowered for surgical data (was 0.9)
     type: "ecg"
       
   PPG:
@@ -35,7 +35,7 @@ pretrain:
     quality_metrics:
       - "ssqi"
       - "psqi"
-    min_quality: 0.8
+    min_quality: 0.5  # Lowered for surgical data (was 0.8)
     type: "ppg"
 
 # Fine-tuning Configuration (BUT-PPG)
