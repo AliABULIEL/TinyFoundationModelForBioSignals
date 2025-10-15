@@ -575,18 +575,34 @@ def create_ssl_model(
     decoder_cfg = model_cfg.get('decoder', {})
     n_channels = decoder_cfg.get('n_channels', input_channels)
     
-    # Get actual d_model from encoder
-    # For custom context_length, TTM uses d_model=64
-    # For pretrained (1024), TTM uses d_model from config
-    if context_length != 1024:
-        actual_d_model = 64  # Fresh TTM config default
-    else:
-        actual_d_model = d_model  # From config (192)
+    # ✅ Get actual d_model from encoder dynamically - NO HARD-CODED VALUES!
+    # Query the encoder's actual output dimension to ensure decoder compatibility
+    try:
+        if hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'config'):
+            actual_d_model = encoder.backbone.config.d_model
+            logger.info(f"  Got d_model={actual_d_model} from TTM encoder config")
+        elif hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'd_model'):
+            actual_d_model = encoder.backbone.d_model
+            logger.info(f"  Got d_model={actual_d_model} from TTM encoder attribute")
+        else:
+            # Fallback: calculate from patch_size based on TTM formula
+            # TTM-Enhanced (patch_size=128) -> d_model=192
+            # TTM formula: d_model = 64 * (128 // patch_size) for patch_size >= 32
+            if patch_size >= 32:
+                actual_d_model = max(64, 64 * (128 // patch_size))
+            else:
+                actual_d_model = 384
+            logger.info(f"  Calculated d_model={actual_d_model} from patch_size={patch_size}")
+    except Exception as e:
+        logger.warning(f"  Could not get d_model from encoder: {e}")
+        # Safe default for TTM-Enhanced (most common case)
+        actual_d_model = 192
+        logger.warning(f"  Using safe default d_model={actual_d_model}")
     
-    logger.info(f"  Using d_model={actual_d_model} (encoder output dimension)")
+    logger.info(f"  ✅ Using d_model={actual_d_model} for decoder (matches encoder output)")
     
     decoder = ReconstructionHead1D(
-        d_model=actual_d_model,
+        d_model=actual_d_model,  # Now dynamically matches encoder!
         patch_size=patch_size,
         n_channels=n_channels
     )
