@@ -39,16 +39,21 @@ Complete analysis with:
 
 ## Quick Start
 
-### Step 1: Test with FastTrack Mode (Recommended)
+### Step 1: Start with VitalDB Only (Recommended)
+
+VitalDB is already accessible through the Python package. Start here:
 
 ```bash
-# This will process 70 VitalDB cases (~10 minutes)
-python scripts/prepare_all_data.py --mode fasttrack --num-workers 8
+# Install VitalDB if not already installed
+pip install vitaldb certifi
+
+# Prepare VitalDB data only (FastTrack mode - 70 cases, ~10-15 minutes)
+python scripts/prepare_all_data.py --mode fasttrack --dataset vitaldb --num-workers 8
 ```
 
 **What this does:**
 - ✅ Creates subject-level splits (no leakage)
-- ✅ Builds 10s windows at 125Hz
+- ✅ Builds 10s windows at 125Hz for PPG + ECG
 - ✅ Applies proper filters (PPG: 0.5-8Hz, ECG: 0.5-40Hz)
 - ✅ Quality filtering with SQI thresholds
 - ✅ Computes normalization statistics
@@ -71,17 +76,23 @@ data/processed/
     └── pipeline_report_fasttrack.json
 ```
 
-### Step 2: Verify Output
+### Step 2: Verify VitalDB Output
 
 ```bash
-# Check window counts
+# Check window counts and quality
 python -c "
 import numpy as np
 for split in ['train', 'test']:
     try:
         path = f'data/processed/vitaldb/windows/{split}/{split}_windows.npz'
         data = np.load(path)
-        print(f'{split}: {data[\"data\"].shape}')
+        windows = data['data']
+        print(f'{split}: {windows.shape}')
+        print(f'  NaN: {np.any(np.isnan(windows))}')
+        print(f'  Inf: {np.any(np.isinf(windows))}')
+        print(f'  Mean: {np.mean(windows):.3f} (should be ~0)')
+        print(f'  Std: {np.std(windows):.3f} (should be ~1)')
+        print()
     except Exception as e:
         print(f'{split}: {e}')
 "
@@ -90,44 +101,86 @@ for split in ['train', 'test']:
 **Expected:**
 ```
 train: (5000-10000, 1250, 2)  # ~5-10K windows for FastTrack
+  NaN: False
+  Inf: False
+  Mean: ~0.0 (normalized)
+  Std: ~1.0 (normalized)
+
 test: (1000-2000, 1250, 2)
+  NaN: False
+  Inf: False
+  Mean: ~0.0
+  Std: ~1.0
 ```
 
-### Step 3: Validate Data Quality
+### Step 3: BUT-PPG Data (Optional - For Fine-tuning)
+
+BUT-PPG needs to be downloaded separately. You have 3 options:
+
+#### Option 1: Automatic Download (Recommended)
 
 ```bash
-# Check for NaN/Inf
-python -c "
-import numpy as np
-data = np.load('data/processed/vitaldb/windows/train/train_windows.npz')
-windows = data['data']
-print(f'Shape: {windows.shape}')
-print(f'NaN: {np.any(np.isnan(windows))}')
-print(f'Inf: {np.any(np.isinf(windows))}')
-print(f'Mean: {np.mean(windows):.3f}')
-print(f'Std: {np.std(windows):.3f}')
-"
+# Download and prepare BUT-PPG in one command
+python scripts/prepare_all_data.py --dataset butppg --download-butppg
 ```
 
-**Expected:**
-```
-Shape: (5000-10000, 1250, 2)
-NaN: False
-Inf: False
-Mean: ~0.0 (normalized)
-Std: ~1.0 (normalized)
-```
+This will:
+1. Download BUT-PPG from PhysioNet (~87 MB)
+2. Extract and organize the data
+3. Create splits and windows
 
-### Step 4: Run Full Mode (Production)
-
-Once FastTrack validates successfully:
+#### Option 2: Manual Download Script
 
 ```bash
-# This will process ALL VitalDB cases (~1-2 hours with 16 workers)
-python scripts/prepare_all_data.py --mode full --num-workers 16
+# Run the download script separately
+python scripts/download_but_ppg.py
+
+# Then prepare BUT-PPG
+python scripts/prepare_all_data.py --dataset butppg
 ```
 
-**Target:** ~500K windows for SSL pretraining
+**Download script output:**
+```
+data/but_ppg/
+├── dataset/              ← Raw data (signals)
+│   ├── quality-hr-ann.csv
+│   ├── subject-info.csv
+│   └── [subject folders with .dat files]
+└── raw/
+    └── but_ppg.zip
+
+data/outputs/
+├── waveform_index.csv    ← Index of all records
+├── labels.csv            ← Demographics
+└── dataset_info.json     ← Metadata
+```
+
+#### Option 3: Manual Download from PhysioNet
+
+```bash
+# Download from PhysioNet
+wget -r -N -c -np https://physionet.org/files/butppg/2.0.0/
+
+# Or download ZIP
+wget https://physionet.org/static/published-projects/butppg/brno-university-of-technology-smartphone-ppg-database-but-ppg-2.0.0.zip
+
+# Extract to data/but_ppg/dataset/
+unzip but-ppg-2.0.0.zip -d data/but_ppg/dataset/
+
+# Then run preparation
+python scripts/prepare_all_data.py --dataset butppg
+```
+
+**Important:** The script expects BUT-PPG data at `data/but_ppg/dataset/`
+
+### Step 4: Run Full Pipeline (Both Datasets)
+
+Once you've verified FastTrack works:
+
+```bash
+# Full pipeline: VitalDB (full) + BUT-PPG
+python scripts/prepare_all_data.py --mode full --download-butppg --num-workers 16
+```
 
 ## What Your Code Does Well
 
@@ -181,77 +234,75 @@ BUT-PPG (ACC+PPG+ECG, 5ch) → Fine-tuning
 - Hard artifact detection
 - Cycle validation
 
-## Minor Adjustments (Optional)
+## Common Issues & Solutions
 
-### 1. PPG Filter Consistency (Minor)
-
-Some parts of your code use 0.4-7 Hz instead of article's 0.5-8 Hz:
-
-```yaml
-# configs/channels.yaml
-PPG:
-  filter:
-    lowcut: 0.5  # Make sure this is 0.5 everywhere
-    highcut: 8   # Make sure this is 8 everywhere
-```
-
-**Impact:** Very minor, likely no practical difference.
-
-### 2. Learning Rate (Monitor)
-
-Article uses 1e-4, your code has 5e-4 in some places:
-
-```yaml
-# If you have ssl_pretrain.yaml or similar
-training:
-  lr: 1e-4  # Or monitor closely if using 5e-4
-```
-
-**Impact:** Higher LR might cause instability. Just monitor training loss.
-
-### 3. Supervised Overlap (For downstream tasks)
-
-Article mentions 50% overlap for supervised tasks:
-
-```yaml
-# configs/windows.yaml
-window:
-  size_seconds: 10.0
-  step_seconds: 10.0  # For SSL
-  
-supervised:
-  step_seconds: 5.0  # 50% overlap for hypotension/BP tasks
-```
-
-**Impact:** Increases sample size for downstream tasks.
-
-## Troubleshooting
-
-### Issue: "VitalDB import failed"
+### Issue 1: "VitalDB import failed"
 
 ```bash
 pip install vitaldb certifi
 ```
 
-### Issue: "NeuroKit2 detection failed"
+### Issue 2: "BUT-PPG directory not found"
+
+```bash
+# Option A: Let the script download it
+python scripts/prepare_all_data.py --dataset butppg --download-butppg
+
+# Option B: Download manually
+python scripts/download_but_ppg.py
+```
+
+### Issue 3: "No cases found" for VitalDB
+
+Check VitalDB access:
+```python
+import vitaldb
+print("BIS cases:", len(vitaldb.caseids_bis))
+print("First 10:", vitaldb.caseids_bis[:10])
+```
+
+### Issue 4: "Out of memory"
+
+Reduce workers:
+```bash
+python scripts/prepare_all_data.py --mode fasttrack --num-workers 4
+```
+
+### Issue 5: "NeuroKit2 detection failed"
 
 ```bash
 pip install neurokit2
 ```
 
-### Issue: "No cases found"
+## Directory Structure After Preparation
 
-Check VitalDB access:
-```python
-import vitaldb
-print(vitaldb.caseids_bis[:10])
 ```
-
-### Issue: "Out of memory"
-
-Reduce workers:
-```bash
-python scripts/prepare_all_data.py --mode fasttrack --num-workers 4
+TinyFoundationModelForBioSignals/
+├── data/
+│   ├── but_ppg/                    ← BUT-PPG raw data
+│   │   ├── dataset/                ← Signal files
+│   │   └── raw/                    ← Downloaded ZIP
+│   ├── outputs/                    ← BUT-PPG index files
+│   └── processed/                  ← Prepared data (output)
+│       ├── vitaldb/
+│       │   ├── splits/
+│       │   │   └── splits_fasttrack.json
+│       │   └── windows/
+│       │       ├── train/
+│       │       │   ├── train_windows.npz
+│       │       │   └── train_stats.npz
+│       │       └── test/
+│       │           └── test_windows.npz
+│       ├── butppg/
+│       │   ├── splits/
+│       │   └── windows/
+│       └── reports/
+│           └── pipeline_report_fasttrack.json
+├── scripts/
+│   ├── prepare_all_data.py         ← Master script
+│   ├── download_but_ppg.py         ← BUT-PPG downloader
+│   └── ttm_vitaldb.py              ← VitalDB processor
+└── data_preparation.log            ← Detailed log
 ```
 
 ## Next Steps After Data Preparation
@@ -311,8 +362,16 @@ python scripts/finetune_butppg.py \
 
 **Ready to Train?** YES! 🚀
 
+**Recommended Workflow:**
+1. Start with VitalDB FastTrack mode ✅
+2. Verify output and data quality ✅
+3. Run VitalDB Full mode for SSL pretraining
+4. Download and prepare BUT-PPG (optional)
+5. Start SSL pretraining
+6. Fine-tune on BUT-PPG
+
 **Files Created:**
-- `scripts/prepare_all_data.py` - Master orchestration script
+- `scripts/prepare_all_data.py` - Master orchestration script with BUT-PPG download support
 - `REVIEW_AND_COMPATIBILITY.md` - Complete technical review
 - `QUICK_START.md` - This guide
 

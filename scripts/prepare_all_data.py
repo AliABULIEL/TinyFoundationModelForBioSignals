@@ -8,6 +8,7 @@ This script orchestrates the complete data preparation pipeline for:
 2. BUT-PPG Fine-tuning (ACC + PPG + ECG, 5 channels)
 
 It uses your existing codebase to:
+- Download datasets (if needed)
 - Create subject-level splits
 - Build preprocessed windows with quality filtering
 - Compute normalization statistics
@@ -24,8 +25,8 @@ Usage:
     # Only VitalDB
     python scripts/prepare_all_data.py --dataset vitaldb
     
-    # Only BUT-PPG
-    python scripts/prepare_all_data.py --dataset butppg
+    # Only BUT-PPG (will download if needed)
+    python scripts/prepare_all_data.py --dataset butppg --download-butppg
     
     # With multiprocessing
     python scripts/prepare_all_data.py --multiprocess --num-workers 8
@@ -75,7 +76,8 @@ class DataPreparationPipeline:
         mode: str = 'fasttrack',
         output_dir: str = 'data/processed',
         num_workers: Optional[int] = None,
-        datasets: List[str] = ['vitaldb', 'butppg']
+        datasets: List[str] = ['vitaldb', 'butppg'],
+        download_butppg: bool = False
     ):
         """
         Initialize data preparation pipeline.
@@ -85,11 +87,17 @@ class DataPreparationPipeline:
             output_dir: Base directory for processed data
             num_workers: Number of parallel workers (None = auto)
             datasets: Which datasets to prepare ['vitaldb', 'butppg', or both]
+            download_butppg: Whether to download BUT-PPG if not found
         """
         self.mode = mode
         self.output_dir = Path(output_dir)
-        self.num_workers = num_workers or min(cpu_count() - 1, 8)
+        self.num_workers = num_workers or min(os.cpu_count() - 1, 8)
         self.datasets = datasets
+        self.download_butppg = download_butppg
+        
+        # BUT-PPG paths (from download script)
+        self.butppg_raw_dir = Path('data/but_ppg/dataset')
+        self.butppg_index_dir = Path('data/outputs')
         
         # Create directory structure
         self.dirs = {
@@ -139,8 +147,23 @@ class DataPreparationPipeline:
             logger.info("\n" + "=" * 80)
             logger.info("PHASE 2: BUT-PPG Fine-tuning Data Preparation")
             logger.info("=" * 80)
-            butppg_results = self.prepare_butppg()
-            results['datasets']['butppg'] = butppg_results
+            
+            # Check if download is needed
+            if not self.butppg_raw_dir.exists() and self.download_butppg:
+                logger.info("BUT-PPG data not found. Downloading...")
+                if not self.download_butppg_data():
+                    logger.error("Failed to download BUT-PPG data")
+                    results['datasets']['butppg'] = {'error': 'Download failed'}
+                else:
+                    butppg_results = self.prepare_butppg()
+                    results['datasets']['butppg'] = butppg_results
+            elif not self.butppg_raw_dir.exists():
+                logger.warning("BUT-PPG data not found. Use --download-butppg flag to download.")
+                logger.warning("Or manually run: python scripts/download_but_ppg.py")
+                results['datasets']['butppg'] = {'error': 'Data not found'}
+            else:
+                butppg_results = self.prepare_butppg()
+                results['datasets']['butppg'] = butppg_results
         
         # Phase 3: Final Validation
         logger.info("\n" + "=" * 80)
@@ -157,6 +180,34 @@ class DataPreparationPipeline:
         logger.info("=" * 80)
         
         return results
+    
+    def download_butppg_data(self) -> bool:
+        """Download BUT-PPG data using the download script."""
+        logger.info("Running BUT-PPG download script...")
+        
+        try:
+            result = subprocess.run(
+                [sys.executable, 'scripts/download_but_ppg.py'],
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minutes max
+            )
+            
+            if result.returncode == 0:
+                logger.info("✓ BUT-PPG downloaded successfully")
+                logger.info(result.stdout)
+                return True
+            else:
+                logger.error("✗ BUT-PPG download failed")
+                logger.error(result.stderr)
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("✗ BUT-PPG download timed out")
+            return False
+        except Exception as e:
+            logger.error(f"✗ Error running download script: {e}")
+            return False
     
     def prepare_vitaldb(self) -> Dict:
         """Prepare VitalDB data for SSL pretraining."""
@@ -183,6 +234,9 @@ class DataPreparationPipeline:
         """Prepare BUT-PPG data for fine-tuning."""
         logger.info("\n>>> Step 2.1: Creating BUT-PPG splits")
         butppg_splits = self.create_butppg_splits()
+        
+        if 'error' in butppg_splits:
+            return butppg_splits
         
         logger.info("\n>>> Step 2.2: Building BUT-PPG windows (ACC + PPG + ECG)")
         butppg_windows = self.build_butppg_windows(butppg_splits)
@@ -331,15 +385,15 @@ class DataPreparationPipeline:
         logger.info("Getting available BUT-PPG subjects...")
         
         # Check if BUT-PPG data exists
-        butppg_dir = Path('data/butppg')
-        if not butppg_dir.exists():
-            logger.warning(f"BUT-PPG directory not found: {butppg_dir}")
-            logger.info("Please download BUT-PPG data first")
-            return {'error': 'Data not found'}
+        if not self.butppg_raw_dir.exists():
+            logger.warning(f"BUT-PPG directory not found: {self.butppg_raw_dir}")
+            logger.info("Please run: python scripts/download_but_ppg.py")
+            logger.info("Or use --download-butppg flag")
+            return {'error': 'Data not found', 'path': str(self.butppg_raw_dir)}
         
         # Load BUT-PPG data
         try:
-            loader = BUTPPGLoader(str(butppg_dir))
+            loader = BUTPPGLoader(str(self.butppg_raw_dir))
             subjects = loader.get_subject_list()
             logger.info(f"Found {len(subjects)} BUT-PPG subjects")
         except Exception as e:
@@ -583,8 +637,16 @@ class DataPreparationPipeline:
                                    f"({info['size_mb']:.1f} MB)")
         
         if 'butppg' in results['datasets']:
+            butppg = results['datasets']['butppg']
             logger.info("\nBUT-PPG:")
-            logger.info("  Status: Prepared")
+            if 'error' in butppg:
+                logger.warning(f"  Error: {butppg['error']}")
+                if 'path' in butppg:
+                    logger.warning(f"  Expected path: {butppg['path']}")
+                logger.info("  Run: python scripts/download_but_ppg.py")
+                logger.info("  Or use: --download-butppg flag")
+            else:
+                logger.info("  Status: Prepared")
         
         logger.info("\n" + "=" * 80)
 
@@ -605,14 +667,21 @@ Examples:
   # Only prepare VitalDB
   python scripts/prepare_all_data.py --dataset vitaldb
   
-  # Only prepare BUT-PPG
-  python scripts/prepare_all_data.py --dataset butppg
+  # Only prepare BUT-PPG (download if needed)
+  python scripts/prepare_all_data.py --dataset butppg --download-butppg
   
   # Use 16 workers for faster processing
   python scripts/prepare_all_data.py --num-workers 16
   
   # Custom output directory
   python scripts/prepare_all_data.py --output data/my_processed_data
+
+BUT-PPG Data:
+  The script expects BUT-PPG data at: data/but_ppg/dataset/
+  You can either:
+    1. Use --download-butppg flag (downloads automatically)
+    2. Manually run: python scripts/download_but_ppg.py
+    3. Download from PhysioNet: https://physionet.org/content/butppg/2.0.0/
         """
     )
     
@@ -645,6 +714,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--download-butppg',
+        action='store_true',
+        help='Download BUT-PPG data if not found (uses scripts/download_but_ppg.py)'
+    )
+    
+    parser.add_argument(
         '--skip-validation',
         action='store_true',
         help='Skip final validation phase'
@@ -663,7 +738,8 @@ Examples:
         mode=args.mode,
         output_dir=args.output,
         num_workers=args.num_workers,
-        datasets=datasets
+        datasets=datasets,
+        download_butppg=args.download_butppg
     )
     
     try:
@@ -674,6 +750,14 @@ Examples:
         logger.info("=" * 80)
         logger.info(f"\nProcessed data location: {pipeline.output_dir}")
         logger.info(f"Log file: data_preparation.log")
+        
+        # Check for BUT-PPG errors
+        if 'butppg' in results['datasets'] and 'error' in results['datasets']['butppg']:
+            logger.warning("\n⚠️  BUT-PPG data preparation had issues.")
+            logger.info("To download BUT-PPG data:")
+            logger.info("  Option 1: python scripts/download_but_ppg.py")
+            logger.info("  Option 2: python scripts/prepare_all_data.py --dataset butppg --download-butppg")
+            logger.info("  Option 3: Download from https://physionet.org/content/butppg/2.0.0/")
         
         return 0
         
