@@ -392,8 +392,8 @@ def main():
         'variant': 'ibm-granite/granite-timeseries-ttm-r1',
         'task': 'ssl',
         'input_channels': 2,
-        'context_length': 1250,
-        'patch_size': 125,
+        'context_length': 1024,
+        'patch_size': 128,
         'freeze_encoder': False
     }).to(device)
     
@@ -478,8 +478,8 @@ def main():
         'variant': 'ibm-granite/granite-timeseries-ttm-r1',
         'task': 'classification',
         'input_channels': 2,
-        'context_length': 1250,
-        'patch_size': 125,
+        'context_length': 1024,
+        'patch_size': 128,
         'num_classes': 2
     })
     

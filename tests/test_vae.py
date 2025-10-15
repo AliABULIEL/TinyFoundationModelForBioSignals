@@ -214,7 +214,7 @@ class TestModelFactory:
             'task': 'classification',
             'num_classes': 2,
             'input_channels': 1,
-            'context_length': 1250,
+            'context_length': 1024,
             'latent_dim': 64,
             'beta': 1.0
         }

@@ -48,7 +48,7 @@ print("\n[3/6] Testing VitalDB task instantiation...")
 try:
     hypotension_task = VitalDBHypotensionTask(
         data_dir="data/vitaldb",
-        split_file="configs/splits/splits_full.json",
+        split_file="../configs/splits/splits_full.json",
         prediction_window_min=10
     )
     print(f"✓ VitalDBHypotensionTask instantiated: {hypotension_task.name}")
@@ -57,7 +57,7 @@ try:
 
     bp_task = VitalDBBloodPressureTask(
         data_dir="data/vitaldb",
-        split_file="configs/splits/splits_full.json",
+        split_file="../configs/splits/splits_full.json",
         target_bp='MAP'
     )
     print(f"✓ VitalDBBloodPressureTask instantiated: {bp_task.name}")
@@ -66,7 +66,7 @@ try:
 
     mortality_task = VitalDBMortalityTask(
         data_dir="data/vitaldb",
-        split_file="configs/splits/splits_full.json"
+        split_file="../configs/splits/splits_full.json"
     )
     print(f"✓ VitalDBMortalityTask instantiated: {mortality_task.name}")
 
@@ -81,7 +81,7 @@ print("\n[4/6] Testing BUT-PPG task instantiation...")
 try:
     quality_task = BUTPPGQualityTask(
         data_dir="data/butppg",
-        split_file="configs/splits/splits_full.json",
+        split_file="../configs/splits/splits_full.json",
         quality_threshold=0.7
     )
     print(f"✓ BUTPPGQualityTask instantiated: {quality_task.name}")
@@ -90,7 +90,7 @@ try:
 
     hr_task = BUTPPGHeartRateTask(
         data_dir="data/butppg",
-        split_file="configs/splits/splits_full.json",
+        split_file="../configs/splits/splits_full.json",
         hr_method='peak_detection'
     )
     print(f"✓ BUTPPGHeartRateTask instantiated: {hr_task.name}")
@@ -99,7 +99,7 @@ try:
 
     motion_task = BUTPPGMotionTask(
         data_dir="data/butppg",
-        split_file="configs/splits/splits_full.json"
+        split_file="../configs/splits/splits_full.json"
     )
     print(f"✓ BUTPPGMotionTask instantiated: {motion_task.name}")
     print(f"  - Num classes: {motion_task.num_classes}")
@@ -115,7 +115,7 @@ print("\n[5/6] Testing task retrieval functions...")
 try:
     vitaldb_tasks = get_all_vitaldb_tasks(
         data_dir="data/vitaldb",
-        split_file="configs/splits/splits_full.json"
+        split_file="../configs/splits/splits_full.json"
     )
     print(f"✓ Retrieved {len(vitaldb_tasks)} VitalDB tasks:")
     for task_name, task in vitaldb_tasks.items():
@@ -123,7 +123,7 @@ try:
 
     butppg_tasks = get_all_butppg_tasks(
         data_dir="data/butppg",
-        split_file="configs/splits/splits_full.json"
+        split_file="../configs/splits/splits_full.json"
     )
     print(f"✓ Retrieved {len(butppg_tasks)} BUT-PPG tasks:")
     for task_name, task in butppg_tasks.items():

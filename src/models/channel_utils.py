@@ -67,7 +67,7 @@ def load_pretrained_with_channel_inflate(
         ...     'task': 'classification',
         ...     'num_classes': 2,
         ...     'input_channels': 5,
-        ...     'context_length': 1250,
+        ...     'context_length': 1024,
         ...     'freeze_encoder': False  # Will be set by this function
         ... }
         >>> model = load_pretrained_with_channel_inflate(
@@ -251,10 +251,11 @@ def _inflate_channel_weights(
     param_name: str
 ) -> Optional[torch.Tensor]:
     """Inflate channel-dependent weights.
-    
+
     Strategy for inflating from 2→5 channels:
-    - Channels 0,1 (PPG, ECG): Copy from pretrained
-    - Channels 2,3,4 (ACC_X, ACC_Y, ACC_Z): Initialize from mean of channels 0,1
+    - Pretrained ch 0 (PPG) → New ch 3 (PPG)
+    - Pretrained ch 1 (ECG) → New ch 4 (ECG)
+    - New ch 0,1,2 (ACC_X, ACC_Y, ACC_Z) → Initialize from mean of pretrained
     
     Args:
         pretrained_param: Pretrained parameter tensor
@@ -297,24 +298,34 @@ def _inflate_channel_weights(
     # Inflate based on channel dimension location
     if channel_dim == 0:
         # Channel is first dimension (e.g., out_channels in Conv)
-        # Copy pretrained channels
-        inflated[:pretrain_channels] = pretrained_param
-        
-        # Initialize new channels from mean of pretrained
+        # For 2→5 channel inflation: ACC(0,1,2) + PPG(3) + ECG(4)
+
+        # Map pretrained PPG (ch 0) → new ch 3
+        inflated[3] = pretrained_param[0]
+
+        # Map pretrained ECG (ch 1) → new ch 4
+        inflated[4] = pretrained_param[1]
+
+        # Initialize new ACC channels (0, 1, 2) from mean of pretrained
         mean_init = pretrained_param.mean(dim=0, keepdim=True)
-        for i in range(pretrain_channels, finetune_channels):
+        for i in [0, 1, 2]:  # ACC_X, ACC_Y, ACC_Z
             # Add small noise to break symmetry
             noise = torch.randn_like(mean_init) * 0.01
             inflated[i] = mean_init.squeeze(0) + noise.squeeze(0)
     
     elif channel_dim == 1:
         # Channel is second dimension (e.g., in_channels in Conv/Linear)
-        # Copy pretrained channels
-        inflated[:, :pretrain_channels] = pretrained_param
-        
-        # Initialize new channels from mean of pretrained
+        # For 2→5 channel inflation: ACC(0,1,2) + PPG(3) + ECG(4)
+
+        # Map pretrained PPG (ch 0) → new ch 3
+        inflated[:, 3] = pretrained_param[:, 0]
+
+        # Map pretrained ECG (ch 1) → new ch 4
+        inflated[:, 4] = pretrained_param[:, 1]
+
+        # Initialize new ACC channels (0, 1, 2) from mean of pretrained
         mean_init = pretrained_param.mean(dim=1, keepdim=True)
-        for i in range(pretrain_channels, finetune_channels):
+        for i in [0, 1, 2]:  # ACC_X, ACC_Y, ACC_Z
             # Add small noise to break symmetry
             noise = torch.randn_like(mean_init) * 0.01
             inflated[:, i] = mean_init.squeeze(1) + noise.squeeze(1)

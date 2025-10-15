@@ -26,15 +26,7 @@ Usage:
         --output-dir artifacts/but_ppg_finetuned
 
     # Full training (30 epochs with staged unfreezing)
-    python scripts/finetune_butppg.py \
-        --pretrained artifacts/foundation_model/best_model.pt \
-        --data-dir data/but_ppg \
-        --pretrain-channels 2 \
-        --finetune-channels 5 \
-        --unfreeze-last-n 2 \
-        --epochs 30 \
-        --lr 2e-5 \
-        --output-dir artifacts/but_ppg_finetuned
+    python 1
 """
 
 import sys
@@ -560,8 +552,8 @@ def main():
         'task': 'classification',
         'num_classes': 2,  # Binary classification: good vs poor
         'input_channels': args.finetune_channels,
-        'context_length': 1250,
-        'patch_size': 125,
+        'context_length': 1024,
+        'patch_size': 128,
         'head_type': 'linear',
         'freeze_encoder': False  # Will be set by load_pretrained_with_channel_inflate
     }
