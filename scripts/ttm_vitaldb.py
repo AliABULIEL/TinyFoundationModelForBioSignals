@@ -273,25 +273,40 @@ def build_windows_multiprocess(args):
     case_ids = splits[args.split]
     logger.info(f"Processing {args.split} split: {len(case_ids)} cases")
     
-    # Handle nested 'channels' structure
-    if 'channels' in channels_config:
+    # Handle nested config structure - check for 'pretrain' or 'channels' keys
+    if 'pretrain' in channels_config:
+        # New format: pretrain -> PPG/ECG
+        channels_dict = channels_config['pretrain']
+    elif 'channels' in channels_config:
+        # Old format: channels -> list
         channels_dict = channels_config['channels']
     else:
+        # Fallback: use root level
         channels_dict = channels_config
     
     # Get channel configuration
     channel_name = args.channel or 'PPG'
-    if channel_name not in channels_dict:
+    
+    # Try exact match first
+    if channel_name in channels_dict:
+        ch_config = channels_dict[channel_name]
+        logger.info(f"Found channel config for '{channel_name}'")
+    else:
+        # Try case-insensitive match
         channel_name_lower = channel_name.lower()
+        found = False
         for key in channels_dict.keys():
             if key.lower() == channel_name_lower:
                 channel_name = key
+                ch_config = channels_dict[key]
+                logger.info(f"Found channel config for '{channel_name}' (case-insensitive match)")
+                found = True
                 break
-        else:
-            logger.warning(f"Channel '{channel_name}' not found, using PPG")
-            channel_name = 'PPG'
-    
-    ch_config = channels_dict.get(channel_name, {})
+        
+        if not found:
+            logger.error(f"Channel '{channel_name}' not found in config!")
+            logger.error(f"Available channels: {list(channels_dict.keys())}")
+            raise ValueError(f"Channel '{channel_name}' not found in channels config")
     
     # Window parameters - Fixed to read correct config structure
     if 'window' in windows_config:
@@ -524,25 +539,40 @@ def build_windows_singleprocess(args):
     case_ids = splits[args.split]
     logger.info(f"Processing {args.split} split: {len(case_ids)} cases")
 
-    # Handle nested 'channels' structure
-    if 'channels' in channels_config:
+    # Handle nested config structure - check for 'pretrain' or 'channels' keys
+    if 'pretrain' in channels_config:
+        # New format: pretrain -> PPG/ECG
+        channels_dict = channels_config['pretrain']
+    elif 'channels' in channels_config:
+        # Old format: channels -> list
         channels_dict = channels_config['channels']
     else:
+        # Fallback: use root level
         channels_dict = channels_config
-
+    
     # Get channel configuration
     channel_name = args.channel or 'PPG'
-    if channel_name not in channels_dict:
+    
+    # Try exact match first
+    if channel_name in channels_dict:
+        ch_config = channels_dict[channel_name]
+        logger.info(f"Found channel config for '{channel_name}'")
+    else:
+        # Try case-insensitive match
         channel_name_lower = channel_name.lower()
+        found = False
         for key in channels_dict.keys():
             if key.lower() == channel_name_lower:
                 channel_name = key
+                ch_config = channels_dict[key]
+                logger.info(f"Found channel config for '{channel_name}' (case-insensitive match)")
+                found = True
                 break
-        else:
-            logger.warning(f"Channel '{channel_name}' not found, using PPG")
-            channel_name = 'PPG'
-
-    ch_config = channels_dict.get(channel_name, {})
+        
+        if not found:
+            logger.error(f"Channel '{channel_name}' not found in config!")
+            logger.error(f"Available channels: {list(channels_dict.keys())}")
+            raise ValueError(f"Channel '{channel_name}' not found in channels config")
 
     # Window parameters - Fixed to read correct config structure
     if 'window' in windows_config:
