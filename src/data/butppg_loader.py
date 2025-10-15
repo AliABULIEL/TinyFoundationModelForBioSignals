@@ -34,7 +34,7 @@ class BUTPPGLoader:
     """Loader for BUT PPG database with unified preprocessing."""
     
     # BUT PPG database structure
-    SUPPORTED_FORMATS = ['.mat', '.hdf5', '.h5', '.csv', '.npy']  # Exclude .json (metadata only)
+    SUPPORTED_FORMATS = ['.mat', '.hdf5', '.h5', '.csv', '.npy', '.dat']  # BUT-PPG uses .dat files
     
     # Metadata fields
     METADATA_FIELDS = {
@@ -83,23 +83,25 @@ class BUTPPGLoader:
     def _discover_subjects(self) -> List[str]:
         """Discover available subject IDs from directory structure."""
         subjects = set()
-        
-        # Search for all supported signal file formats (exclude metadata files)
-        for fmt in self.SUPPORTED_FORMATS:
-            # Search in data_dir and one level deep
-            for pattern in [f"*{fmt}", f"*/*{fmt}"]:
-                files = list(self.data_dir.glob(pattern))
-                for file in files:
-                    # Extract subject ID from filename (everything before first extension)
-                    subject_id = file.stem
-                    subjects.add(subject_id)
-        
-        # Also check for directories (might contain subject data)
+
+        # For BUT-PPG: Each subject has a directory with record files
+        # Directory structure: data_dir/{record_id}/{record_id}_PPG.dat
+        for item in self.data_dir.iterdir():
+            if item.is_dir() and item.name.isdigit():
+                # Directory name is the record ID
+                subjects.add(item.name)
+
+        # If no directories found, try file-based discovery
         if not subjects:
-            for item in self.data_dir.iterdir():
-                if item.is_dir() and not item.name.startswith('.'):
-                    subjects.add(item.name)
-        
+            for fmt in self.SUPPORTED_FORMATS:
+                # Search in data_dir and one level deep
+                for pattern in [f"*{fmt}", f"*/*{fmt}"]:
+                    files = list(self.data_dir.glob(pattern))
+                    for file in files:
+                        # Extract subject ID from filename (everything before first extension)
+                        subject_id = file.stem
+                        subjects.add(subject_id)
+
         return sorted(list(subjects))
     
     def _load_metadata(self) -> Optional[pd.DataFrame]:
@@ -147,14 +149,40 @@ class BUTPPGLoader:
         """
         if return_windows is None:
             return_windows = self.apply_windowing
-        # Find subject file
-        subject_files = list(self.data_dir.rglob(f"{subject_id}*"))
-        
-        # Filter to only signal files (exclude .json metadata)
-        subject_files = [
-            f for f in subject_files 
-            if f.is_file() and f.suffix in self.SUPPORTED_FORMATS
-        ]
+
+        # For BUT-PPG: Look for signal-specific files in subject directory
+        # Structure: data_dir/{record_id}/{record_id}_PPG.dat
+        subject_dir = self.data_dir / subject_id
+
+        if subject_dir.exists() and subject_dir.is_dir():
+            # Build signal filename based on type
+            signal_suffix_map = {
+                'ppg': '_PPG',
+                'ecg': '_ECG',
+                'acc': '_ACC'
+            }
+            suffix = signal_suffix_map.get(signal_type.lower(), '_PPG')
+
+            # Look for specific signal file
+            signal_file = subject_dir / f"{subject_id}{suffix}.dat"
+
+            if signal_file.exists():
+                subject_files = [signal_file]
+            else:
+                # Fallback: find any matching file in directory
+                subject_files = [
+                    f for f in subject_dir.iterdir()
+                    if f.is_file() and f.suffix in self.SUPPORTED_FORMATS
+                ]
+        else:
+            # Original fallback: recursive search
+            subject_files = list(self.data_dir.rglob(f"{subject_id}*"))
+
+            # Filter to only signal files (exclude .json metadata)
+            subject_files = [
+                f for f in subject_files
+                if f.is_file() and f.suffix in self.SUPPORTED_FORMATS
+            ]
         
         if not subject_files:
             warnings.warn(f"No files found for subject {subject_id}")
@@ -173,6 +201,8 @@ class BUTPPGLoader:
                 signal, metadata = self._load_csv(signal_file, signal_type)
             elif signal_file.suffix == '.npy':
                 signal, metadata = self._load_npy(signal_file, signal_type)
+            elif signal_file.suffix == '.dat':
+                signal, metadata = self._load_dat(signal_file, signal_type, subject_id)
             else:
                 warnings.warn(f"Unsupported format: {signal_file.suffix}")
                 return None
@@ -346,9 +376,41 @@ class BUTPPGLoader:
         if json_path.exists():
             with open(json_path, 'r') as f:
                 metadata.update(json.load(f))
-        
+
         return signal, metadata
-    
+
+    def _load_dat(self, filepath: Path, signal_type: str, subject_id: str) -> Tuple[np.ndarray, Dict]:
+        """Load BUT-PPG .dat file (binary format).
+
+        BUT-PPG .dat files are binary files containing float32 samples.
+        Each record has separate files: {record_id}_PPG.dat, {record_id}_ECG.dat, {record_id}_ACC.dat
+        """
+        # Load binary data as float32
+        signal = np.fromfile(filepath, dtype=np.float32)
+
+        # Determine signal type and sampling frequency from filename
+        filename = filepath.stem
+        if '_PPG' in filename:
+            fs = 64  # BUT-PPG: PPG at 64 Hz
+        elif '_ECG' in filename:
+            fs = 250  # BUT-PPG: ECG at 250 Hz
+        elif '_ACC' in filename:
+            fs = 64  # BUT-PPG: ACC at 64 Hz
+            # ACC has 3 channels (x, y, z), reshape
+            if len(signal) % 3 == 0:
+                signal = signal.reshape(-1, 3)
+        else:
+            fs = 64  # Default
+
+        metadata = {
+            'fs': fs,
+            'subject_id': subject_id,
+            'source_file': str(filepath),
+            'signal_type': signal_type
+        }
+
+        return signal, metadata
+
     def get_subject_list(self) -> List[str]:
         """Get list of available subject IDs."""
         return self.subjects.copy()

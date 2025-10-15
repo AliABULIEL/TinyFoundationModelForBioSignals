@@ -144,8 +144,8 @@ def verify_dataset(data_dir: Path) -> dict:
     if quality_file.exists():
         stats['has_annotations'] = True
         quality_df = pd.read_csv(quality_file, names=['record_id', 'quality', 'reference_hr'])
-        stats['quality_good'] = (quality_df['quality'] == 1).sum()
-        stats['quality_poor'] = (quality_df['quality'] == 0).sum()
+        stats['quality_good'] = int((quality_df['quality'] == 1).sum())
+        stats['quality_poor'] = int((quality_df['quality'] == 0).sum())
         print(f"  ✓ Quality annotations: {len(quality_df)} records")
         print(f"    - Good quality: {stats['quality_good']}")
         print(f"    - Poor quality: {stats['quality_poor']}")
