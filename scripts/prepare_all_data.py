@@ -48,14 +48,75 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Determine project root and add to path
+if '__file__' in globals():
+    # Running as script
+    project_root = Path(__file__).resolve().parent.parent
+else:
+    # Running in Colab/Jupyter
+    project_root = Path.cwd()
+    if not (project_root / 'src').exists():
+        # Try going up one level
+        project_root = project_root.parent
 
-from src.data.vitaldb_loader import get_available_case_sets, list_cases
-from src.data.butppg_loader import BUTPPGLoader
-from src.data.splits import make_patient_level_splits, verify_no_subject_leakage, get_split_statistics
-from src.data.windows import NormalizationStats
+# Add to Python path
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+print(f"Project root: {project_root}")
+print(f"Current directory: {os.getcwd()}")
+
+# Import with error handling
+try:
+    # Import directly from modules (avoid __init__.py issues)
+    import importlib.util
+    
+    # Method 1: Direct import (preferred)
+    try:
+        from src.data.vitaldb_loader import get_available_case_sets, list_cases
+        from src.data.butppg_loader import BUTPPGLoader
+        from src.data.splits import make_patient_level_splits, verify_no_subject_leakage, get_split_statistics
+        from src.data.windows import NormalizationStats
+        print("✓ Successfully imported all required modules")
+    except ImportError as e1:
+        # Method 2: Try adding src to path and importing again
+        src_path = project_root / 'src'
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+        
+        from data.vitaldb_loader import get_available_case_sets, list_cases
+        from data.butppg_loader import BUTPPGLoader
+        from data.splits import make_patient_level_splits, verify_no_subject_leakage, get_split_statistics
+        from data.windows import NormalizationStats
+        print("✓ Successfully imported all required modules (method 2)")
+        
+except ImportError as e:
+    print(f"\n❌ ERROR: Failed to import required modules: {e}")
+    print(f"\nDebug Information:")
+    print(f"  Project root: {project_root}")
+    print(f"  Current directory: {os.getcwd()}")
+    print(f"  Python path: {sys.path[:3]}...")  # Show first 3 entries
+    
+    # Check if files exist
+    print(f"\nFile existence check:")
+    files_to_check = [
+        project_root / 'src' / 'data' / 'butppg_loader.py',
+        project_root / 'src' / 'data' / 'vitaldb_loader.py',
+        project_root / 'src' / 'data' / 'splits.py',
+        project_root / 'src' / 'data' / 'windows.py',
+        project_root / 'src' / 'data' / '__init__.py'
+    ]
+    
+    for file_path in files_to_check:
+        exists = "✓" if file_path.exists() else "✗"
+        print(f"  {exists} {file_path.name}")
+    
+    print(f"\nTroubleshooting:")
+    print(f"1. Make sure you're running from project root: {project_root}")
+    print(f"2. Try: cd {project_root} && python scripts/prepare_all_data.py")
+    print(f"3. Or: python -m scripts.prepare_all_data (from project root)")
+    print(f"4. If in Colab, make sure all files are synced from Drive")
+    sys.exit(1)
 
 # Configure logging
 logging.basicConfig(
