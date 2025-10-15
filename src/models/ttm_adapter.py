@@ -157,21 +157,40 @@ class TTMAdapter(nn.Module):
         try:
             print(f"Loading real TTM model: {model_id}")
             
-            # Load TTM model with correct configuration
-            self.encoder = get_model(
-                model_id,
-                context_length=self.context_length,
-                prediction_length=self.prediction_length,
-                num_input_channels=self.input_channels,
-                decoder_mode=decoder_mode,
-                **kwargs
-            )
+            # For custom context_length, we need to initialize from config, not pretrained weights
+            if self.context_length != 1024:
+                print(f"  Note: Using TTM architecture without pretrained weights (context_length={self.context_length})")
+                # Initialize TTM from scratch with custom config
+                from transformers import AutoConfig
+                config = AutoConfig.from_pretrained(model_id)
+                config.context_length = self.context_length
+                config.patch_length = self.patch_size
+                config.num_input_channels = self.input_channels
+                config.prediction_length = self.prediction_length
+                config.decoder_mode = decoder_mode
+                
+                # Initialize model from config (no pretrained weights)
+                self.encoder = TinyTimeMixerForPrediction(config)
+            else:
+                # Use get_model with pretrained weights for standard context_length
+                self.encoder = get_model(
+                    model_id,
+                    context_length=self.context_length,
+                    prediction_length=self.prediction_length,
+                    num_input_channels=self.input_channels,
+                    decoder_mode=decoder_mode,
+                    **kwargs
+                )
             
             self.backbone = self.encoder.backbone if hasattr(self.encoder, 'backbone') else self.encoder
             self.using_real_ttm = True
             
             # Print model info
-            param_count = count_parameters(self.encoder)
+            try:
+                param_count = count_parameters(self.encoder)
+            except:
+                param_count = sum(p.numel() for p in self.encoder.parameters())
+            
             print(f"✓ Real TTM loaded successfully!")
             print(f"  Model: {model_id}")
             print(f"  Parameters: {param_count:,}")
@@ -179,6 +198,7 @@ class TTMAdapter(nn.Module):
             print(f"  Input channels: {self.input_channels}")
             print(f"  Decoder mode: {decoder_mode}")
             print(f"  Expected patches: {self.num_patches}")
+            print(f"  Using pretrained weights: {self.context_length == 1024}")
             
         except Exception as e:
             warnings.warn(f"Failed to load real TTM: {e}")
