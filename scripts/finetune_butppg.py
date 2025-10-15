@@ -150,18 +150,27 @@ def create_dataloaders(
     print("=" * 70)
     print(f"Data directory: {data_dir}")
 
-    # Support both flat and nested structures
+    # Support multiple directory structures
     def find_data_file(split_name: str) -> Optional[Path]:
-        """Find data file for a split, supporting both directory structures."""
-        # Try flat structure first
-        flat_path = data_dir / f'{split_name}.npz'
-        if flat_path.exists():
-            return flat_path
+        """Find data file for a split, supporting multiple directory structures."""
+        # Try different possible paths (in order of preference)
+        possible_paths = [
+            # Structure 1: Flat structure with simple names
+            data_dir / f'{split_name}.npz',
 
-        # Try nested structure
-        nested_path = data_dir / split_name / 'data.npz'
-        if nested_path.exists():
-            return nested_path
+            # Structure 2: Nested with data.npz
+            data_dir / split_name / 'data.npz',
+
+            # Structure 3: All in train/ with _windows suffix (from prepare_all_data.py)
+            data_dir / 'train' / f'{split_name}_windows.npz',
+
+            # Structure 4: Direct _windows suffix
+            data_dir / f'{split_name}_windows.npz',
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                return path
 
         return None
 
@@ -173,13 +182,17 @@ def create_dataloaders(
         # Provide helpful error message
         possible_paths = [
             data_dir / 'train.npz',
-            data_dir / 'train' / 'data.npz'
+            data_dir / 'train' / 'data.npz',
+            data_dir / 'train' / 'train_windows.npz',
+            data_dir / 'train_windows.npz',
         ]
         raise FileNotFoundError(
             f"Training data not found. Looked for:\n" +
             "\n".join(f"  - {p}" for p in possible_paths) +
             f"\n\nMake sure to run data preparation first:\n"
-            f"  python scripts/prepare_all_data.py --dataset butppg --mode fasttrack"
+            f"  python scripts/prepare_all_data.py --dataset butppg --mode fasttrack\n\n"
+            f"Or if you have data elsewhere, use:\n"
+            f"  --data-dir /path/to/your/butppg/data"
         )
     
     # Create training loader
@@ -418,6 +431,79 @@ def save_checkpoint(
     print(f"  ✓ Checkpoint saved: {path}")
 
 
+def verify_data_structure(data_dir: Path):
+    """Verify BUT-PPG data structure and contents for debugging"""
+    print("\n" + "=" * 70)
+    print("VERIFYING BUT-PPG DATA STRUCTURE")
+    print("=" * 70)
+
+    data_dir = Path(data_dir)
+    print(f"Data directory: {data_dir}")
+    print(f"Exists: {data_dir.exists()}")
+
+    if not data_dir.exists():
+        print(f"\n❌ Data directory does not exist!")
+        print(f"   Create it by running:")
+        print(f"     python scripts/prepare_all_data.py --dataset butppg --mode fasttrack")
+        return
+
+    print("\n📁 Directory contents:")
+    has_files = False
+    for item in sorted(data_dir.rglob("*")):
+        if item.is_file():
+            rel_path = item.relative_to(data_dir)
+            size_mb = item.stat().st_size / (1024 * 1024)
+            print(f"  {'📄' if item.suffix == '.npz' else '📝'} {rel_path} ({size_mb:.2f} MB)")
+            has_files = True
+
+    if not has_files:
+        print(f"  (empty)")
+        return
+
+    # Check .npz files
+    npz_files = list(data_dir.rglob("*.npz"))
+    if npz_files:
+        print(f"\n🔍 Inspecting .npz files:")
+        for npz_file in sorted(npz_files):
+            try:
+                data = np.load(npz_file)
+                rel_path = npz_file.relative_to(data_dir)
+                print(f"\n  {rel_path}:")
+                print(f"    Keys: {list(data.keys())}")
+                if 'signals' in data:
+                    signals = data['signals']
+                    print(f"    Signals shape: {signals.shape}")
+                    if len(signals.shape) == 3:
+                        N, C, T = signals.shape
+                        print(f"      N={N} samples, C={C} channels, T={T} timesteps")
+
+                        # Validate
+                        status = []
+                        if C == 5:
+                            status.append("✅ 5 channels")
+                        else:
+                            status.append(f"⚠️  {C} channels (expected 5)")
+
+                        if T == 1024:
+                            status.append("✅ 1024 timesteps")
+                        else:
+                            status.append(f"⚠️  {T} timesteps (expected 1024)")
+
+                        print(f"      Status: {', '.join(status)}")
+
+                if 'labels' in data:
+                    labels = data['labels']
+                    unique = np.unique(labels)
+                    print(f"    Labels: {len(labels)} samples, unique values: {unique}")
+
+            except Exception as e:
+                print(f"    ❌ Error loading: {e}")
+
+    print("\n" + "=" * 70)
+    print("✓ Verification complete")
+    print("=" * 70)
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -546,7 +632,14 @@ def parse_args():
         default=42,
         help='Random seed'
     )
-    
+
+    # Debugging
+    parser.add_argument(
+        '--verify-data',
+        action='store_true',
+        help='Verify data structure and exit (useful for debugging)'
+    )
+
     return parser.parse_args()
 
 
