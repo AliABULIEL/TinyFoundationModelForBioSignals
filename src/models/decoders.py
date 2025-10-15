@@ -73,6 +73,35 @@ class ReconstructionHead1D(nn.Module):
         # Track parameters for inspection
         self._num_params = sum(p.numel() for p in self.parameters())
     
+    def update_patch_size(self, new_patch_size: int):
+        """Update patch size and recreate projection layer.
+        
+        This is needed when TTM's actual patch configuration differs from config.
+        
+        Args:
+            new_patch_size: New patch size to use
+        """
+        if new_patch_size == self.patch_size:
+            return  # No change needed
+        
+        print(f"[INFO] Decoder: Updating patch_size from {self.patch_size} to {new_patch_size}")
+        print(f"[INFO] Decoder: Recreating projection layer...")
+        
+        old_out_features = self.n_channels * self.patch_size
+        new_out_features = self.n_channels * new_patch_size
+        
+        print(f"[INFO] Decoder: proj out_features {old_out_features} → {new_out_features}")
+        
+        # Update patch_size
+        self.patch_size = new_patch_size
+        
+        # Recreate projection layer with new output size
+        # Get device from existing projection layer
+        device = next(self.proj.parameters()).device
+        self.proj = nn.Linear(self.d_model, new_out_features).to(device)
+        
+        print(f"[INFO] Decoder: Projection layer recreated successfully")
+    
     def forward(self, latents: torch.Tensor) -> torch.Tensor:
         """Reconstruct signal from latent patch representations.
         
