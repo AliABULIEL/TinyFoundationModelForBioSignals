@@ -17,7 +17,7 @@ Usage:
     # Quick test (1 epoch)
     python scripts/finetune_butppg.py \
         --pretrained artifacts/foundation_model/best_model.pt \
-        --data-dir data/but_ppg \
+        --data-dir data/processed/butppg/windows \
         --pretrain-channels 2 \
         --finetune-channels 5 \
         --unfreeze-last-n 2 \
@@ -26,7 +26,14 @@ Usage:
         --output-dir artifacts/but_ppg_finetuned
 
     # Full training (30 epochs with staged unfreezing)
-    python 1
+    python scripts/finetune_butppg.py \
+        --pretrained artifacts/foundation_model/best_model.pt \
+        --data-dir data/processed/butppg/windows \
+        --epochs 30 \
+        --head-only-epochs 5 \
+        --unfreeze-last-n 2 \
+        --batch-size 64 \
+        --output-dir artifacts/but_ppg_finetuned
 """
 
 import sys
@@ -57,11 +64,11 @@ from src.models.channel_utils import (
 
 class BUTPPGDataset(Dataset):
     """Dataset for BUT-PPG quality classification.
-    
+
     Expected data format:
-    - signals: [N, 5, 1250] - 5 channels (ACC_X, ACC_Y, ACC_Z, PPG, ECG)
+    - signals: [N, 5, 1024] - 5 channels (ACC_X, ACC_Y, ACC_Z, PPG, ECG)
     - labels: [N] - binary labels (0=poor, 1=good)
-    
+
     Channels:
     0: ACC_X (accelerometer X-axis)
     1: ACC_Y (accelerometer Y-axis)
@@ -69,24 +76,24 @@ class BUTPPGDataset(Dataset):
     3: PPG (photoplethysmogram)
     4: ECG (electrocardiogram)
     """
-    
+
     def __init__(self, data_file: Path, normalize: bool = True):
         """Initialize BUT-PPG dataset.
-        
+
         Args:
             data_file: Path to .npz file containing 'signals' and 'labels'
             normalize: Whether to apply z-score normalization per channel
         """
         print(f"Loading BUT-PPG data from: {data_file}")
         data = np.load(data_file)
-        
-        self.signals = torch.from_numpy(data['signals']).float()  # [N, 5, 1250]
+
+        self.signals = torch.from_numpy(data['signals']).float()  # [N, 5, 1024]
         self.labels = torch.from_numpy(data['labels']).long()     # [N]
-        
+
         # Validate shapes
         N, C, T = self.signals.shape
         assert C == 5, f"Expected 5 channels, got {C}"
-        assert T == 1250, f"Expected 1250 timesteps, got {T}"
+        assert T == 1024, f"Expected 1024 timesteps, got {T} (make sure data was prepared with --window-size 1024)"
         assert len(self.labels) == N, f"Label count mismatch: {len(self.labels)} vs {N}"
         
         # Normalize if requested
@@ -121,35 +128,62 @@ def create_dataloaders(
     use_val: bool = True
 ) -> Tuple[DataLoader, Optional[DataLoader], Optional[DataLoader]]:
     """Create dataloaders for BUT-PPG.
-    
-    Expected files in data_dir:
-    - train.npz: Training data
-    - val.npz: Validation data (optional)
-    - test.npz: Test data (optional)
-    
+
+    Supports two directory structures:
+    1. Flat: data_dir/{train,val,test}.npz
+    2. Nested: data_dir/{train,val,test}/data.npz (from prepare_all_data.py)
+
     Args:
         data_dir: Directory containing BUT-PPG data
         batch_size: Batch size for dataloaders
         num_workers: Number of data loading workers
         use_val: Whether to create validation loader
-    
+
     Returns:
         train_loader, val_loader, test_loader
     """
     data_dir = Path(data_dir)
-    
+
     # Create datasets
     print("\n" + "=" * 70)
     print("CREATING BUT-PPG DATALOADERS")
     print("=" * 70)
+    print(f"Data directory: {data_dir}")
+
+    # Support both flat and nested structures
+    def find_data_file(split_name: str) -> Optional[Path]:
+        """Find data file for a split, supporting both directory structures."""
+        # Try flat structure first
+        flat_path = data_dir / f'{split_name}.npz'
+        if flat_path.exists():
+            return flat_path
+
+        # Try nested structure
+        nested_path = data_dir / split_name / 'data.npz'
+        if nested_path.exists():
+            return nested_path
+
+        return None
+
+    train_file = find_data_file('train')
+    val_file = find_data_file('val')
+    test_file = find_data_file('test')
+
+    if train_file is None:
+        # Provide helpful error message
+        possible_paths = [
+            data_dir / 'train.npz',
+            data_dir / 'train' / 'data.npz'
+        ]
+        raise FileNotFoundError(
+            f"Training data not found. Looked for:\n" +
+            "\n".join(f"  - {p}" for p in possible_paths) +
+            f"\n\nMake sure to run data preparation first:\n"
+            f"  python scripts/prepare_all_data.py --dataset butppg --mode fasttrack"
+        )
     
-    train_file = data_dir / 'train.npz'
-    val_file = data_dir / 'val.npz'
-    test_file = data_dir / 'test.npz'
-    
-    if not train_file.exists():
-        raise FileNotFoundError(f"Training data not found: {train_file}")
-    
+    # Create training loader
+    print(f"\n✓ Found training data: {train_file}")
     train_dataset = BUTPPGDataset(train_file, normalize=True)
     train_loader = DataLoader(
         train_dataset,
@@ -158,9 +192,11 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True
     )
-    
+
+    # Create validation loader
     val_loader = None
-    if use_val and val_file.exists():
+    if use_val and val_file is not None:
+        print(f"✓ Found validation data: {val_file}")
         val_dataset = BUTPPGDataset(val_file, normalize=True)
         val_loader = DataLoader(
             val_dataset,
@@ -170,10 +206,12 @@ def create_dataloaders(
             pin_memory=True
         )
     else:
-        print("\n⚠ Validation data not found, will use test set for validation")
-    
+        print("⚠ Validation data not found, will use test set for validation")
+
+    # Create test loader
     test_loader = None
-    if test_file.exists():
+    if test_file is not None:
+        print(f"✓ Found test data: {test_file}")
         test_dataset = BUTPPGDataset(test_file, normalize=True)
         test_loader = DataLoader(
             test_dataset,
@@ -182,7 +220,9 @@ def create_dataloaders(
             num_workers=num_workers,
             pin_memory=True
         )
-    
+    else:
+        print("⚠ Test data not found")
+
     print("=" * 70)
     return train_loader, val_loader, test_loader
 
@@ -397,8 +437,8 @@ def parse_args():
     parser.add_argument(
         '--data-dir',
         type=str,
-        default='data/but_ppg',
-        help='Directory containing BUT-PPG data'
+        default='data/processed/butppg/windows',
+        help='Directory containing BUT-PPG data (supports both flat and nested structure)'
     )
     
     # Channel inflation
