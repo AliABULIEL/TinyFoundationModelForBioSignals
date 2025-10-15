@@ -21,6 +21,22 @@ from scipy.signal import find_peaks
 import json
 import sys
 import warnings
+import ssl
+import os
+
+# Configure SSL for VitalDB access (fix certificate issues)
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+    # Try to use certifi if available
+    try:
+        import certifi
+        os.environ['SSL_CERT_FILE'] = certifi.where()
+        os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    except ImportError:
+        pass
+except:
+    pass
 
 try:
     import vitaldb
