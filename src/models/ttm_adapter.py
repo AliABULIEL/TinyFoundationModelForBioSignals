@@ -552,9 +552,22 @@ class TTMAdapter(nn.Module):
                 
                 # Handle different possible TTM output formats
                 if features.dim() == 4:
-                    # Case 1: [B, C, P, D] - channels, patches, d_model
-                    if features.size(1) == self.input_channels and features.size(2) == self.num_patches:
-                        print(f"[DEBUG] Format: [B, C, P, D] = [{B}, {features.size(1)}, {features.size(2)}, {features.size(3)}]")
+                    # Check if format is [B, C, P, D] where C matches input_channels
+                    if features.size(1) == self.input_channels:
+                        actual_patches = features.size(2)
+                        print(f"[DEBUG] Format: [B, C, P, D] = [{B}, {features.size(1)}, {actual_patches}, {features.size(3)}]")
+                        
+                        # Check if TTM's patch count matches our expectation
+                        if actual_patches != self.num_patches:
+                            print(f"[WARNING] TTM outputs {actual_patches} patches, but config expects {self.num_patches}")
+                            print(f"[INFO] TTM is using patch_length={self.context_length // actual_patches} internally")
+                            print(f"[INFO] Updating num_patches from {self.num_patches} to {actual_patches}")
+                            print(f"[INFO] Updating patch_size from {self.patch_size} to {self.context_length // actual_patches}")
+                            
+                            # Update the model's patch configuration to match TTM's actual output
+                            self.num_patches = actual_patches
+                            self.patch_size = self.context_length // actual_patches
+                        
                         # Average over channels: [B, C, P, D] -> [B, P, D]
                         features = features.mean(dim=1)
                     
@@ -564,10 +577,30 @@ class TTMAdapter(nn.Module):
                         # Average over channels: [B, P, C, D] -> [B, P, D]
                         features = features.mean(dim=2)
                     
+                    # Case 3: [B, C, P', D] where P' doesn't match expected but C matches
+                    elif features.size(1) == self.input_channels:
+                        actual_patches = features.size(2)
+                        print(f"[DEBUG] Format: [B, C, P', D] with P'={actual_patches} (expected P={self.num_patches})")
+                        print(f"[INFO] Auto-adjusting to TTM's actual patch count")
+                        self.num_patches = actual_patches
+                        self.patch_size = self.context_length // actual_patches
+                        features = features.mean(dim=1)
+                    
                     else:
                         print(f"[WARNING] Unexpected 4D shape: {features.shape}")
-                        print(f"[WARNING] Assuming [B, C, P, D] and averaging over dim=1")
-                        features = features.mean(dim=1)
+                        print(f"[WARNING] Trying to auto-detect format...")
+                        # Try to detect: if dim1 looks like patches (8-32 range) and dim2 looks like channels (1-10 range)
+                        if 4 <= features.size(1) <= 64 and 1 <= features.size(2) <= 10:
+                            print(f"[INFO] Detected as [B, P, C, D], averaging over dim=2")
+                            features = features.mean(dim=2)
+                        else:
+                            print(f"[INFO] Assuming [B, C, P, D], averaging over dim=1")
+                            actual_patches = features.size(2)
+                            if actual_patches != self.num_patches:
+                                print(f"[INFO] Updating num_patches to {actual_patches}")
+                                self.num_patches = actual_patches
+                                self.patch_size = self.context_length // actual_patches
+                            features = features.mean(dim=1)
                 
                 elif features.dim() == 3:
                     # Case 3: [B, P, D] - already in correct format
@@ -603,6 +636,8 @@ class TTMAdapter(nn.Module):
                 
                 print(f"[DEBUG] Final encoder output: {features.shape}")
                 print(f"[DEBUG] Expected: [B={B}, P={self.num_patches}, D={self.encoder_dim}]")
+                print(f"[INFO] Encoder patch_size is now: {self.patch_size}")
+                print(f"[INFO] Encoder num_patches is now: {self.num_patches}")
                 
                 # Verify output shape
                 if features.dim() != 3:
