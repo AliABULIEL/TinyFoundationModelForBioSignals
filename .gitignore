@@ -10,4 +10,6 @@ reports/
 
 # Allow src/data/ (source code)
 !src/data/
+!src
+!scripts
 
