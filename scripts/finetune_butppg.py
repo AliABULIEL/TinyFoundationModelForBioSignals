@@ -951,7 +951,7 @@ def main():
     print("=" * 70)
     
     # Load best model
-    best_checkpoint = torch.load(output_dir / 'best_model.pt', map_location=args.device)
+    best_checkpoint = torch.load(output_dir / 'best_model.pt', map_location=args.device, weights_only=False)
     model.load_state_dict(best_checkpoint['model_state_dict'])
     
     # Evaluate on test set if available

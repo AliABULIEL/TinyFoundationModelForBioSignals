@@ -96,7 +96,7 @@ def load_pretrained_with_channel_inflate(
     
     # Load checkpoint
     print(f"\n1. Loading pretrained checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Extract state dict and config
     if isinstance(checkpoint, dict):
@@ -635,7 +635,7 @@ def get_channel_inflation_report(
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
     if isinstance(checkpoint, dict):
         if 'model_state_dict' in checkpoint:
