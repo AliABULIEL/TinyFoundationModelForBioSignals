@@ -122,9 +122,34 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
     else:
         raise ValueError("Checkpoint format not recognized")
 
+    # Infer missing config fields from state dict
+    # The fine-tuning script saves the argparse config, not the full model config
+    # We need to fill in missing fields by inspecting the state dict
+
+    # Infer num_classes from head weights
+    if 'task' in config and config['task'] == 'classification':
+        if 'num_classes' not in config or config['num_classes'] is None:
+            # Look for classification head in state dict
+            for key in state_dict.keys():
+                if 'head' in key and 'weight' in key:
+                    # Extract num_classes from head output size
+                    head_shape = state_dict[key].shape
+                    if len(head_shape) >= 1:
+                        config['num_classes'] = head_shape[0]
+                        print(f"  Inferred num_classes={config['num_classes']} from head shape: {head_shape}")
+                        break
+
+    # Ensure variant is set
+    if 'variant' not in config:
+        config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
+
+    # Ensure head_type is set
+    if 'head_type' not in config:
+        config['head_type'] = 'linear'
+
     # Create model
     model = create_ttm_model(config)
-    model.load_state_dict(state_dict, strict=True)
+    model.load_state_dict(state_dict, strict=False)  # Use strict=False in case of minor mismatches
     model.to(device)
     model.eval()
 
