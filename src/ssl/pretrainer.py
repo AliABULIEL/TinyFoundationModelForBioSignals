@@ -295,7 +295,8 @@ class SSLTrainer:
                 )
                 
                 # Encode: [B, C, T] -> [B, P, D]
-                latents = self.encoder(masked_inputs)
+                # Use get_encoder_output for SSL to preserve patch dimensions
+                latents = self.encoder.get_encoder_output(masked_inputs)
                 
                 # Handle different encoder output formats
                 if isinstance(latents, tuple):
@@ -415,8 +416,9 @@ class SSLTrainer:
                         patch_size=self.decoder.patch_size
                     )
                     
-                    # Encode
-                    latents = self.encoder(masked_inputs)
+                    # Encode: [B, C, T] -> [B, P, D]
+                    # Use get_encoder_output for SSL to preserve patch dimensions
+                    latents = self.encoder.get_encoder_output(masked_inputs)
                     
                     if isinstance(latents, tuple):
                         latents = latents[0]
