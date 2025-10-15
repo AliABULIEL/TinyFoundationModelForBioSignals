@@ -261,16 +261,6 @@ class TTMAdapter(nn.Module):
                 
                 # Initialize model from fresh config
                 self.encoder = TinyTimeMixerForPrediction(config)
-            else:
-                # Use get_model with pretrained weights for standard context_length
-                self.encoder = get_model(
-                    model_id,
-                    context_length=self.context_length,
-                    prediction_length=self.prediction_length,
-                    num_input_channels=self.input_channels,
-                    decoder_mode=decoder_mode,
-                    **kwargs
-                )
             
             self.backbone = self.encoder.backbone if hasattr(self.encoder, 'backbone') else self.encoder
             self.using_real_ttm = True
@@ -288,7 +278,7 @@ class TTMAdapter(nn.Module):
             print(f"  Input channels: {self.input_channels}")
             print(f"  Decoder mode: {decoder_mode}")
             print(f"  Expected patches: {self.num_patches}")
-            print(f"  Using pretrained weights: {self.context_length == 1024}")
+            print(f"  Using pretrained weights: {can_use_pretrained}")
             
         except Exception as e:
             warnings.warn(f"Failed to load real TTM: {e}")
