@@ -37,7 +37,3 @@ __all__ = [
     'list_cases', 'load_channel',
 ]
 
-# Note: Import datasets directly:
-# from src.data.vitaldb_dataset import VitalDBDataset
-# from src.data.butppg_dataset import BUTPPGDataset
-# from src.data.butppg_loader import BUTPPGLoader
