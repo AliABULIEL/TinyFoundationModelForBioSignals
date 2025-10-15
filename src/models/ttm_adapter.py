@@ -110,13 +110,20 @@ class TTMAdapter(nn.Module):
         self.prediction_length = prediction_length
         self.using_real_ttm = False
         
-        # Calculate encoder dimension based on patch_size
-        # This must match the d_model calculation in _init_real_ttm
-        if context_length == 1024 and patch_size == 64:
-            # Using pretrained TTM with standard config
-            self.encoder_dim = 192
+        # Calculate encoder dimension based on configuration
+        # For pretrained TTM variants, use their d_model values
+        # For custom configs, calculate based on patch_size
+        if context_length == 512 and patch_size == 64:
+            # TTM-Base pretrained
+            self.encoder_dim = 192  # TTM-Base d_model
+        elif context_length == 1024 and patch_size == 128:
+            # TTM-Enhanced pretrained
+            self.encoder_dim = 192  # TTM-Enhanced d_model
+        elif context_length == 1536 and patch_size == 128:
+            # TTM-Advanced pretrained  
+            self.encoder_dim = 192  # TTM-Advanced d_model
         else:
-            # Calculate d_model for custom patch_size (same logic as in _init_real_ttm)
+            # Custom configuration - calculate d_model based on patch_size
             if patch_size <= 32:
                 self.encoder_dim = 64
             elif patch_size <= 64:
@@ -173,12 +180,44 @@ class TTMAdapter(nn.Module):
         try:
             print(f"Loading real TTM model: {model_id}")
             
-            # For custom context_length, we need to initialize from config, not pretrained weights
-            if self.context_length != 1024:
-                print(f"  Note: Using TTM architecture without pretrained weights (context_length={self.context_length})")
+            # For custom context_length, we need to check if we can use pretrained weights
+            # IBM's pretrained TTM variants:
+            # - TTM-Base: context=512, patch=64
+            # - TTM-Enhanced: context=1024, patch=128  ← BEST for biosignals!
+            # - TTM-Advanced: context=1536, patch=128
+            
+            can_use_pretrained = False
+            pretrained_variant = None
+            
+            # Check if dimensions match any pretrained variant
+            if self.context_length == 512 and self.patch_size == 64:
+                can_use_pretrained = True
+                pretrained_variant = "TTM-Base"
+            elif self.context_length == 1024 and self.patch_size == 128:
+                can_use_pretrained = True
+                pretrained_variant = "TTM-Enhanced"
+            elif self.context_length == 1536 and self.patch_size == 128:
+                can_use_pretrained = True
+                pretrained_variant = "TTM-Advanced"
+            
+            if can_use_pretrained:
+                print(f"  ✓ Dimensions match {pretrained_variant} - loading pretrained weights!")
+                # Use get_model to load pretrained weights
+                self.encoder = get_model(
+                    model_id,
+                    context_length=self.context_length,
+                    prediction_length=self.prediction_length,
+                    num_input_channels=self.input_channels,
+                    decoder_mode=decoder_mode,
+                    **kwargs
+                )
+                print(f"  ✓ Successfully loaded {pretrained_variant} pretrained weights!")
+            else:
+                print(f"  Note: Dimensions (context={self.context_length}, patch={self.patch_size}) don't match pretrained variants")
+                print(f"  Recommended: Use context=1024, patch=128 for TTM-Enhanced with biosignals (8.192s @ 125Hz)")
+                print(f"  Creating fresh TTM architecture without pretrained weights...")
                 
-                # Create a fresh TTM config with our parameters instead of modifying pretrained config
-                # This avoids dimension mismatches from hardcoded values in pretrained config
+                # Import config class
                 from tsfm_public.models.tinytimemixer.configuration_tinytimemixer import TinyTimeMixerConfig
                 
                 # Calculate appropriate d_model for custom patch_length
@@ -199,7 +238,7 @@ class TTMAdapter(nn.Module):
                     num_input_channels=self.input_channels,
                     prediction_length=self.prediction_length,
                     d_model=d_model,  # Dynamically calculated based on patch_length
-                    num_layers=8,  # Standard TTM depth (works without adaptive patching)
+                    num_layers=8,  # Standard TTM depth
                     expansion_factor=2,  # TTM default
                     dropout=0.2,
                     head_dropout=0.2,
