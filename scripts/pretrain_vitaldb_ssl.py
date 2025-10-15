@@ -87,31 +87,35 @@ class VitalDBSSLDataset(Dataset):
     Dataset for SSL pre-training on VitalDB.
     
     Loads preprocessed windows from prepare_all_data.py output.
-    Handles shape transformations for TTM input format.
+    Handles both:
+    1. Single file format: split/split_windows.npz
+    2. Separated modality format: split/ppg/*.npz + split/ecg/*.npz
     
     Args:
-        data_file: Path to .npz file containing preprocessed windows
+        data_file_or_dir: Path to .npz file OR directory with modality folders
         transform_to_channels_first: Convert [N,T,C] to [N,C,T] if needed
     """
     
     def __init__(
         self, 
-        data_file: str,
+        data_file_or_dir: str,
         transform_to_channels_first: bool = True
     ):
         """Load preprocessed VitalDB windows."""
-        self.data_file = Path(data_file)
+        path = Path(data_file_or_dir)
         
-        if not self.data_file.exists():
-            raise FileNotFoundError(f"Data file not found: {self.data_file}")
+        # Check if it's a directory with separated modalities
+        if path.is_dir():
+            logger.info(f"Detected directory format: {path}")
+            logger.info("  Looking for separated modality folders (ppg/, ecg/)...")
+            windows = self._load_separated_modalities(path)
+        elif path.exists() and path.suffix == '.npz':
+            logger.info(f"Loading single file: {path}")
+            windows = self._load_single_file(path)
+        else:
+            raise FileNotFoundError(f"Data not found: {path}")
         
-        logger.info(f"Loading data from {self.data_file}")
-        
-        # Load data
-        data = np.load(self.data_file)
-        windows = data['data']  # Shape: [N, T, C] or [N, C, T]
-        
-        logger.info(f"  Original shape: {windows.shape}")
+        logger.info(f"  Loaded shape: {windows.shape}")
         
         # Handle shape: need [N, C, T] for SSL
         if windows.ndim == 2:
@@ -154,6 +158,99 @@ class VitalDBSSLDataset(Dataset):
             logger.error(f"  ⚠️  Data quality issues: NaN={has_nan}, Inf={has_inf}")
             raise ValueError("Data contains NaN or Inf values!")
     
+    def _load_single_file(self, filepath: Path) -> np.ndarray:
+        """Load data from single .npz file."""
+        data = np.load(filepath)
+        if 'data' in data:
+            return data['data']
+        elif 'windows' in data:
+            return data['windows']
+        elif 'signals' in data:
+            return data['signals']
+        else:
+            keys = [k for k in data.keys() if not k.startswith('_')]
+            if keys:
+                logger.warning(f"Using key '{keys[0]}' from {filepath.name}")
+                return data[keys[0]]
+            raise ValueError(f"No data arrays found in {filepath}")
+    
+    def _load_separated_modalities(self, directory: Path) -> np.ndarray:
+        """
+        Load and merge data from separated modality folders.
+        
+        Expected structure:
+          directory/ppg/*.npz
+          directory/ecg/*.npz
+        
+        Returns:
+          Combined array [N, 2, T] where channel 0=PPG, channel 1=ECG
+        """
+        ppg_dir = directory / 'ppg'
+        ecg_dir = directory / 'ecg'
+        
+        if not ppg_dir.exists() or not ecg_dir.exists():
+            raise FileNotFoundError(
+                f"Expected modality folders not found:\n"
+                f"  PPG: {ppg_dir} (exists={ppg_dir.exists()})\n"
+                f"  ECG: {ecg_dir} (exists={ecg_dir.exists()})"
+            )
+        
+        # Load PPG files
+        ppg_files = sorted(list(ppg_dir.glob('*.npz')))
+        logger.info(f"  Found {len(ppg_files)} PPG files")
+        
+        if len(ppg_files) == 0:
+            raise ValueError(f"No .npz files found in {ppg_dir}")
+        
+        # Load ECG files
+        ecg_files = sorted(list(ecg_dir.glob('*.npz')))
+        logger.info(f"  Found {len(ecg_files)} ECG files")
+        
+        if len(ecg_files) == 0:
+            raise ValueError(f"No .npz files found in {ecg_dir}")
+        
+        # Load all PPG data
+        ppg_arrays = []
+        for f in ppg_files:
+            data = self._load_single_file(f)
+            ppg_arrays.append(data)
+        
+        ppg_data = np.concatenate(ppg_arrays, axis=0)
+        logger.info(f"  PPG combined shape: {ppg_data.shape}")
+        
+        # Load all ECG data
+        ecg_arrays = []
+        for f in ecg_files:
+            data = self._load_single_file(f)
+            ecg_arrays.append(data)
+        
+        ecg_data = np.concatenate(ecg_arrays, axis=0)
+        logger.info(f"  ECG combined shape: {ecg_data.shape}")
+        
+        # Verify they have same number of windows
+        if ppg_data.shape[0] != ecg_data.shape[0]:
+            logger.warning(
+                f"PPG and ECG have different numbers of windows: "
+                f"PPG={ppg_data.shape[0]}, ECG={ecg_data.shape[0]}"
+            )
+            # Use minimum length
+            min_len = min(ppg_data.shape[0], ecg_data.shape[0])
+            ppg_data = ppg_data[:min_len]
+            ecg_data = ecg_data[:min_len]
+            logger.info(f"  Using first {min_len} windows from each modality")
+        
+        # Ensure both are 2D [N, T]
+        if ppg_data.ndim == 3 and ppg_data.shape[1] == 1:
+            ppg_data = ppg_data.squeeze(1)
+        if ecg_data.ndim == 3 and ecg_data.shape[1] == 1:
+            ecg_data = ecg_data.squeeze(1)
+        
+        # Stack into [N, 2, T]
+        combined = np.stack([ppg_data, ecg_data], axis=1)
+        logger.info(f"  Combined shape: {combined.shape} [N, 2, T]")
+        
+        return combined
+    
     def __len__(self) -> int:
         return len(self.windows)
     
@@ -181,12 +278,16 @@ def find_preprocessed_data(
     """
     Find preprocessed VitalDB data from prepare_all_data.py output.
     
+    Handles two formats:
+    1. Single file: split/split_windows.npz
+    2. Separated modalities: split/ppg/*.npz + split/ecg/*.npz
+    
     Args:
         base_dir: Base directory for processed data
         mode: 'fasttrack' or 'full'
     
     Returns:
-        Dictionary with paths to train/val/test data files
+        Dictionary with paths to train/val/test data files OR directories
     """
     base_path = Path(base_dir)
     
@@ -203,9 +304,23 @@ def find_preprocessed_data(
     for base in possible_bases:
         # Look for split directories
         for split in ['train', 'val', 'test']:
-            split_file = base / split / f'{split}_windows.npz'
+            split_dir = base / split
+            
+            # Check for single .npz file
+            split_file = split_dir / f'{split}_windows.npz'
             if split_file.exists():
                 data_files[split] = split_file
+                continue
+            
+            # Check for modality-separated structure (ppg/, ecg/)
+            ppg_dir = split_dir / 'ppg'
+            ecg_dir = split_dir / 'ecg'
+            
+            if ppg_dir.exists() and ecg_dir.exists():
+                # Found modality-separated structure
+                # Return the parent directory (e.g., train/) not the file
+                data_files[split] = split_dir
+                logger.info(f"  Found {split} with separated modalities: {split_dir}")
         
         # If we found train data, we're in the right place
         if 'train' in data_files:
@@ -216,6 +331,7 @@ def find_preprocessed_data(
         logger.error(f"Could not find training data. Searched:")
         for base in possible_bases:
             logger.error(f"  - {base / 'train' / 'train_windows.npz'}")
+            logger.error(f"  - {base / 'train' / 'ppg'} + {base / 'train' / 'ecg'}")
         raise FileNotFoundError(
             "Preprocessed training data not found. "
             "Please run: python scripts/prepare_all_data.py --dataset vitaldb"
@@ -248,7 +364,7 @@ def create_ssl_dataloaders(
     
     # Create training dataset
     train_dataset = VitalDBSSLDataset(
-        data_file=data_files['train'],
+        data_file_or_dir=str(data_files['train']),
         transform_to_channels_first=True
     )
     
@@ -270,7 +386,7 @@ def create_ssl_dataloaders(
     val_loader = None
     if 'val' in data_files:
         val_dataset = VitalDBSSLDataset(
-            data_file=data_files['val'],
+            data_file_or_dir=str(data_files['val']),
             transform_to_channels_first=True
         )
         
@@ -291,7 +407,7 @@ def create_ssl_dataloaders(
         # Use test set as validation if no val set
         logger.info("\nNo validation set found, using test set for validation")
         val_dataset = VitalDBSSLDataset(
-            data_file=data_files['test'],
+            data_file_or_dir=str(data_files['test']),
             transform_to_channels_first=True
         )
         
