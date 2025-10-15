@@ -110,13 +110,21 @@ class TTMAdapter(nn.Module):
         self.prediction_length = prediction_length
         self.using_real_ttm = False
         
-        # Encoder dimension depends on whether using pretrained or fresh config
-        # Pretrained (context=1024): d_model=192
-        # Fresh config (custom context): d_model=64
-        if context_length == 1024:
-            self.encoder_dim = 192  # Pretrained TTM
+        # Calculate encoder dimension based on patch_size
+        # This must match the d_model calculation in _init_real_ttm
+        if context_length == 1024 and patch_size == 64:
+            # Using pretrained TTM with standard config
+            self.encoder_dim = 192
         else:
-            self.encoder_dim = 64   # Fresh TTM config
+            # Calculate d_model for custom patch_size (same logic as in _init_real_ttm)
+            if patch_size <= 32:
+                self.encoder_dim = 64
+            elif patch_size <= 64:
+                self.encoder_dim = 256
+            elif patch_size <= 128:
+                self.encoder_dim = 384  # For patch_size=125
+            else:
+                self.encoder_dim = 512
         
         # Calculate number of patches
         self.num_patches = context_length // patch_size
@@ -128,6 +136,7 @@ class TTMAdapter(nn.Module):
         print(f"  - Context length: {context_length}")
         print(f"  - Patch size: {patch_size}")
         print(f"  - Number of patches: {self.num_patches}")
+        print(f"  - Encoder dimension: {self.encoder_dim}")
         
         # Initialize encoder
         if use_real_ttm and TTM_AVAILABLE:
@@ -172,26 +181,44 @@ class TTMAdapter(nn.Module):
                 # This avoids dimension mismatches from hardcoded values in pretrained config
                 from tsfm_public.models.tinytimemixer.configuration_tinytimemixer import TinyTimeMixerConfig
                 
+                # Calculate appropriate d_model for custom patch_length
+                # Rule: d_model should be 2-5X of patch_length AND divisible by 8
+                # For patch_length=125: use 384 (3X) or 512 (4X)
+                if self.patch_size <= 32:
+                    d_model = 64  # Original TTM default for small patches
+                elif self.patch_size <= 64:
+                    d_model = 256  # 4X for medium patches
+                elif self.patch_size <= 128:
+                    d_model = 384  # 3X for large patches (your case: 125)
+                else:
+                    d_model = 512  # For very large patches
+                
                 config = TinyTimeMixerConfig(
                     context_length=self.context_length,
                     patch_length=self.patch_size,
                     num_input_channels=self.input_channels,
                     prediction_length=self.prediction_length,
-                    d_model=64,  # TTM default hidden size
-                    num_layers=8,  # TTM default layers
+                    d_model=d_model,  # Dynamically calculated based on patch_length
+                    num_layers=3,  # Use 3 layers for stability (default adaptive_patching_levels=3)
                     expansion_factor=2,  # TTM default
-                    dropout=0.1,
-                    mode="common_channel",  # TTM mode
+                    dropout=0.2,
+                    head_dropout=0.2,
+                    mode="common_channel",  # TTM mode for pretraining (channel-independent)
                     decoder_mode=decoder_mode,
-                    scaling="std"  # TTM default
+                    scaling="std",  # TTM default
+                    adaptive_patching_levels=3,  # Explicit (default is 3)
+                    use_positional_encoding=False,  # Not needed for biosignals
+                    resolution_prefix_tuning=False,  # Not needed for single resolution
                 )
                 
                 # Calculate num_patches
                 config.num_patches = self.num_patches
                 
                 # Log the configuration
+                print(f"  Calculated d_model={d_model} (for patch_length={self.patch_size})")
                 print(f"  Fresh config: num_patches={config.num_patches}, patch_length={config.patch_length}")
                 print(f"  Fresh config: context_length={config.context_length}, d_model={config.d_model}")
+                print(f"  Fresh config: num_layers={config.num_layers}, adaptive_patching_levels={config.adaptive_patching_levels}")
                 
                 # Initialize model from fresh config
                 self.encoder = TinyTimeMixerForPrediction(config)
