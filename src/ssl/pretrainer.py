@@ -298,31 +298,30 @@ class SSLTrainer:
                 # Use get_encoder_output for SSL to preserve patch dimensions
                 latents = self.encoder.get_encoder_output(masked_inputs)
                 
-                # CRITICAL: Sync all components with encoder after first call
-                # TTM may output different patch count than config expects
-                patch_size_changed = False
+                # ⚠️ CRITICAL: This should NOT happen if patch_size is determined correctly upfront
+                # If this triggers, it means the decoder was created with wrong patch_size
+                # and new parameters are created that are NOT tracked by the optimizer!
                 if hasattr(self.encoder, 'patch_size') and self.decoder.patch_size != self.encoder.patch_size:
-                    patch_size_changed = True
-                    
-                    # Use update_patch_size to recreate projection layer
-                    self.decoder.update_patch_size(self.encoder.patch_size)
-                    
-                    # ALSO update MSM criterion patch_size
-                    if hasattr(self, 'msm_criterion') and self.msm_criterion.patch_size != self.encoder.patch_size:
-                        print(f"[INFO] Syncing MSM criterion patch_size from {self.msm_criterion.patch_size} to {self.encoder.patch_size}")
-                        self.msm_criterion.patch_size = self.encoder.patch_size
-                    
-                    # CRITICAL: Recreate mask with new patch_size!
-                    print(f"[INFO] Recreating mask with updated patch_size={self.encoder.patch_size}")
-                    masked_inputs, mask_bool = self.mask_fn(
-                        inputs,
-                        mask_ratio=mask_ratio,
-                        patch_size=self.encoder.patch_size
+                    print("\n" + "="*70)
+                    print("❌ CRITICAL ERROR: Decoder patch_size mismatch detected!")
+                    print("="*70)
+                    print(f"  Decoder patch_size: {self.decoder.patch_size}")
+                    print(f"  Encoder patch_size: {self.encoder.patch_size}")
+                    print(f"\n⚠️  This will cause NaN losses because:")
+                    print(f"  1. update_patch_size() creates NEW projection layer weights")
+                    print(f"  2. Optimizer still references OLD weights")
+                    print(f"  3. Gradients don't flow to new weights")
+                    print(f"  4. Random uninitialized weights → NaN loss")
+                    print(f"\n✅ FIX: Run a dummy forward pass BEFORE creating decoder/optimizer")
+                    print(f"  See scripts/pretrain_vitaldb_ssl.py for the fix")
+                    print("="*70 + "\n")
+
+                    raise RuntimeError(
+                        f"Decoder patch_size ({self.decoder.patch_size}) doesn't match "
+                        f"encoder patch_size ({self.encoder.patch_size}). "
+                        f"This will cause NaN losses. "
+                        f"Fix: Determine correct patch_size BEFORE creating decoder and optimizer."
                     )
-                    
-                    # Re-encode with new mask
-                    print(f"[INFO] Re-encoding with updated mask")
-                    latents = self.encoder.get_encoder_output(masked_inputs)
                 
                 # Handle different encoder output formats
                 if isinstance(latents, tuple):
@@ -445,24 +444,14 @@ class SSLTrainer:
                     # Encode: [B, C, T] -> [B, P, D]
                     # Use get_encoder_output for SSL to preserve patch dimensions
                     latents = self.encoder.get_encoder_output(masked_inputs)
-                    
-                    # Sync all components if needed (should already be synced from training)
+
+                    # ⚠️ This should NOT happen (already checked in training)
                     if hasattr(self.encoder, 'patch_size') and self.decoder.patch_size != self.encoder.patch_size:
-                        self.decoder.update_patch_size(self.encoder.patch_size)
-                        
-                        # ALSO sync MSM criterion
-                        if hasattr(self, 'msm_criterion') and self.msm_criterion.patch_size != self.encoder.patch_size:
-                            self.msm_criterion.patch_size = self.encoder.patch_size
-                        
-                        # Recreate mask with correct patch_size
-                        masked_inputs, mask_bool = self.mask_fn(
-                            inputs,
-                            mask_ratio=mask_ratio,
-                            patch_size=self.encoder.patch_size
+                        raise RuntimeError(
+                            f"Validation: Decoder patch_size ({self.decoder.patch_size}) doesn't match "
+                            f"encoder patch_size ({self.encoder.patch_size}). "
+                            f"This should have been caught during training initialization."
                         )
-                        
-                        # Re-encode with new mask
-                        latents = self.encoder.get_encoder_output(masked_inputs)
                     
                     if isinstance(latents, tuple):
                         latents = latents[0]

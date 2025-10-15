@@ -569,12 +569,44 @@ def create_ssl_model(
     logger.info(f"✓ Encoder created:")
     logger.info(f"  Using real TTM: {encoder.is_using_real_ttm()}")
     logger.info(f"  Parameters: {sum(p.numel() for p in encoder.parameters()):,}")
-    
+
+    # 🔧 CRITICAL FIX: Determine actual patch_size BEFORE creating decoder
+    # TTM may output different patch counts than config expects
+    logger.info(f"\n1b. Determining actual encoder patch_size...")
+    logger.info(f"  Config patch_size: {patch_size}")
+    logger.info(f"  Config num_patches: {context_length // patch_size}")
+
+    # Run a dummy forward pass to get actual encoder output dimensions
+    with torch.no_grad():
+        dummy_input = torch.randn(1, input_channels, context_length).to(device)
+        logger.info(f"  Running dummy forward pass with input shape: {list(dummy_input.shape)}")
+
+        try:
+            dummy_output = encoder.get_encoder_output(dummy_input)
+            actual_num_patches = dummy_output.size(1)
+            actual_patch_size = context_length // actual_num_patches
+
+            logger.info(f"  ✅ Encoder outputs {actual_num_patches} patches")
+            logger.info(f"  ✅ Actual patch_size: {actual_patch_size}")
+
+            # Update patch_size to match encoder's actual output
+            if actual_patch_size != patch_size:
+                logger.warning(f"  ⚠️  Config patch_size ({patch_size}) != actual ({actual_patch_size})")
+                logger.info(f"  Using actual patch_size={actual_patch_size} for decoder")
+                patch_size = actual_patch_size
+
+            del dummy_input, dummy_output
+            torch.cuda.empty_cache() if device == 'cuda' else None
+
+        except Exception as e:
+            logger.error(f"  ❌ Failed to determine patch_size: {e}")
+            logger.warning(f"  Using config patch_size={patch_size} (may cause issues)")
+
     # Create decoder (Lightweight reconstruction head)
     logger.info(f"\n2. Creating Reconstruction Decoder...")
     decoder_cfg = model_cfg.get('decoder', {})
     n_channels = decoder_cfg.get('n_channels', input_channels)
-    
+
     # ✅ Get actual d_model from encoder dynamically - NO HARD-CODED VALUES!
     # Query the encoder's actual output dimension to ensure decoder compatibility
     try:
@@ -598,15 +630,16 @@ def create_ssl_model(
         # Safe default for TTM-Enhanced (most common case)
         actual_d_model = 192
         logger.warning(f"  Using safe default d_model={actual_d_model}")
-    
+
     logger.info(f"  ✅ Using d_model={actual_d_model} for decoder (matches encoder output)")
-    
+    logger.info(f"  ✅ Using patch_size={patch_size} for decoder (matches encoder output)")
+
     decoder = ReconstructionHead1D(
         d_model=actual_d_model,  # Now dynamically matches encoder!
-        patch_size=patch_size,
+        patch_size=patch_size,   # Now matches encoder's actual patch_size!
         n_channels=n_channels
     )
-    
+
     decoder = decoder.to(device)
     
     logger.info(f"✓ Decoder created:")
@@ -777,15 +810,24 @@ def run_ssl_pretraining(
     # Create SSL losses
     ssl_cfg = config['ssl']
     train_cfg = config['training']
-    
+
     # Ensure proper types for SSL configuration
-    patch_size = int(ssl_cfg['patch_size'])
+    # 🔧 CRITICAL: Use encoder's actual patch_size (already determined in create_ssl_model)
+    config_patch_size = int(ssl_cfg['patch_size'])
+    actual_patch_size = encoder.patch_size if hasattr(encoder, 'patch_size') else config_patch_size
+
+    if actual_patch_size != config_patch_size:
+        logger.info(f"\n⚠️  MSM Loss: Using actual patch_size={actual_patch_size} (config={config_patch_size})")
+
+    patch_size = actual_patch_size
     mask_ratio = float(ssl_cfg['mask_ratio'])
-    
-    # MSM loss
+
+    # MSM loss with correct patch_size
     msm_criterion = MaskedSignalModeling(
         patch_size=patch_size
     )
+
+    logger.info(f"\n✓ MSM Loss created with patch_size={patch_size}")
     
     # STFT loss (optional)
     stft_criterion = None
