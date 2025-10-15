@@ -97,18 +97,26 @@ class VitalDBSSLDataset(Dataset):
     """
     
     def __init__(
-        self, 
+        self,
         data_file_or_dir: str,
         transform_to_channels_first: bool = True
     ):
         """Load preprocessed VitalDB windows."""
         path = Path(data_file_or_dir)
-        
-        # Check if it's a directory with separated modalities
+
+        # Check if it's a directory
         if path.is_dir():
             logger.info(f"Detected directory format: {path}")
-            logger.info("  Looking for separated modality folders (ppg/, ecg/)...")
-            windows = self._load_separated_modalities(path)
+
+            # Check for NEW paired format (case_*.npz files)
+            case_files = list(path.glob('case_*.npz'))
+            if case_files:
+                logger.info(f"  Found {len(case_files)} paired case files (NEW format)")
+                windows = self._load_paired_cases(path)
+            else:
+                # OLD format: separated modalities (ppg/, ecg/)
+                logger.info("  Looking for separated modality folders (ppg/, ecg/)...")
+                windows = self._load_separated_modalities(path)
         elif path.exists() and path.suffix == '.npz':
             logger.info(f"Loading single file: {path}")
             windows = self._load_single_file(path)
@@ -164,6 +172,52 @@ class VitalDBSSLDataset(Dataset):
             logger.error(f"  ⚠️  Data quality issues: NaN={has_nan}, Inf={has_inf}")
             raise ValueError("Data contains NaN or Inf values!")
     
+    def _load_paired_cases(self, directory: Path) -> np.ndarray:
+        """
+        Load and concatenate data from paired case files (NEW format from rebuild_vitaldb_paired.py).
+
+        Expected structure:
+          directory/case_00001_windows.npz
+          directory/case_00002_windows.npz
+          ...
+
+        Each file contains:
+          data: [N, 2, 1024] where channel 0=PPG, channel 1=ECG
+
+        Returns:
+          Combined array [Total_N, 2, 1024]
+        """
+        # Find all case files (excluding stats files)
+        case_files = sorted([
+            f for f in directory.glob('case_*.npz')
+            if 'stats' not in f.name.lower()
+        ])
+
+        logger.info(f"  Found {len(case_files)} paired case files")
+
+        if len(case_files) == 0:
+            raise ValueError(f"No case_*.npz files found in {directory}")
+
+        # Load all case data
+        all_windows = []
+        for f in case_files:
+            data = np.load(f)
+            if 'data' in data:
+                case_windows = data['data']  # Shape: [N, 2, 1024]
+                all_windows.append(case_windows)
+                logger.info(f"    Loaded {f.name}: shape={case_windows.shape}")
+            else:
+                logger.warning(f"    Skipping {f.name}: no 'data' key found")
+
+        if len(all_windows) == 0:
+            raise ValueError(f"No valid data found in case files in {directory}")
+
+        # Concatenate all cases
+        combined = np.concatenate(all_windows, axis=0)
+        logger.info(f"  Combined shape: {combined.shape} [N, 2, T]")
+
+        return combined
+
     def _load_single_file(self, filepath: Path) -> np.ndarray:
         """Load data from single .npz file."""
         # Check if this is a stats file (should not be loaded as data)
