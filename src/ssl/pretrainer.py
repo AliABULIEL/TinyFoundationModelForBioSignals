@@ -264,6 +264,16 @@ class SSLTrainer:
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
         
+        # Check if dataloader is empty
+        if len(train_loader) == 0:
+            raise ValueError(
+                f"Training dataloader is empty! "
+                f"Dataset size: {len(train_loader.dataset)}, "
+                f"Batch size: {train_loader.batch_size}, "
+                f"Drop last: {train_loader.drop_last}. "
+                f"Either reduce batch_size or set drop_last=False."
+            )
+        
         for batch_idx, batch in enumerate(pbar):
             # Unpack batch - handle single tensors, tuples from TensorDataset, and paired inputs
             if isinstance(batch, (tuple, list)):

@@ -443,13 +443,25 @@ def create_ssl_dataloaders(
         transform_to_channels_first=True
     )
     
+    # Adjust batch size if needed
+    dataset_size = len(train_dataset)
+    if batch_size > dataset_size:
+        logger.warning(
+            f"Batch size ({batch_size}) > dataset size ({dataset_size}). "
+            f"Reducing batch size to {dataset_size}"
+        )
+        batch_size = dataset_size
+    
+    # Only drop last batch if dataset is large enough
+    drop_last = dataset_size > batch_size
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,  # Important for SSL
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=True  # Drop incomplete batches for consistent training
+        drop_last=drop_last  # Only drop if we have multiple batches
     )
     
     logger.info(f"\n✓ Train loader created:")
@@ -995,7 +1007,7 @@ Data Requirements:
     parser.add_argument(
         '--num-workers',
         type=int,
-        default=4,
+        default=2,  # Reduced default for Colab compatibility
         help='Number of data loading workers'
     )
     
