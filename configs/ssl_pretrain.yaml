@@ -9,9 +9,9 @@ ssl:
   # Multi-Resolution STFT Loss
   stft:
     enabled: true
-    n_ffts: [512, 1024, 2048]
-    hop_lengths: [128, 256, 512]
-    loss_weight: 0.3        # Weight relative to MSM loss (1.0)
+    n_ffts: [256, 512]        # Reduced for 1024-sample signals (was [512, 1024, 2048])
+    hop_lengths: [64, 128]    # Adjusted proportionally
+    loss_weight: 0.3          # Weight relative to MSM loss (1.0)
 
 # Model Configuration
 model:

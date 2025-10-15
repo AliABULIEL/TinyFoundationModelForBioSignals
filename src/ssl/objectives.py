@@ -163,6 +163,25 @@ class MultiResolutionSTFT(nn.Module):
         """
         B, C, T = x.shape
         
+        # Safety check: n_fft should be reasonable for signal length
+        # STFT with center=True pads by n_fft//2 on each side
+        # So we need: T >= n_fft//2 to avoid padding errors
+        if n_fft > T:
+            # Reduce n_fft to signal length (must be power of 2 or at least reasonable)
+            # Find largest power of 2 <= T
+            import math
+            new_n_fft = 2 ** int(math.log2(T))
+            if new_n_fft < 64:  # Minimum reasonable FFT size
+                new_n_fft = min(64, T)
+            
+            print(f"[WARNING] STFT: n_fft={n_fft} too large for signal length {T}")
+            print(f"[WARNING] STFT: Reducing n_fft to {new_n_fft}")
+            n_fft = new_n_fft
+            
+            # Also adjust win_length if needed
+            if win_length > n_fft:
+                win_length = n_fft
+        
         # Reshape to [B*C, T] for processing
         x_flat = x.reshape(B * C, T)
         
