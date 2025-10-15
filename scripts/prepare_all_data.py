@@ -616,8 +616,23 @@ class DataPreparationPipeline:
         if 'train' not in windows_info:
             logger.warning("No training data found")
             return {'error': 'No training data'}
-
-        train_file = Path(windows_info['train']['file'])
+        
+        # Handle nested channel structure
+        train_info = windows_info['train']
+        
+        # Check if we have data for PPG channel (primary for stats)
+        if 'PPG' in train_info and 'file' in train_info['PPG']:
+            train_file = Path(train_info['PPG']['file'])
+        elif 'ECG' in train_info and 'file' in train_info['ECG']:
+            # Fallback to ECG if PPG not available
+            train_file = Path(train_info['ECG']['file'])
+        elif 'file' in train_info:
+            # Old flat structure
+            train_file = Path(train_info['file'])
+        else:
+            logger.error("No valid training data files found")
+            logger.error(f"Training info structure: {train_info}")
+            return {'error': 'No training files'}
         if not train_file.exists():
             logger.error(f"Training file not found: {train_file}")
             return {'error': 'File not found'}
