@@ -429,6 +429,10 @@ def create_ssl_dataloaders(
     Returns:
         (train_loader, val_loader) tuple
     """
+    # Ensure proper types
+    batch_size = int(batch_size)
+    num_workers = int(num_workers)
+    
     logger.info("\n" + "=" * 70)
     logger.info("Creating SSL DataLoaders")
     logger.info("=" * 70)
@@ -609,23 +613,33 @@ def create_ssl_optimizer(
     
     # Create optimizer
     optimizer_type = train_cfg.get('optimizer', 'adamw').lower()
-    lr = train_cfg['lr']
-    weight_decay = train_cfg.get('weight_decay', 0.01)
+    lr = float(train_cfg['lr'])  # Ensure lr is float, not string
+    weight_decay = float(train_cfg.get('weight_decay', 0.01))  # Ensure float
     
     if optimizer_type == 'adamw':
+        betas = train_cfg.get('betas', [0.9, 0.999])
+        # Ensure betas are floats
+        betas = [float(b) for b in betas]
+        eps = float(train_cfg.get('eps', 1e-8))
+        
         optimizer = torch.optim.AdamW(
             params,
             lr=lr,
-            betas=train_cfg.get('betas', [0.9, 0.999]),
-            eps=train_cfg.get('eps', 1e-8),
+            betas=betas,
+            eps=eps,
             weight_decay=weight_decay
         )
     elif optimizer_type == 'adam':
+        betas = train_cfg.get('betas', [0.9, 0.999])
+        # Ensure betas are floats
+        betas = [float(b) for b in betas]
+        eps = float(train_cfg.get('eps', 1e-8))
+        
         optimizer = torch.optim.Adam(
             params,
             lr=lr,
-            betas=train_cfg.get('betas', [0.9, 0.999]),
-            eps=train_cfg.get('eps', 1e-8),
+            betas=betas,
+            eps=eps,
             weight_decay=weight_decay
         )
     else:
@@ -662,8 +676,8 @@ def create_lr_scheduler(
     if schedule_type == 'none':
         return None
     
-    warmup_epochs = train_cfg.get('warmup_epochs', 10)
-    min_lr = train_cfg.get('min_lr', 1e-6)
+    warmup_epochs = int(train_cfg.get('warmup_epochs', 10))
+    min_lr = float(train_cfg.get('min_lr', 1e-6))
     
     if schedule_type == 'cosine':
         from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -725,24 +739,34 @@ def run_ssl_pretraining(
     ssl_cfg = config['ssl']
     train_cfg = config['training']
     
+    # Ensure proper types for SSL configuration
+    patch_size = int(ssl_cfg['patch_size'])
+    mask_ratio = float(ssl_cfg['mask_ratio'])
+    
     # MSM loss
     msm_criterion = MaskedSignalModeling(
-        patch_size=ssl_cfg['patch_size']
+        patch_size=patch_size
     )
     
     # STFT loss (optional)
     stft_criterion = None
+    stft_weight = 0.0
     if ssl_cfg.get('stft', {}).get('enabled', True):
         stft_cfg = ssl_cfg['stft']
+        # Ensure proper types
+        n_ffts = [int(x) for x in stft_cfg['n_ffts']]
+        hop_lengths = [int(x) for x in stft_cfg['hop_lengths']]
+        stft_weight = float(stft_cfg['loss_weight'])
+        
         stft_criterion = MultiResolutionSTFT(
-            n_ffts=stft_cfg['n_ffts'],
-            hop_lengths=stft_cfg['hop_lengths'],
+            n_ffts=n_ffts,
+            hop_lengths=hop_lengths,
             weight=1.0,  # Will be scaled by stft_weight in trainer
             use_spectral_convergence=False
         )
         logger.info(f"\n✓ STFT Loss enabled:")
-        logger.info(f"  FFT sizes: {stft_cfg['n_ffts']}")
-        logger.info(f"  Weight: {stft_cfg['loss_weight']}")
+        logger.info(f"  FFT sizes: {n_ffts}")
+        logger.info(f"  Weight: {stft_weight}")
     
     # Create masking function
     mask_type = ssl_cfg.get('mask_type', 'random')
@@ -755,8 +779,12 @@ def run_ssl_pretraining(
     
     logger.info(f"\n✓ Masking configuration:")
     logger.info(f"  Type: {mask_type}")
-    logger.info(f"  Ratio: {ssl_cfg['mask_ratio']}")
-    logger.info(f"  Patch size: {ssl_cfg['patch_size']}")
+    logger.info(f"  Ratio: {mask_ratio}")
+    logger.info(f"  Patch size: {patch_size}")
+    
+    # Ensure proper types for trainer parameters
+    use_amp = bool(train_cfg.get('amp', True))
+    gradient_clip = float(train_cfg.get('gradient_clip', 1.0))
     
     # Create SSL trainer
     trainer = SSLTrainer(
@@ -767,9 +795,9 @@ def run_ssl_pretraining(
         stft_criterion=stft_criterion,
         mask_fn=mask_fn,
         device=device,
-        use_amp=train_cfg.get('amp', True),
-        gradient_clip=train_cfg.get('gradient_clip', 1.0),
-        stft_weight=ssl_cfg.get('stft', {}).get('loss_weight', 0.3)
+        use_amp=use_amp,
+        gradient_clip=gradient_clip,
+        stft_weight=stft_weight
     )
     
     # Resume from checkpoint if specified
@@ -778,16 +806,19 @@ def run_ssl_pretraining(
         trainer.load_checkpoint(resume_from)
     
     # Run training
-    num_epochs = train_cfg.get('epochs', 100)
+    num_epochs = int(train_cfg.get('epochs', 100))
+    batch_size = int(train_cfg.get('batch_size', 128))
+    log_interval = int(train_cfg.get('log_freq', 100))
+    save_interval = int(config.get('checkpoint', {}).get('save_freq', 10))
     
     logger.info(f"\n{'=' * 70}")
     logger.info(f"Training Configuration:")
     logger.info(f"  Epochs: {num_epochs}")
-    logger.info(f"  Batch size: {train_cfg.get('batch_size', 128)}")
+    logger.info(f"  Batch size: {batch_size}")
     logger.info(f"  Learning rate: {train_cfg['lr']}")
     logger.info(f"  Device: {device}")
-    logger.info(f"  AMP: {train_cfg.get('amp', True)}")
-    logger.info(f"  Gradient clip: {train_cfg.get('gradient_clip', 1.0)}")
+    logger.info(f"  AMP: {use_amp}")
+    logger.info(f"  Gradient clip: {gradient_clip}")
     logger.info(f"={'=' * 70}\n")
     
     # Start training
@@ -798,9 +829,9 @@ def run_ssl_pretraining(
         val_loader=val_loader,
         num_epochs=num_epochs,
         save_dir=str(output_path),
-        mask_ratio=ssl_cfg['mask_ratio'],
-        log_interval=train_cfg.get('log_freq', 100),
-        save_interval=config.get('checkpoint', {}).get('save_freq', 10)
+        mask_ratio=mask_ratio,
+        log_interval=log_interval,
+        save_interval=save_interval
     )
     
     elapsed_time = time.time() - start_time
@@ -996,15 +1027,15 @@ Data Requirements:
     
     # Override config with command-line arguments
     if args.epochs is not None:
-        config['training']['epochs'] = args.epochs
+        config['training']['epochs'] = int(args.epochs)
         logger.info(f"Overriding epochs: {args.epochs}")
     
     if args.batch_size is not None:
-        config['training']['batch_size'] = args.batch_size
+        config['training']['batch_size'] = int(args.batch_size)
         logger.info(f"Overriding batch size: {args.batch_size}")
     
     if args.lr is not None:
-        config['training']['lr'] = args.lr
+        config['training']['lr'] = float(args.lr)
         logger.info(f"Overriding learning rate: {args.lr}")
     
     try:
