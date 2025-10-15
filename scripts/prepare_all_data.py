@@ -74,10 +74,24 @@ try:
     # Method 1: Direct import (preferred)
     try:
         from src.data.vitaldb_loader import get_available_case_sets, list_cases
-        from src.data.butppg_loader import BUTPPGLoader
         from src.data.splits import make_patient_level_splits, verify_no_subject_leakage, get_split_statistics
         from src.data.windows import NormalizationStats
-        print("✓ Successfully imported all required modules")
+        
+        # Try importing BUT-PPG loader (may not be synced in Colab)
+        try:
+            from src.data.butppg_loader import BUTPPGLoader
+            BUTPPG_AVAILABLE = True
+        except ImportError:
+            BUTPPG_AVAILABLE = False
+            BUTPPGLoader = None
+            print("⚠️  BUT-PPG loader not available (file not synced?)")
+        
+        print("✓ Successfully imported core modules")
+        if BUTPPG_AVAILABLE:
+            print("✓ BUT-PPG loader available")
+        else:
+            print("ℹ️  BUT-PPG loader unavailable - only VitalDB will work")
+            
     except ImportError as e1:
         # Method 2: Try adding src to path and importing again
         src_path = project_root / 'src'
@@ -85,10 +99,19 @@ try:
             sys.path.insert(0, str(src_path))
         
         from data.vitaldb_loader import get_available_case_sets, list_cases
-        from data.butppg_loader import BUTPPGLoader
         from data.splits import make_patient_level_splits, verify_no_subject_leakage, get_split_statistics
         from data.windows import NormalizationStats
-        print("✓ Successfully imported all required modules (method 2)")
+        
+        # Try importing BUT-PPG loader
+        try:
+            from data.butppg_loader import BUTPPGLoader
+            BUTPPG_AVAILABLE = True
+        except ImportError:
+            BUTPPG_AVAILABLE = False
+            BUTPPGLoader = None
+            print("⚠️  BUT-PPG loader not available")
+        
+        print("✓ Successfully imported core modules (method 2)")
         
 except ImportError as e:
     print(f"\n❌ ERROR: Failed to import required modules: {e}")
@@ -444,6 +467,14 @@ class DataPreparationPipeline:
 
     def create_butppg_splits(self) -> Dict:
         """Create subject-level splits for BUT-PPG."""
+        # Check if BUT-PPG loader is available
+        if not BUTPPG_AVAILABLE or BUTPPGLoader is None:
+            logger.error("BUT-PPG loader not available. File may not be synced to Drive.")
+            return {
+                'error': 'BUTPPGLoader not available',
+                'message': 'File src/data/butppg_loader.py not found. Wait for Drive sync or use --dataset vitaldb'
+            }
+        
         logger.info("Getting available BUT-PPG subjects...")
 
         # Check if BUT-PPG data exists
@@ -952,6 +983,23 @@ BUT-PPG Data:
         datasets = ['vitaldb', 'butppg']
     else:
         datasets = [args.dataset]
+    
+    # Check if BUT-PPG is requested but not available
+    if 'butppg' in datasets and not BUTPPG_AVAILABLE:
+        print("\n" + "="*70)
+        print("⚠️  WARNING: BUT-PPG loader not available!")
+        print("="*70)
+        print("File src/data/butppg_loader.py is missing (Drive sync issue?)")
+        print("\nThis file exists locally but hasn't synced to Google Drive yet.")
+        print("\nOptions to fix:")
+        print("  1. Wait for Google Drive to sync the file (may take 5-10 minutes)")
+        print("  2. Manually upload butppg_loader.py from local to Drive")
+        print("  3. Use --dataset vitaldb to only prepare VitalDB (works now)")
+        print("\nAUTO-SWITCHING to VitalDB only for now...")
+        print("="*70 + "\n")
+        
+        datasets = ['vitaldb']
+        logger.info("✓ Continuing with VitalDB dataset only")
 
     # Create and run pipeline
     pipeline = DataPreparationPipeline(
