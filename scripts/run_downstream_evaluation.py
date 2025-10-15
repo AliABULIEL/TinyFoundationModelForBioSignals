@@ -104,7 +104,7 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
     """
     print(f"\nLoading checkpoint: {checkpoint_path}")
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Extract config and state dict
     if isinstance(checkpoint, dict):
