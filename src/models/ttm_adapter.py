@@ -199,14 +199,14 @@ class TTMAdapter(nn.Module):
                     num_input_channels=self.input_channels,
                     prediction_length=self.prediction_length,
                     d_model=d_model,  # Dynamically calculated based on patch_length
-                    num_layers=3,  # Use 3 layers for stability (default adaptive_patching_levels=3)
+                    num_layers=8,  # Standard TTM depth (works without adaptive patching)
                     expansion_factor=2,  # TTM default
                     dropout=0.2,
                     head_dropout=0.2,
                     mode="common_channel",  # TTM mode for pretraining (channel-independent)
                     decoder_mode=decoder_mode,
                     scaling="std",  # TTM default
-                    adaptive_patching_levels=3,  # Explicit (default is 3)
+                    adaptive_patching_levels=0,  # DISABLED for custom configs (no multi-resolution)
                     use_positional_encoding=False,  # Not needed for biosignals
                     resolution_prefix_tuning=False,  # Not needed for single resolution
                 )
