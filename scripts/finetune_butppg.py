@@ -87,7 +87,15 @@ class BUTPPGDataset(Dataset):
         print(f"Loading BUT-PPG data from: {data_file}")
         data = np.load(data_file)
 
-        self.signals = torch.from_numpy(data['signals']).float()  # [N, 5, 1024]
+        # Support both 'signals' and 'data' keys (data prep inconsistency)
+        if 'signals' in data:
+            signals_array = data['signals']
+        elif 'data' in data:
+            signals_array = data['data']
+        else:
+            raise KeyError(f"Expected 'signals' or 'data' key in {data_file}, found: {list(data.keys())}")
+
+        self.signals = torch.from_numpy(signals_array).float()  # [N, 5, 1024]
         self.labels = torch.from_numpy(data['labels']).long()     # [N]
 
         # Validate shapes
@@ -470,8 +478,16 @@ def verify_data_structure(data_dir: Path):
                 rel_path = npz_file.relative_to(data_dir)
                 print(f"\n  {rel_path}:")
                 print(f"    Keys: {list(data.keys())}")
+
+                # Support both 'signals' and 'data' keys
                 if 'signals' in data:
                     signals = data['signals']
+                elif 'data' in data:
+                    signals = data['data']
+                else:
+                    signals = None
+
+                if signals is not None:
                     print(f"    Signals shape: {signals.shape}")
                     if len(signals.shape) == 3:
                         N, C, T = signals.shape
@@ -646,17 +662,22 @@ def parse_args():
 def main():
     """Main fine-tuning script."""
     args = parse_args()
-    
+
+    # Handle --verify-data early (before loading model)
+    if args.verify_data:
+        verify_data_structure(Path(args.data_dir))
+        return 0
+
     # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Print configuration
     print("\n" + "=" * 70)
     print("BUT-PPG FINE-TUNING CONFIGURATION")

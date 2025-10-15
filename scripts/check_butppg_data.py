@@ -27,11 +27,19 @@ def check_data(data_path: Path) -> bool:
         print(f"  ✓ File loads successfully")
         print(f"  Keys: {list(data.keys())}")
 
-        if 'signals' not in data or 'labels' not in data:
-            print(f"  ❌ Missing required keys (signals, labels)")
+        # Support both 'signals' and 'data' keys
+        if 'signals' in data:
+            signals = data['signals']
+        elif 'data' in data:
+            signals = data['data']
+        else:
+            print(f"  ❌ Missing signal data key (expected 'signals' or 'data')")
             return False
 
-        signals = data['signals']
+        if 'labels' not in data:
+            print(f"  ❌ Missing 'labels' key")
+            return False
+
         labels = data['labels']
 
         print(f"  Signals shape: {signals.shape}")
