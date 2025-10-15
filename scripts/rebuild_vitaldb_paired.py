@@ -314,15 +314,17 @@ def main():
         print("❌ No cases found with both signals!")
         return
 
-    # Limit number of cases if specified
-    if args.max_cases:
-        common_cases = common_cases[:args.max_cases]
-        print(f"   Using first {len(common_cases)} cases")
-
-    # Check if splits file exists
+    # Check if splits file exists (only use if NOT limiting cases)
     splits = None
     splits_path = Path(args.splits_file)
-    if splits_path.exists():
+
+    if args.max_cases:
+        # When limiting cases, always create new splits
+        print(f"\n⚠️  --max-cases specified, ignoring existing splits file")
+        print(f"   Using first {args.max_cases} cases")
+        common_cases = common_cases[:args.max_cases]
+        splits = None  # Force new splits creation
+    elif splits_path.exists():
         print(f"\n📂 Loading existing splits from {splits_path}")
         try:
             with open(splits_path, 'r') as f:
@@ -338,6 +340,11 @@ def main():
             }
             print(f"   After filtering: Train={len(splits['train'])}, "
                   f"Val={len(splits['val'])}, Test={len(splits['test'])}")
+
+            # If filtering resulted in empty splits, create new ones
+            if all(len(v) == 0 for v in splits.values()):
+                print(f"   ⚠️  All splits empty after filtering, will create new splits")
+                splits = None
         except Exception as e:
             print(f"   ⚠️  Could not load splits: {e}")
             splits = None
@@ -441,6 +448,11 @@ def main():
     total_cases_attempted = sum(s['cases_attempted'] for s in summary.values())
     total_cases_successful = sum(s['cases_successful'] for s in summary.values())
     total_windows = sum(s['windows'] for s in summary.values())
+
+    if total_cases_attempted == 0:
+        print("\n⚠️  No cases were processed!")
+        print("   This might happen if all splits were empty.")
+        return
 
     print(f"\nTotal cases attempted: {total_cases_attempted}")
     print(f"Total cases successful: {total_cases_successful} "
