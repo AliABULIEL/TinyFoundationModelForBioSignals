@@ -130,6 +130,12 @@ class VitalDBSSLDataset(Dataset):
                 logger.info(f"  Transposed to: {windows.shape} [channels-first]")
         
         # Verify shape
+        if windows.ndim != 3:
+            raise ValueError(
+                f"Expected 3D array [N, C, T] after shape handling, got {windows.ndim}D: {windows.shape}\n"
+                f"This suggests an issue with data loading or shape normalization."
+            )
+        
         N, C, T = windows.shape
         expected_T = 1250  # 10s @ 125Hz
         
@@ -228,6 +234,7 @@ class VitalDBSSLDataset(Dataset):
         ppg_arrays = []
         for f in ppg_files:
             data = self._load_single_file(f)
+            logger.info(f"    Loaded {f.name}: shape={data.shape}")
             ppg_arrays.append(data)
         
         ppg_data = np.concatenate(ppg_arrays, axis=0)
@@ -237,6 +244,7 @@ class VitalDBSSLDataset(Dataset):
         ecg_arrays = []
         for f in ecg_files:
             data = self._load_single_file(f)
+            logger.info(f"    Loaded {f.name}: shape={data.shape}")
             ecg_arrays.append(data)
         
         ecg_data = np.concatenate(ecg_arrays, axis=0)
@@ -254,11 +262,59 @@ class VitalDBSSLDataset(Dataset):
             ecg_data = ecg_data[:min_len]
             logger.info(f"  Using first {min_len} windows from each modality")
         
-        # Ensure both are 2D [N, T]
-        if ppg_data.ndim == 3 and ppg_data.shape[1] == 1:
-            ppg_data = ppg_data.squeeze(1)
-        if ecg_data.ndim == 3 and ecg_data.shape[1] == 1:
-            ecg_data = ecg_data.squeeze(1)
+        # Normalize shapes to [N, T]
+        def normalize_to_2d(data: np.ndarray, modality: str) -> np.ndarray:
+            """Ensure data is 2D [N, T]."""
+            logger.info(f"  Normalizing {modality} from shape {data.shape}...")
+            
+            if data.ndim == 2:
+                # Already [N, T], perfect
+                return data
+            
+            elif data.ndim == 3:
+                # Could be [N, C, T] or [N, T, C]
+                if data.shape[1] == 1:
+                    # [N, 1, T] -> [N, T]
+                    result = data.squeeze(1)
+                    logger.info(f"    Squeezed axis 1: {result.shape}")
+                    return result
+                elif data.shape[2] == 1:
+                    # [N, T, 1] -> [N, T]
+                    result = data.squeeze(2)
+                    logger.info(f"    Squeezed axis 2: {result.shape}")
+                    return result
+                else:
+                    # Ambiguous, assume channels-last [N, T, C] if C is small
+                    if data.shape[2] < data.shape[1]:
+                        # [N, T, C] -> take first channel -> [N, T]
+                        logger.warning(
+                            f"    Ambiguous 3D shape {data.shape}, assuming [N,T,C] format. "
+                            f"Taking first channel."
+                        )
+                        return data[:, :, 0]
+                    else:
+                        # [N, C, T] -> take first channel -> [N, T]
+                        logger.warning(
+                            f"    Ambiguous 3D shape {data.shape}, assuming [N,C,T] format. "
+                            f"Taking first channel."
+                        )
+                        return data[:, 0, :]
+            
+            elif data.ndim == 4:
+                # [N, C1, C2, T] or similar - need to flatten
+                logger.warning(f"    4D data {data.shape}, reshaping to [N, -1]")
+                return data.reshape(data.shape[0], -1)
+            
+            else:
+                raise ValueError(
+                    f"Cannot normalize {modality} data with shape {data.shape} to [N, T]"
+                )
+        
+        ppg_data = normalize_to_2d(ppg_data, "PPG")
+        ecg_data = normalize_to_2d(ecg_data, "ECG")
+        
+        logger.info(f"  Normalized PPG shape: {ppg_data.shape}")
+        logger.info(f"  Normalized ECG shape: {ecg_data.shape}")
         
         # Stack into [N, 2, T]
         combined = np.stack([ppg_data, ecg_data], axis=1)
