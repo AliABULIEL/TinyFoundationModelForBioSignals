@@ -160,7 +160,14 @@ class VitalDBSSLDataset(Dataset):
     
     def _load_single_file(self, filepath: Path) -> np.ndarray:
         """Load data from single .npz file."""
-        data = np.load(filepath)
+        # Check if this is a stats file (should not be loaded as data)
+        if 'stats' in filepath.name.lower():
+            raise ValueError(
+                f"Attempting to load stats file as data: {filepath}\n"
+                f"Stats files (train_stats.npz) should not be used as input data."
+            )
+        
+        data = np.load(filepath, allow_pickle=True)
         if 'data' in data:
             return data['data']
         elif 'windows' in data:
@@ -171,7 +178,15 @@ class VitalDBSSLDataset(Dataset):
             keys = [k for k in data.keys() if not k.startswith('_')]
             if keys:
                 logger.warning(f"Using key '{keys[0]}' from {filepath.name}")
-                return data[keys[0]]
+                result = data[keys[0]]
+                # Validate it's actually signal data (should be 2D or 3D)
+                if isinstance(result, np.ndarray) and result.ndim >= 2:
+                    return result
+                else:
+                    raise ValueError(
+                        f"Key '{keys[0]}' in {filepath.name} is not signal data. "
+                        f"Got type={type(result)}, shape={getattr(result, 'shape', 'N/A')}"
+                    )
             raise ValueError(f"No data arrays found in {filepath}")
     
     def _load_separated_modalities(self, directory: Path) -> np.ndarray:
@@ -196,14 +211,14 @@ class VitalDBSSLDataset(Dataset):
             )
         
         # Load PPG files
-        ppg_files = sorted(list(ppg_dir.glob('*.npz')))
+        ppg_files = sorted([f for f in ppg_dir.glob('*.npz') if 'stats' not in f.name.lower()])
         logger.info(f"  Found {len(ppg_files)} PPG files")
         
         if len(ppg_files) == 0:
-            raise ValueError(f"No .npz files found in {ppg_dir}")
+            raise ValueError(f"No .npz data files found in {ppg_dir}")
         
         # Load ECG files
-        ecg_files = sorted(list(ecg_dir.glob('*.npz')))
+        ecg_files = sorted([f for f in ecg_dir.glob('*.npz') if 'stats' not in f.name.lower()])
         logger.info(f"  Found {len(ecg_files)} ECG files")
         
         if len(ecg_files) == 0:
