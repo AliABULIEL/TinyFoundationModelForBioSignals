@@ -409,10 +409,13 @@ class DataPreparationPipeline:
         }
 
     def build_vitaldb_windows(self, split_info: Dict) -> Dict:
-        """Build preprocessed windows for VitalDB."""
+        """Build preprocessed windows for VitalDB (PPG + ECG)."""
         splits_file = split_info['file']
         results = {}
 
+        # Process both PPG and ECG channels for SSL pre-training
+        channels_to_process = ['PPG', 'ECG']
+        
         # Process each split
         for split_name in ['train', 'val', 'test']:
             if split_name not in split_info['splits']:
@@ -420,48 +423,57 @@ class DataPreparationPipeline:
                 continue
 
             logger.info(f"\nProcessing {split_name} split...")
+            split_results = {}
+            
+            # Process each channel
+            for channel in channels_to_process:
+                logger.info(f"  Processing {channel} channel...")
+                
+                # Build command to call existing pipeline
+                cmd = [
+                    sys.executable,
+                    'scripts/ttm_vitaldb.py',
+                    'build-windows',
+                    '--channels-yaml', 'configs/channels.yaml',
+                    '--windows-yaml', 'configs/windows.yaml',
+                    '--split-file', splits_file,
+                    '--split', split_name,
+                    '--channel', channel,
+                    '--duration-sec', '60' if self.mode == 'fasttrack' else '300',
+                    '--min-sqi', '0.7',
+                    '--outdir', str(self.dirs['vitaldb_windows'] / split_name / channel.lower()),
+                    '--multiprocess',
+                    '--num-workers', str(self.num_workers)
+                ]
 
-            # Build command to call existing pipeline
-            cmd = [
-                sys.executable,
-                'scripts/ttm_vitaldb.py',
-                'build-windows',
-                '--channels-yaml', 'configs/channels.yaml',
-                '--windows-yaml', 'configs/windows.yaml',
-                '--split-file', splits_file,
-                '--split', split_name,
-                '--channel', 'PPG',  # Process PPG first
-                '--duration-sec', '60' if self.mode == 'fasttrack' else '300',
-                '--min-sqi', '0.7',
-                '--outdir', str(self.dirs['vitaldb_windows'] / split_name),
-                '--multiprocess',
-                '--num-workers', str(self.num_workers)
-            ]
+                logger.info(f"  Running: {' '.join(cmd)}")
 
-            logger.info(f"Running: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.error(f"  Failed to process {split_name}/{channel}")
+                    logger.error(result.stderr)
+                    split_results[channel] = {'error': result.stderr}
+                    continue
 
-            if result.returncode != 0:
-                logger.error(f"Failed to process {split_name}")
-                logger.error(result.stderr)
-                continue
+                logger.info(result.stdout)
 
-            logger.info(result.stdout)
-
-            # Check output
-            output_file = self.dirs['vitaldb_windows'] / split_name / f'{split_name}_windows.npz'
-            if output_file.exists():
-                data = np.load(output_file)
-                results[split_name] = {
-                    'file': str(output_file),
-                    'shape': data['data'].shape,
-                    'size_mb': output_file.stat().st_size / 1024 / 1024
-                }
-                logger.info(f"✓ {split_name}: {data['data'].shape} "
-                            f"({results[split_name]['size_mb']:.1f} MB)")
-            else:
-                logger.warning(f"Output file not found: {output_file}")
+                # Check output
+                output_file = self.dirs['vitaldb_windows'] / split_name / channel.lower() / f'{split_name}_windows.npz'
+                if output_file.exists():
+                    data = np.load(output_file)
+                    split_results[channel] = {
+                        'file': str(output_file),
+                        'shape': data['data'].shape,
+                        'size_mb': output_file.stat().st_size / 1024 / 1024
+                    }
+                    logger.info(f"  ✓ {channel}: {data['data'].shape} "
+                                f"({split_results[channel]['size_mb']:.1f} MB)")
+                else:
+                    logger.warning(f"  Output file not found: {output_file}")
+                    split_results[channel] = {'error': 'File not created'}
+            
+            results[split_name] = split_results
 
         return results
 
