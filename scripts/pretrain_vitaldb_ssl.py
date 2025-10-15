@@ -575,8 +575,18 @@ def create_ssl_model(
     decoder_cfg = model_cfg.get('decoder', {})
     n_channels = decoder_cfg.get('n_channels', input_channels)
     
+    # Get actual d_model from encoder
+    # For custom context_length, TTM uses d_model=64
+    # For pretrained (1024), TTM uses d_model from config
+    if context_length != 1024:
+        actual_d_model = 64  # Fresh TTM config default
+    else:
+        actual_d_model = d_model  # From config (192)
+    
+    logger.info(f"  Using d_model={actual_d_model} (encoder output dimension)")
+    
     decoder = ReconstructionHead1D(
-        d_model=d_model,
+        d_model=actual_d_model,
         patch_size=patch_size,
         n_channels=n_channels
     )

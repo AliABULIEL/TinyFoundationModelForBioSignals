@@ -109,7 +109,14 @@ class TTMAdapter(nn.Module):
         self.patch_size = patch_size
         self.prediction_length = prediction_length
         self.using_real_ttm = False
-        self.encoder_dim = 192  # TTM hidden size
+        
+        # Encoder dimension depends on whether using pretrained or fresh config
+        # Pretrained (context=1024): d_model=192
+        # Fresh config (custom context): d_model=64
+        if context_length == 1024:
+            self.encoder_dim = 192  # Pretrained TTM
+        else:
+            self.encoder_dim = 64   # Fresh TTM config
         
         # Calculate number of patches
         self.num_patches = context_length // patch_size
@@ -160,16 +167,33 @@ class TTMAdapter(nn.Module):
             # For custom context_length, we need to initialize from config, not pretrained weights
             if self.context_length != 1024:
                 print(f"  Note: Using TTM architecture without pretrained weights (context_length={self.context_length})")
-                # Initialize TTM from scratch with custom config
-                from transformers import AutoConfig
-                config = AutoConfig.from_pretrained(model_id)
-                config.context_length = self.context_length
-                config.patch_length = self.patch_size
-                config.num_input_channels = self.input_channels
-                config.prediction_length = self.prediction_length
-                config.decoder_mode = decoder_mode
                 
-                # Initialize model from config (no pretrained weights)
+                # Create a fresh TTM config with our parameters instead of modifying pretrained config
+                # This avoids dimension mismatches from hardcoded values in pretrained config
+                from tsfm_public.models.tinytimemixer.configuration_tinytimemixer import TinyTimeMixerConfig
+                
+                config = TinyTimeMixerConfig(
+                    context_length=self.context_length,
+                    patch_length=self.patch_size,
+                    num_input_channels=self.input_channels,
+                    prediction_length=self.prediction_length,
+                    d_model=64,  # TTM default hidden size
+                    num_layers=8,  # TTM default layers
+                    expansion_factor=2,  # TTM default
+                    dropout=0.1,
+                    mode="common_channel",  # TTM mode
+                    decoder_mode=decoder_mode,
+                    scaling="std"  # TTM default
+                )
+                
+                # Calculate num_patches
+                config.num_patches = self.num_patches
+                
+                # Log the configuration
+                print(f"  Fresh config: num_patches={config.num_patches}, patch_length={config.patch_length}")
+                print(f"  Fresh config: context_length={config.context_length}, d_model={config.d_model}")
+                
+                # Initialize model from fresh config
                 self.encoder = TinyTimeMixerForPrediction(config)
             else:
                 # Use get_model with pretrained weights for standard context_length
