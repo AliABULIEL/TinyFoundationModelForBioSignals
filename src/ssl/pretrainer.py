@@ -303,6 +303,11 @@ class SSLTrainer:
                 if hasattr(self.encoder, 'patch_size') and self.decoder.patch_size != self.encoder.patch_size:
                     # Use update_patch_size to recreate projection layer
                     self.decoder.update_patch_size(self.encoder.patch_size)
+                    
+                    # ALSO update MSM criterion patch_size
+                    if hasattr(self, 'msm_criterion') and self.msm_criterion.patch_size != self.encoder.patch_size:
+                        print(f"[INFO] Syncing MSM criterion patch_size from {self.msm_criterion.patch_size} to {self.encoder.patch_size}")
+                        self.msm_criterion.patch_size = self.encoder.patch_size
                 
                 # Handle different encoder output formats
                 if isinstance(latents, tuple):
@@ -429,6 +434,10 @@ class SSLTrainer:
                     # Sync decoder patch_size with encoder if needed
                     if hasattr(self.encoder, 'patch_size') and self.decoder.patch_size != self.encoder.patch_size:
                         self.decoder.update_patch_size(self.encoder.patch_size)
+                        
+                        # ALSO sync MSM criterion
+                        if hasattr(self, 'msm_criterion') and self.msm_criterion.patch_size != self.encoder.patch_size:
+                            self.msm_criterion.patch_size = self.encoder.patch_size
                     
                     if isinstance(latents, tuple):
                         latents = latents[0]
