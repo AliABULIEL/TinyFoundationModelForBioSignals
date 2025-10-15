@@ -7,6 +7,8 @@ we can expect after proper alignment and quality filtering.
 
 import vitaldb
 import numpy as np
+import pandas as pd
+from scipy import signal as scipy_signal
 from tqdm import tqdm
 import sys
 from pathlib import Path
@@ -28,19 +30,66 @@ def estimate_windows_for_case(case_id, window_size=1024, sampling_rate=125):
         tuple: (num_windows, ppg_length, ecg_length, duration_minutes)
     """
     try:
-        # Load both signals with 125 Hz sampling
-        ppg = vitaldb.load(case_id, 'PLETH', interval=1/sampling_rate)
-        ecg = vitaldb.load(case_id, 'ECG_II', interval=1/sampling_rate)
+        # Try to load PPG (PLETH) - try multiple tracks
+        ppg_tracks = ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH']
+        ppg_signal = None
+        ppg_fs = 100.0  # Default PPG sampling rate
 
-        if ppg is None or ecg is None:
+        for track in ppg_tracks:
+            try:
+                data = vitaldb.load_case(case_id, [track])
+                if data is not None and len(data) > 0:
+                    if isinstance(data, pd.DataFrame):
+                        if track in data.columns:
+                            ppg_signal = data[track].values
+                        else:
+                            ppg_signal = data.iloc[:, 0].values
+                    else:
+                        ppg_signal = data
+                    break
+            except:
+                continue
+
+        # Try to load ECG
+        ecg_tracks = ['SNUADC/ECG_II', 'Solar8000/ECG_II']
+        ecg_signal = None
+        ecg_fs = 500.0  # Default ECG sampling rate
+
+        for track in ecg_tracks:
+            try:
+                data = vitaldb.load_case(case_id, [track])
+                if data is not None and len(data) > 0:
+                    if isinstance(data, pd.DataFrame):
+                        if track in data.columns:
+                            ecg_signal = data[track].values
+                        else:
+                            ecg_signal = data.iloc[:, 0].values
+                    else:
+                        ecg_signal = data
+                    break
+            except:
+                continue
+
+        if ppg_signal is None or ecg_signal is None:
             return None
 
         # Check for valid data
-        if len(ppg) == 0 or len(ecg) == 0:
+        if len(ppg_signal) == 0 or len(ecg_signal) == 0:
             return None
 
+        # Resample to target sampling rate (125 Hz)
+        if abs(ppg_fs - sampling_rate) > 0.01:
+            duration = len(ppg_signal) / ppg_fs
+            new_length = int(duration * sampling_rate)
+            ppg_signal = scipy_signal.resample(ppg_signal, new_length)
+
+        if abs(ecg_fs - sampling_rate) > 0.01:
+            duration = len(ecg_signal) / ecg_fs
+            new_length = int(duration * sampling_rate)
+            ecg_signal = scipy_signal.resample(ecg_signal, new_length)
+
         # Get the minimum length (paired data constraint)
-        min_len = min(len(ppg), len(ecg))
+        min_len = min(len(ppg_signal), len(ecg_signal))
 
         # Calculate number of windows
         num_windows = min_len // window_size
@@ -48,10 +97,10 @@ def estimate_windows_for_case(case_id, window_size=1024, sampling_rate=125):
         # Calculate duration in minutes
         duration_minutes = min_len / sampling_rate / 60
 
-        return num_windows, len(ppg), len(ecg), duration_minutes
+        return num_windows, len(ppg_signal), len(ecg_signal), duration_minutes
 
     except Exception as e:
-        print(f"  ⚠️  Error loading case {case_id}: {e}", file=sys.stderr)
+        # Silently skip errors during sampling
         return None
 
 
