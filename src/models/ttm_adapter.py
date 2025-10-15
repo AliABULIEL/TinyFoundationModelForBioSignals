@@ -539,16 +539,81 @@ class TTMAdapter(nn.Module):
             if x.dim() == 3 and x.size(1) == self.input_channels:
                 x = x.transpose(1, 2)  # [B, C, T] -> [B, T, C]
             
+            B = x.size(0)
             backbone_output = self.backbone(x)
             
             # Extract last_hidden_state
             if hasattr(backbone_output, 'last_hidden_state'):
-                # Shape: [batch, channels, patches, hidden]
                 features = backbone_output.last_hidden_state
                 
-                # For SSL, we want per-patch features
-                # Average over channels: [batch, patches, hidden]
-                features = features.mean(dim=1)  # [B, P, D]
+                # Debug: Understand TTM's output structure
+                print(f"[DEBUG] TTM last_hidden_state shape: {features.shape}")
+                print(f"[DEBUG] Expected patches: {self.num_patches}, channels: {self.input_channels}")
+                
+                # Handle different possible TTM output formats
+                if features.dim() == 4:
+                    # Case 1: [B, C, P, D] - channels, patches, d_model
+                    if features.size(1) == self.input_channels and features.size(2) == self.num_patches:
+                        print(f"[DEBUG] Format: [B, C, P, D] = [{B}, {features.size(1)}, {features.size(2)}, {features.size(3)}]")
+                        # Average over channels: [B, C, P, D] -> [B, P, D]
+                        features = features.mean(dim=1)
+                    
+                    # Case 2: [B, P, C, D] - patches, channels, d_model
+                    elif features.size(1) == self.num_patches and features.size(2) == self.input_channels:
+                        print(f"[DEBUG] Format: [B, P, C, D] = [{B}, {features.size(1)}, {features.size(2)}, {features.size(3)}]")
+                        # Average over channels: [B, P, C, D] -> [B, P, D]
+                        features = features.mean(dim=2)
+                    
+                    else:
+                        print(f"[WARNING] Unexpected 4D shape: {features.shape}")
+                        print(f"[WARNING] Assuming [B, C, P, D] and averaging over dim=1")
+                        features = features.mean(dim=1)
+                
+                elif features.dim() == 3:
+                    # Case 3: [B, P, D] - already in correct format
+                    if features.size(1) == self.num_patches:
+                        print(f"[DEBUG] Format: [B, P, D] = [{B}, {features.size(1)}, {features.size(2)}] - already correct!")
+                        pass  # No transformation needed
+                    
+                    # Case 4: [B, C*P, D] - channels and patches flattened together
+                    elif features.size(1) == self.num_patches * self.input_channels:
+                        print(f"[DEBUG] Format: [B, C*P, D] = [{B}, {features.size(1)}, {features.size(2)}]")
+                        print(f"[DEBUG] Reshaping to [B, C, P, D] and averaging over channels...")
+                        # Reshape: [B, C*P, D] -> [B, C, P, D]
+                        features = features.reshape(B, self.input_channels, self.num_patches, features.size(-1))
+                        # Average over channels: [B, C, P, D] -> [B, P, D]
+                        features = features.mean(dim=1)
+                    
+                    else:
+                        print(f"[WARNING] Unexpected 3D shape: {features.shape}")
+                        print(f"[WARNING] Expected dim1={self.num_patches} or {self.num_patches * self.input_channels}")
+                        # Try to use as-is if matches expected patches
+                        if features.size(1) < self.num_patches * 2:
+                            print(f"[WARNING] Using as-is since dim1={features.size(1)} is reasonable")
+                            pass
+                        else:
+                            raise ValueError(
+                                f"Cannot handle shape {features.shape}. "
+                                f"Expected [B={B}, P={self.num_patches}, D] or "
+                                f"[B={B}, C*P={self.num_patches * self.input_channels}, D]"
+                            )
+                
+                else:
+                    raise ValueError(f"Unexpected TTM output dimensions: {features.dim()}D with shape {features.shape}")
+                
+                print(f"[DEBUG] Final encoder output: {features.shape}")
+                print(f"[DEBUG] Expected: [B={B}, P={self.num_patches}, D={self.encoder_dim}]")
+                
+                # Verify output shape
+                if features.dim() != 3:
+                    raise ValueError(f"Encoder output must be 3D [B, P, D], got {features.dim()}D: {features.shape}")
+                
+                if features.size(0) != B:
+                    raise ValueError(f"Batch size mismatch: got {features.size(0)}, expected {B}")
+                
+                if features.size(1) != self.num_patches:
+                    print(f"[WARNING] Patch count mismatch: got {features.size(1)}, expected {self.num_patches}")
+                    print(f"[WARNING] This will cause decoder output size = {features.size(1) * self.patch_size} instead of {self.num_patches * self.patch_size}")
                 
                 return features
             else:
