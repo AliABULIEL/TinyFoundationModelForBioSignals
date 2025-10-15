@@ -142,7 +142,7 @@ def load_and_inspect_signal(case_id, track_name):
             'track': track_name,
             'available': True,
             'length': len(signal_data),
-            'duration_min': duration_estimate / 60,
+            'duration_min': duration_min,
             'est_fs': est_fs,
             'nan_ratio': np.mean(np.isnan(signal_data)),
             'mean': float(np.mean(signal_clean)),

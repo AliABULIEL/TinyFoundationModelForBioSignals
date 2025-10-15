@@ -430,23 +430,35 @@ def find_preprocessed_data(
         # Look for split directories
         for split in ['train', 'val', 'test']:
             split_dir = base / split
-            
+
+            if not split_dir.exists():
+                continue
+
             # Check for single .npz file
             split_file = split_dir / f'{split}_windows.npz'
             if split_file.exists():
                 data_files[split] = split_file
+                logger.info(f"  Found {split} with single file: {split_file}")
                 continue
-            
-            # Check for modality-separated structure (ppg/, ecg/)
+
+            # Check for NEW paired format (case_*.npz files)
+            case_files = list(split_dir.glob('case_*.npz'))
+            if case_files:
+                # Found NEW paired format - return directory
+                data_files[split] = split_dir
+                logger.info(f"  Found {split} with {len(case_files)} paired case files: {split_dir}")
+                continue
+
+            # Check for OLD modality-separated structure (ppg/, ecg/)
             ppg_dir = split_dir / 'ppg'
             ecg_dir = split_dir / 'ecg'
-            
+
             if ppg_dir.exists() and ecg_dir.exists():
                 # Found modality-separated structure
                 # Return the parent directory (e.g., train/) not the file
                 data_files[split] = split_dir
                 logger.info(f"  Found {split} with separated modalities: {split_dir}")
-        
+
         # If we found train data, we're in the right place
         if 'train' in data_files:
             logger.info(f"Found preprocessed data at: {base}")
