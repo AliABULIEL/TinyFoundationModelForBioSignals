@@ -138,13 +138,16 @@ def test_single_case(case_id: str = "440", channel: str = "PPG"):
     else:
         print(f"⚠️  No peaks detected")
     
-    # Quality check
+    # Quality check - read threshold from config!
     print(f"\n5. Computing signal quality...")
     if peaks is not None and len(peaks) > 0:
         sqi = compute_sqi(signal, fs, peaks=peaks, signal_type=signal_type)
         print(f"  SQI: {sqi:.3f}")
         
-        min_sqi = 0.7
+        # Read min_sqi from config instead of hardcoding!
+        min_sqi = ch_config.get('min_quality', 0.5)
+        print(f"  Threshold: {min_sqi} (from config)")
+        
         if sqi < min_sqi:
             print(f"❌ SQI below threshold ({min_sqi})")
             return
