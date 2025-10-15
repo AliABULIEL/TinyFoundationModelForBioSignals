@@ -1,12 +1,13 @@
 # Window Configuration for Biosignal Processing
+# Aligned with TTM-Enhanced architecture requirements
 
 # Window extraction parameters
 window:
-  size_seconds: 10.0        # 10-second windows (1250 samples at 125 Hz)
-  step_seconds: 10.0        # Non-overlapping during SSL pretrain
+  size_seconds: 8.192       # TTM-Enhanced: 1024 samples at 125 Hz (8 patches @ 128 samples/patch)
+  step_seconds: 8.192       # Non-overlapping during SSL pretrain
 
 # Supervised task configuration (for fine-tuning)
 # Article recommends 50% overlap for supervised tasks
 supervised:
-  size_seconds: 10.0        # Same window size
-  step_seconds: 5.0         # 50% overlap (5s step) for more training samples
+  size_seconds: 8.192       # TTM-Enhanced compatible window size
+  step_seconds: 4.096       # 50% overlap (4.096s step) for more training samples

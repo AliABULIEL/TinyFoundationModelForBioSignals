@@ -4,7 +4,7 @@
 ssl:
   mask_ratio: 0.4           # 40% of patches masked
   mask_type: random         # random or block
-  patch_size: 125           # 1 second at 125 Hz
+  patch_size: 128           # TTM-Enhanced: 128 samples per patch (8 patches @ 1024 context)
   
   # Multi-Resolution STFT Loss
   stft:
@@ -17,9 +17,9 @@ ssl:
 model:
   encoder: ibm-granite/granite-timeseries-ttm-r1
   input_channels: 2         # PPG + ECG
-  context_length: 1250      # 10 seconds at 125 Hz
-  patch_size: 125           # 1 second patches -> 10 patches per window
-  d_model: 192              # TTM hidden dimension
+  context_length: 1024      # TTM-Enhanced: 8.192 seconds at 125 Hz (compatible with pretrained weights)
+  patch_size: 128           # TTM-Enhanced: 128 samples per patch -> 8 patches per window
+  d_model: 384              # TTM-Enhanced hidden dimension (matches pretrained)
   
   # Decoder for reconstruction
   decoder:
@@ -56,7 +56,7 @@ training:
 data:
   channels: [PPG, ECG]
   fs: 125
-  window_sec: 10.0
+  window_sec: 8.192         # TTM-Enhanced: 1024 samples @ 125 Hz
   n_channels: 2
   
   # Data augmentation (during SSL pretraining)
