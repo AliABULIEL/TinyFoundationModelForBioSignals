@@ -2,9 +2,12 @@
 __pycache__/
 *.pyc
 artifacts/
-data/
+/data/
 reports/
 *.ipynb_checkpoints/
 .env
 .DS_Store
+
+# Allow src/data/ (source code)
+!src/data/
 
