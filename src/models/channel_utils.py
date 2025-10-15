@@ -133,11 +133,14 @@ def load_pretrained_with_channel_inflate(
     # Create new model with target channel count
     print(f"\n2. Creating new model with {finetune_channels} input channels")
     from .ttm_adapter import create_ttm_model
-    
+
     # Temporarily disable freezing - we'll handle it after inflation
     model_config['freeze_encoder'] = False
     model = create_ttm_model(model_config)
-    
+
+    # Move model to device BEFORE loading weights
+    model = model.to(device)
+
     print(f"   ✓ Created model: {model.__class__.__name__}")
     
     # Get new model's state dict
@@ -256,19 +259,22 @@ def _inflate_channel_weights(
     - Pretrained ch 0 (PPG) → New ch 3 (PPG)
     - Pretrained ch 1 (ECG) → New ch 4 (ECG)
     - New ch 0,1,2 (ACC_X, ACC_Y, ACC_Z) → Initialize from mean of pretrained
-    
+
     Args:
         pretrained_param: Pretrained parameter tensor
         new_param: New model parameter tensor (for shape reference)
         pretrain_channels: Original channel count
         finetune_channels: Target channel count
         param_name: Parameter name for logging
-    
+
     Returns:
         Inflated parameter tensor, or None if inflation not possible
     """
-    # Create new tensor with target shape
-    inflated = torch.zeros_like(new_param)
+    # Create new tensor with target shape on the same device as new_param
+    inflated = torch.zeros_like(new_param).to(new_param.device)
+
+    # Move pretrained_param to same device
+    pretrained_param = pretrained_param.to(new_param.device)
     
     # Try to determine which dimension is the channel dimension
     # Common patterns:
