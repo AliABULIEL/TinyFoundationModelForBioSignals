@@ -157,12 +157,13 @@ def process_single_case(args_tuple):
         import warnings
         warnings.filterwarnings('ignore')
         
-        # Load signal
+        # Load signal with resampling to target fs (125 Hz)
         signal, fs = load_channel(
             case_id=case_id,
             channel=vitaldb_track,
             duration_sec=duration_sec,
-            auto_fix_alternating=True
+            auto_fix_alternating=True,
+            target_fs=125.0  # Always resample to 125 Hz
         )
         
         if signal is None or len(signal) < fs * 2:  # At least 2 seconds
@@ -606,12 +607,13 @@ def build_windows_singleprocess(args):
     logger.info(f"Loading channel '{vitaldb_track}' from {len(case_ids)} cases...")
     for case_id in tqdm(case_ids, desc=f"Processing {args.split}"):
         try:
-            # Load signal
+            # Load signal with resampling to target fs (125 Hz)
             signal, fs = load_channel(
                 case_id=case_id,
                 channel=vitaldb_track,
                 duration_sec=args.duration_sec,
-                auto_fix_alternating=True
+                auto_fix_alternating=True,
+                target_fs=125.0  # Always resample to 125 Hz
             )
 
             if signal is None or len(signal) < fs * 2:

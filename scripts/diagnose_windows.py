@@ -69,12 +69,14 @@ def test_single_case(case_id: str = "440", channel: str = "PPG"):
     print(f"\n2. Loading signal from VitalDB...")
     vitaldb_track = ch_config.get('vitaldb_track')
     duration_sec = 60
+    target_fs = 125.0  # Target sampling rate
     
     signal, fs = load_channel(
         case_id=case_id,
         channel=vitaldb_track,
         duration_sec=duration_sec,
-        auto_fix_alternating=True
+        auto_fix_alternating=True,
+        target_fs=target_fs  # Use resampling
     )
     
     if signal is None:
@@ -171,7 +173,14 @@ def test_single_case(case_id: str = "440", channel: str = "PPG"):
         print(f"  Output shape: {case_windows.shape}")
         print(f"  N windows: {len(case_windows)}")
         print(f"  Window shape: {case_windows[0].shape if len(case_windows) > 0 else 'N/A'}")
-        print(f"  Valid mask: {valid_mask.sum() if valid_mask is not None else 'N/A'} / {len(valid_mask) if valid_mask is not None else 'N/A'}")
+        
+        # Convert valid_mask to array if it's a list
+        if valid_mask is not None:
+            if isinstance(valid_mask, list):
+                valid_mask = np.array(valid_mask)
+            print(f"  Valid mask: {valid_mask.sum()} / {len(valid_mask)}")
+        else:
+            print(f"  Valid mask: N/A")
         
         # Check window validation
         expected_samples = int(window_s * 125)

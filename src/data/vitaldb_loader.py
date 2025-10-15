@@ -77,20 +77,91 @@ def safe_to_numeric(data: Union[np.ndarray, list, pd.Series]) -> Optional[np.nda
 def fix_alternating_nan_pattern(signal: np.ndarray) -> np.ndarray:
     """
     Fix the common VitalDB pattern where every other sample is NaN.
+    CRITICAL FIX: Interpolate NaN values instead of removing them to preserve sampling rate!
     """
-    valid_mask = ~np.isnan(signal)
-    valid_ratio = np.mean(valid_mask)
+    if signal is None or len(signal) == 0:
+        return signal
     
-    if 0.45 <= valid_ratio <= 0.55:
-        valid_indices = np.where(valid_mask)[0]
-        if len(valid_indices) > 1:
-            gaps = np.diff(valid_indices)
-            if np.median(gaps) == 2 or np.mean(gaps) < 2.5:
-                print(f"   Detected alternating NaN pattern, extracting valid samples...")
-                clean_signal = signal[valid_mask]
-                return clean_signal
+    nan_mask = np.isnan(signal)
+    nan_ratio = np.mean(nan_mask)
+    
+    # Check if all NaN
+    if nan_ratio >= 0.99:
+        print(f"   ⚠️  WARNING: Signal is {nan_ratio*100:.1f}% NaN!")
+        return signal
+    
+    # For alternating pattern or any NaN pattern, interpolate
+    if nan_ratio > 0.01:  # If more than 1% NaN
+        valid_mask = ~nan_mask
+        if np.sum(valid_mask) > 1:
+            print(f"   Interpolating {nan_ratio*100:.1f}% NaN values...")
+            valid_indices = np.where(valid_mask)[0]
+            valid_values = signal[valid_mask]
+            # Linear interpolation
+            interpolated = np.interp(
+                np.arange(len(signal)),
+                valid_indices,
+                valid_values
+            )
+            return interpolated
     
     return signal
+
+
+def resample_signal(signal: np.ndarray, orig_fs: float, target_fs: float) -> np.ndarray:
+    """
+    Resample signal from original sampling rate to target sampling rate.
+    Uses scipy.signal.resample for high-quality resampling.
+    
+    CRITICAL FIX: Interpolate ANY remaining NaN values BEFORE resampling!
+    
+    Args:
+        signal: Input signal
+        orig_fs: Original sampling rate in Hz
+        target_fs: Target sampling rate in Hz
+    
+    Returns:
+        Resampled signal at target_fs
+    """
+    if signal is None or len(signal) == 0:
+        return signal
+    
+    if abs(orig_fs - target_fs) < 0.01:  # Close enough, no need to resample
+        return signal
+    
+    # CRITICAL: Remove ALL NaN before resampling to prevent propagation
+    if np.any(np.isnan(signal)):
+        nan_ratio = np.mean(np.isnan(signal))
+        print(f"   ⚠️  Removing {nan_ratio*100:.1f}% NaN before resampling...")
+        
+        valid_mask = ~np.isnan(signal)
+        if np.sum(valid_mask) < 2:
+            print(f"   ❌ Not enough valid samples for resampling!")
+            return np.full(int(len(signal) * target_fs / orig_fs), np.nan)
+        
+        # Interpolate NaN values
+        valid_indices = np.where(valid_mask)[0]
+        valid_values = signal[valid_mask]
+        signal = np.interp(np.arange(len(signal)), valid_indices, valid_values)
+        print(f"   ✓ Interpolated NaN values")
+    
+    # Calculate new number of samples
+    duration = len(signal) / orig_fs
+    new_length = int(duration * target_fs)
+    
+    # Use scipy's resample for high-quality resampling
+    try:
+        from scipy import signal as scipy_signal
+        resampled = scipy_signal.resample(signal, new_length)
+        print(f"   Resampled: {len(signal)} samples at {orig_fs}Hz → {len(resampled)} samples at {target_fs}Hz")
+        return resampled
+    except ImportError:
+        # Fallback to linear interpolation if scipy not available
+        print(f"   Using linear interpolation for resampling (scipy not available)...")
+        x_old = np.linspace(0, duration, len(signal))
+        x_new = np.linspace(0, duration, new_length)
+        resampled = np.interp(x_new, x_old, signal)
+        return resampled
 
 
 def get_available_case_sets() -> Dict[str, Set[int]]:
@@ -200,7 +271,8 @@ def load_channel(
     cache_dir: str = "data/cache",
     start_sec: float = 0,
     duration_sec: Optional[float] = None,
-    auto_fix_alternating: bool = True
+    auto_fix_alternating: bool = True,
+    target_fs: Optional[float] = None  # NEW: Target sampling rate for resampling
 ) -> Tuple[np.ndarray, float]:
     """
     Load a single channel from VitalDB case using robust API.
@@ -301,12 +373,8 @@ def load_channel(
             fs = 100.0
         
         # Fix alternating NaN pattern
-        original_length = len(signal)
         if auto_fix_alternating:
             signal = fix_alternating_nan_pattern(signal)
-            if len(signal) < original_length:
-                fs = fs / 2
-                print(f"   Adjusted sampling rate to {fs} Hz after removing alternating NaNs")
         
         # Final quality check
         valid_ratio = np.mean(~np.isnan(signal))
@@ -319,6 +387,11 @@ def load_channel(
                 valid_indices = np.where(valid_mask)[0]
                 signal = np.interp(np.arange(len(signal)), valid_indices, signal[valid_indices])
                 print(f"   Interpolated remaining NaN values")
+        
+        # Resample to target fs if specified
+        if target_fs is not None and abs(fs - target_fs) > 0.01:
+            signal = resample_signal(signal, fs, target_fs)
+            fs = target_fs
         
         # Save to cache
         if use_cache and len(signal) > 0:
