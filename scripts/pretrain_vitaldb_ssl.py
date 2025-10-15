@@ -552,6 +552,15 @@ def create_ssl_model(
     
     # Create encoder (TTM)
     logger.info(f"\n1. Creating TTM Encoder...")
+    
+    # For SSL pretraining with context_length != 1024, don't use pretrained weights
+    use_pretrained = context_length == 1024
+    if not use_pretrained:
+        logger.warning(
+            f"Context length ({context_length}) differs from TTM pretrained (1024). "
+            f"Initializing TTM from scratch without pretrained weights."
+        )
+    
     encoder = TTMAdapter(
         variant=model_cfg['encoder'],
         task='ssl',  # Important: SSL task mode
@@ -559,7 +568,7 @@ def create_ssl_model(
         context_length=context_length,
         patch_size=patch_size,
         freeze_encoder=False,  # Train from scratch or fine-tune
-        use_real_ttm=True,
+        use_real_ttm=use_pretrained,  # Only use pretrained if context length matches
         decoder_mode='mix_channel'
     )
     
