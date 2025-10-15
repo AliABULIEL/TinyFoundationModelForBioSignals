@@ -445,17 +445,66 @@ class DataPreparationPipeline:
         }
     
     def build_butppg_windows(self, split_info: Dict) -> Dict:
-        """Build preprocessed windows for BUT-PPG."""
+        """Build preprocessed windows for BUT-PPG using existing implementation."""
         if 'error' in split_info:
             logger.warning("Skipping BUT-PPG window building due to previous error")
             return split_info
         
-        # TODO: Implement BUT-PPG window building
-        # This will be similar to VitalDB but with 5 channels
-        logger.info("BUT-PPG window building not yet implemented")
-        logger.info("Will process: ACC_X, ACC_Y, ACC_Z, PPG, ECG")
+        logger.info("Building BUT-PPG windows using BUTPPGDataset...")
+        logger.info("  Modality: ALL (PPG + ECG + ACC = 5 channels)")
         
-        return {'status': 'not_implemented'}
+        splits_file = split_info['file']
+        results = {}
+        
+        # Build windows using the dedicated script that uses BUTPPGDataset
+        for split_name in ['train', 'val', 'test']:
+            if split_name not in split_info['splits']:
+                logger.info(f"Skipping {split_name} (not in splits)")
+                continue
+            
+            logger.info(f"\nProcessing {split_name} split...")
+            
+            output_dir = self.dirs['butppg_windows'] / split_name
+            
+            # Call the BUT-PPG window builder script
+            cmd = [
+                sys.executable,
+                'scripts/build_butppg_windows.py',
+                '--data-dir', str(self.butppg_raw_dir),
+                '--splits-file', splits_file,
+                '--output-dir', str(output_dir),
+                '--modality', 'all',  # PPG + ECG + ACC (5 channels)
+                '--window-sec', '10.0',
+                '--fs', '125',
+                '--batch-size', '32'
+            ]
+            
+            logger.info(f"Running: {' '.join(cmd)}")
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to process {split_name}")
+                logger.error(result.stderr)
+                continue
+            
+            logger.info(result.stdout)
+            
+            # Check output
+            output_file = output_dir / f'{split_name}_windows.npz'
+            if output_file.exists():
+                data = np.load(output_file)
+                results[split_name] = {
+                    'file': str(output_file),
+                    'shape': data['data'].shape,
+                    'size_mb': output_file.stat().st_size / 1024 / 1024
+                }
+                logger.info(f"✓ {split_name}: {data['data'].shape} "
+                           f"({results[split_name]['size_mb']:.1f} MB)")
+            else:
+                logger.warning(f"Output file not found: {output_file}")
+        
+        return results
     
     def compute_vitaldb_stats(self, windows_info: Dict) -> Dict:
         """Compute normalization statistics from VitalDB training set."""
@@ -504,9 +553,50 @@ class DataPreparationPipeline:
     
     def compute_butppg_stats(self, windows_info: Dict) -> Dict:
         """Compute normalization statistics from BUT-PPG training set."""
-        if 'status' in windows_info and windows_info['status'] == 'not_implemented':
-            return {'status': 'not_implemented'}
-        return {}
+        if 'train' not in windows_info:
+            logger.warning("No BUT-PPG training data found")
+            return {'error': 'No training data'}
+        
+        train_file = Path(windows_info['train']['file'])
+        if not train_file.exists():
+            logger.error(f"Training file not found: {train_file}")
+            return {'error': 'File not found'}
+        
+        logger.info(f"Loading BUT-PPG training data from {train_file}...")
+        data = np.load(train_file)
+        windows = data['data']
+        
+        logger.info(f"Training data shape: {windows.shape}")
+        
+        # Compute per-channel statistics
+        if windows.ndim == 2:
+            windows = windows[:, :, np.newaxis]
+        
+        stats = {
+            'mean': float(np.mean(windows)),
+            'std': float(np.std(windows)),
+            'min': float(np.min(windows)),
+            'max': float(np.max(windows)),
+            'n_windows': len(windows),
+            'n_channels': windows.shape[2] if windows.ndim >= 3 else 1
+        }
+        
+        # Save statistics
+        stats_file = self.dirs['butppg_windows'] / 'train_stats.npz'
+        np.savez(
+            stats_file,
+            mean=stats['mean'],
+            std=stats['std'],
+            min=stats['min'],
+            max=stats['max'],
+            method='zscore'
+        )
+        
+        logger.info(f"✓ Saved normalization stats to {stats_file}")
+        logger.info(f"  Mean: {stats['mean']:.4f}, Std: {stats['std']:.4f}")
+        logger.info(f"  Channels: {stats['n_channels']}")
+        
+        return stats
     
     def validate_vitaldb_data(self, windows_info: Dict) -> Dict:
         """Validate VitalDB data integrity."""
@@ -575,7 +665,75 @@ class DataPreparationPipeline:
     
     def validate_butppg_data(self, windows_info: Dict) -> Dict:
         """Validate BUT-PPG data integrity."""
-        return {'status': 'not_implemented'}
+        validation = {
+            'splits': {},
+            'issues': []
+        }
+        
+        for split_name, split_info in windows_info.items():
+            if 'file' not in split_info:
+                continue
+            
+            file_path = Path(split_info['file'])
+            if not file_path.exists():
+                validation['issues'].append(f"{split_name}: file not found")
+                continue
+            
+            # Load and validate
+            try:
+                data = np.load(file_path)
+                windows = data['data']
+                labels = data.get('labels', None)
+                
+                # Check for NaN/Inf
+                has_nan = np.any(np.isnan(windows))
+                has_inf = np.any(np.isinf(windows))
+                
+                # Check shape consistency
+                expected_samples = 1250  # 10s at 125Hz
+                expected_channels = 5  # PPG + ECG + ACC (3-axis)
+                valid_shape = windows.shape[1] == expected_samples
+                valid_channels = windows.shape[2] == expected_channels if windows.ndim >= 3 else False
+                
+                validation['splits'][split_name] = {
+                    'shape': windows.shape,
+                    'has_nan': bool(has_nan),
+                    'has_inf': bool(has_inf),
+                    'valid_shape': valid_shape,
+                    'valid_channels': valid_channels,
+                    'mean': float(np.mean(windows)),
+                    'std': float(np.std(windows))
+                }
+                
+                if has_nan:
+                    validation['issues'].append(f"{split_name}: contains NaN")
+                if has_inf:
+                    validation['issues'].append(f"{split_name}: contains Inf")
+                if not valid_shape:
+                    validation['issues'].append(
+                        f"{split_name}: wrong time shape {windows.shape[1]} (expected {expected_samples})"
+                    )
+                if not valid_channels and windows.ndim >= 3:
+                    validation['issues'].append(
+                        f"{split_name}: wrong channels {windows.shape[2]} (expected {expected_channels})"
+                    )
+                
+                logger.info(f"✓ {split_name}: {windows.shape}, "
+                           f"mean={validation['splits'][split_name]['mean']:.3f}, "
+                           f"std={validation['splits'][split_name]['std']:.3f}")
+                
+            except Exception as e:
+                validation['issues'].append(f"{split_name}: {str(e)}")
+                logger.error(f"Error validating {split_name}: {e}")
+        
+        if validation['issues']:
+            logger.warning(f"Found {len(validation['issues'])} validation issues")
+            for issue in validation['issues']:
+                logger.warning(f"  - {issue}")
+        else:
+            logger.info("✓ All validation checks passed")
+        
+        return validation
     
     def validate_all_data(self) -> Dict:
         """Final validation of all prepared data."""
