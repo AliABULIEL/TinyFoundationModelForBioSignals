@@ -19,14 +19,20 @@ echo ""
 echo "Step 2: Downloading BUT-PPG dataset from PhysioNet..."
 python scripts/download_butppg_dataset.py \
     --output-dir data/but_ppg/raw \
-    --subjects all \
+    --method zip \
     --skip-if-exists
 
 # Step 3: Process clinical data
 echo ""
 echo "Step 3: Processing clinical data for all tasks..."
+# After download, dataset is extracted to:
+# data/but_ppg/raw/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0/
+DATASET_DIR="data/but_ppg/raw/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0"
+ANNOTATIONS_DIR="data/but_ppg/raw/annotations"
+
 python scripts/process_butppg_clinical.py \
-    --raw-dir data/but_ppg/raw \
+    --raw-dir "$DATASET_DIR" \
+    --annotations-dir "$ANNOTATIONS_DIR" \
     --output-dir data/processed/butppg \
     --target-fs 125 \
     --window-size 1024 \

@@ -9,7 +9,8 @@ Processes raw BUT-PPG data and extracts clinical labels for:
 
 Usage:
     python scripts/process_butppg_clinical.py \
-        --raw-dir data/but_ppg/raw \
+        --raw-dir data/but_ppg/raw/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0 \
+        --annotations-dir data/but_ppg/raw/annotations \
         --output-dir data/processed/butppg \
         --target-fs 125 \
         --window-size 1024
@@ -25,7 +26,7 @@ import pandas as pd
 import wfdb
 from scipy.signal import butter, sosfilt, resample_poly
 from tqdm import tqdm
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 
 class BUTPPGProcessor:
@@ -34,25 +35,30 @@ class BUTPPGProcessor:
     # Channel order for 5-channel input
     CHANNEL_ORDER = ['ACC_X', 'ACC_Y', 'ACC_Z', 'PPG', 'ECG']
 
-    # Motion classes (from BUT-PPG documentation)
+    # Motion classes (from BUT-PPG subject-info.csv)
     MOTION_CLASSES = {
-        0: 'sitting',
-        1: 'standing',
-        2: 'walking_slow',
-        3: 'walking_normal',
-        4: 'walking_fast',
-        5: 'running',
-        6: 'cycling',
-        7: 'hand_movement'
+        'sitting': 0,
+        'standing': 1,
+        'walking_slow': 2,
+        'walking': 3,  # Normal walking
+        'walking_fast': 4,
+        'running': 5,
+        'cycling': 6,
+        'hand_movement': 7,
+        'hand': 7,  # Alias
+        'sit': 0,  # Aliases
+        'stand': 1
     }
 
     def __init__(
         self,
         raw_dir: Path,
+        annotations_dir: Path,
         target_fs: int = 125,
         window_size: int = 1024
     ):
         self.raw_dir = Path(raw_dir)
+        self.annotations_dir = Path(annotations_dir)
         self.target_fs = target_fs
         self.window_size = window_size
 
@@ -60,47 +66,43 @@ class BUTPPGProcessor:
         print("\n" + "="*80)
         print("LOADING ANNOTATIONS")
         print("="*80)
-        self.quality_labels = self._load_quality_labels()
-        self.hr_labels = self._load_hr_labels()
-        self.motion_labels = self._load_motion_labels()
+        self.quality_hr_df = self._load_quality_hr_annotations()
+        self.subject_info_df = self._load_subject_info()
 
-    def _load_quality_labels(self) -> pd.DataFrame:
-        """Load signal quality labels"""
-        ann_file = self.raw_dir / 'annotations' / 'PPGQualityLabels.csv'
+    def _load_quality_hr_annotations(self) -> pd.DataFrame:
+        """Load quality and HR annotations from quality-hr-ann.csv"""
+        ann_file = self.annotations_dir / 'quality-hr-ann.csv'
 
         if not ann_file.exists():
-            print(f"⚠️  Quality labels not found: {ann_file}")
+            print(f"❌ Quality/HR annotations not found: {ann_file}")
             return pd.DataFrame()
 
         df = pd.read_csv(ann_file)
-        print(f"✓ Loaded quality labels: {len(df)} recordings")
+        print(f"✓ Loaded quality-hr-ann.csv: {len(df)} entries")
+        print(f"  Columns: {list(df.columns)}")
+
+        # Preview first few rows
+        print(f"  Sample data:")
+        print(df.head(3).to_string(index=False))
+
         return df
 
-    def _load_hr_labels(self) -> pd.DataFrame:
-        """Load heart rate reference labels"""
-        ann_file = self.raw_dir / 'annotations' / 'HRReference.csv'
+    def _load_subject_info(self) -> pd.DataFrame:
+        """Load subject information (including motion) from subject-info.csv"""
+        ann_file = self.annotations_dir / 'subject-info.csv'
 
         if not ann_file.exists():
-            print(f"⚠️  HR labels not found: {ann_file}")
+            print(f"❌ Subject info not found: {ann_file}")
             return pd.DataFrame()
 
         df = pd.read_csv(ann_file)
-        print(f"✓ Loaded HR labels: {len(df)} recordings")
-        return df
+        print(f"\n✓ Loaded subject-info.csv: {len(df)} entries")
+        print(f"  Columns: {list(df.columns)}")
 
-    def _load_motion_labels(self) -> pd.DataFrame:
-        """Load motion type labels"""
-        ann_file = self.raw_dir / 'annotations' / 'MotionLabels.csv'
+        # Preview first few rows
+        print(f"  Sample data:")
+        print(df.head(3).to_string(index=False))
 
-        if not ann_file.exists():
-            print(f"⚠️  Motion labels not found: {ann_file}")
-            # Try alternative filename
-            ann_file = self.raw_dir / 'annotations' / 'MotionTypes.csv'
-            if not ann_file.exists():
-                return pd.DataFrame()
-
-        df = pd.read_csv(ann_file)
-        print(f"✓ Loaded motion labels: {len(df)} recordings")
         return df
 
     def bandpass_filter(
@@ -130,7 +132,7 @@ class BUTPPGProcessor:
             signal_type: 'PPG', 'ECG', or 'ACC'
 
         Returns:
-            Preprocessed signal at target_fs
+            Preprocessed signal at target_fs with length window_size
         """
         # Apply appropriate bandpass filter
         if signal_type == 'PPG':
@@ -168,65 +170,152 @@ class BUTPPGProcessor:
 
         return normalized
 
-    def load_recording(self, record_path: Path) -> Tuple[np.ndarray, Dict]:
+    def load_recording(self, record_id: str) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         """
         Load and preprocess a single BUT-PPG recording
 
+        Args:
+            record_id: 6-digit record ID (e.g., "100001")
+
         Returns:
             signals: [5, 1024] array (ACC_X, ACC_Y, ACC_Z, PPG, ECG)
-            metadata: Dict with original sampling rates and signal names
+            metadata: Dict with sampling rates and record info
         """
         try:
-            record = wfdb.rdrecord(str(record_path.with_suffix('')))
+            # BUT-PPG has separate files for each signal type
+            # e.g., 100001_PPG.dat, 100001_ECG.dat, 100001_ACC.dat
 
-            # BUT-PPG signals: typically ACC (3-axis), PPG, ECG
-            sig_names = [name.upper() for name in record.sig_name]
-
-            # Initialize 5-channel array
             signals_5ch = np.zeros((5, self.window_size))
+            metadata = {'record_id': record_id, 'fs': {}}
 
-            # Map signals to correct channels
-            for i, sig_name in enumerate(sig_names):
-                signal = record.p_signal[:, i]
-                original_fs = record.fs
+            # Load PPG signal
+            ppg_path = self.raw_dir / f"{record_id}_PPG"
+            if ppg_path.with_suffix('.hea').exists():
+                record_ppg = wfdb.rdrecord(str(ppg_path))
+                ppg_signal = record_ppg.p_signal[:, 0]  # Single channel
+                ppg_fs = record_ppg.fs
+                signals_5ch[3] = self.preprocess_signal(ppg_signal, ppg_fs, 'PPG')
+                metadata['fs']['PPG'] = ppg_fs
 
-                # Determine signal type and channel index
-                if 'ACC' in sig_name or 'ACCELEROMETER' in sig_name:
-                    if 'X' in sig_name:
-                        ch_idx = 0  # ACC_X
-                        sig_type = 'ACC'
-                    elif 'Y' in sig_name:
-                        ch_idx = 1  # ACC_Y
-                        sig_type = 'ACC'
-                    elif 'Z' in sig_name:
-                        ch_idx = 2  # ACC_Z
-                        sig_type = 'ACC'
-                    else:
-                        continue
-                elif 'PPG' in sig_name or 'PLETH' in sig_name:
-                    ch_idx = 3  # PPG
-                    sig_type = 'PPG'
-                elif 'ECG' in sig_name:
-                    ch_idx = 4  # ECG
-                    sig_type = 'ECG'
-                else:
-                    continue
+            # Load ECG signal
+            ecg_path = self.raw_dir / f"{record_id}_ECG"
+            if ecg_path.with_suffix('.hea').exists():
+                record_ecg = wfdb.rdrecord(str(ecg_path))
+                ecg_signal = record_ecg.p_signal[:, 0]  # Single channel
+                ecg_fs = record_ecg.fs
+                signals_5ch[4] = self.preprocess_signal(ecg_signal, ecg_fs, 'ECG')
+                metadata['fs']['ECG'] = ecg_fs
 
-                # Preprocess signal
-                processed = self.preprocess_signal(signal, original_fs, sig_type)
-                signals_5ch[ch_idx] = processed
+            # Load ACC signal (3-axis)
+            acc_path = self.raw_dir / f"{record_id}_ACC"
+            if acc_path.with_suffix('.hea').exists():
+                record_acc = wfdb.rdrecord(str(acc_path))
+                acc_fs = record_acc.fs
 
-            metadata = {
-                'sig_names': sig_names,
-                'original_fs': record.fs,
-                'record_id': record_path.stem
-            }
+                # ACC has 3 channels (X, Y, Z)
+                if record_acc.p_signal.shape[1] >= 3:
+                    for i in range(3):
+                        acc_signal = record_acc.p_signal[:, i]
+                        signals_5ch[i] = self.preprocess_signal(acc_signal, acc_fs, 'ACC')
+
+                metadata['fs']['ACC'] = acc_fs
 
             return signals_5ch, metadata
 
         except Exception as e:
-            print(f"  ⚠️  Error loading {record_path}: {e}")
+            print(f"  ⚠️  Error loading {record_id}: {e}")
             return None, None
+
+    def get_quality_label(self, record_id: str) -> Optional[int]:
+        """Get quality label for a recording (binary: 0=poor, 1=good)"""
+        if self.quality_hr_df.empty:
+            return None
+
+        # quality-hr-ann.csv format (need to check actual column names)
+        # Typically: "id" or "record_id", "quality" or "Quality"
+
+        # Try different possible column names
+        id_col = None
+        quality_col = None
+
+        for col in self.quality_hr_df.columns:
+            if col.lower() in ['id', 'record_id', 'signal_id', 'signalid']:
+                id_col = col
+            if col.lower() in ['quality', 'ppg_quality', 'ppgquality']:
+                quality_col = col
+
+        if id_col is None or quality_col is None:
+            return None
+
+        # Match record
+        row = self.quality_hr_df[self.quality_hr_df[id_col].astype(str) == str(record_id)]
+
+        if row.empty:
+            return None
+
+        quality = row[quality_col].iloc[0]
+
+        # Convert to binary (1=good, 0=poor)
+        if isinstance(quality, str):
+            return 1 if quality.lower() in ['good', 'high', '1', 'yes'] else 0
+        else:
+            return int(quality)
+
+    def get_hr_label(self, record_id: str) -> Optional[float]:
+        """Get heart rate label for a recording (BPM)"""
+        if self.quality_hr_df.empty:
+            return None
+
+        # Try different possible column names
+        id_col = None
+        hr_col = None
+
+        for col in self.quality_hr_df.columns:
+            if col.lower() in ['id', 'record_id', 'signal_id', 'signalid']:
+                id_col = col
+            if col.lower() in ['hr', 'heart_rate', 'heartrate', 'reference_hr']:
+                hr_col = col
+
+        if id_col is None or hr_col is None:
+            return None
+
+        # Match record
+        row = self.quality_hr_df[self.quality_hr_df[id_col].astype(str) == str(record_id)]
+
+        if row.empty:
+            return None
+
+        hr = row[hr_col].iloc[0]
+        return float(hr)
+
+    def get_motion_label(self, record_id: str) -> Optional[int]:
+        """Get motion label for a recording (8-class)"""
+        if self.subject_info_df.empty:
+            return None
+
+        # Try different possible column names
+        id_col = None
+        motion_col = None
+
+        for col in self.subject_info_df.columns:
+            if col.lower() in ['id', 'record_id', 'signal_id', 'signalid']:
+                id_col = col
+            if col.lower() in ['motion', 'motion_type', 'motiontype', 'activity']:
+                motion_col = col
+
+        if id_col is None or motion_col is None:
+            return None
+
+        # Match record
+        row = self.subject_info_df[self.subject_info_df[id_col].astype(str) == str(record_id)]
+
+        if row.empty:
+            return None
+
+        motion_str = str(row[motion_col].iloc[0]).lower().strip()
+
+        # Map motion string to class index
+        return self.MOTION_CLASSES.get(motion_str, None)
 
     def create_task_dataset(
         self,
@@ -244,71 +333,55 @@ class BUTPPGProcessor:
             Dict with 'train', 'val', 'test' splits
             Each split: (signals [N, 5, 1024], labels [N])
         """
-        print(f"\n📊 Creating dataset for task: {task}")
+        print(f"\n{'='*80}")
+        print(f"📊 Creating dataset for task: {task.upper()}")
+        print(f"{'='*80}")
 
-        # Get labels for this task
-        if task == 'quality':
-            labels_df = self.quality_labels
-            label_column = 'Quality'  # Adjust based on actual CSV column name
-        elif task == 'heart_rate':
-            labels_df = self.hr_labels
-            label_column = 'HR'
-        elif task == 'motion':
-            labels_df = self.motion_labels
-            label_column = 'MotionType'
-        else:
-            raise ValueError(f"Unknown task: {task}")
+        # Collect all record IDs
+        ppg_files = sorted(self.raw_dir.glob("*_PPG.hea"))
+        record_ids = [f.stem.replace('_PPG', '') for f in ppg_files]
 
-        if labels_df.empty:
-            print(f"  ❌ No labels available for {task}")
-            return {}
+        print(f"Total recordings found: {len(record_ids)}")
 
-        # Collect all recordings with labels
+        # Collect signals and labels
         all_signals = []
         all_labels = []
-        all_subjects = []
+        all_subjects = []  # First 3 digits of record ID
 
-        for subject_dir in tqdm(sorted(self.raw_dir.glob("subject_*")), desc="Processing subjects"):
-            subject_id = int(subject_dir.name.replace("subject_", ""))
+        skipped = 0
 
-            for record_file in subject_dir.glob("*.hea"):
-                record_id = record_file.stem
+        for record_id in tqdm(record_ids, desc=f"Processing {task}"):
+            # Load signal
+            signals, metadata = self.load_recording(record_id)
 
-                # Check if this recording has a label
-                if 'RecordID' in labels_df.columns:
-                    label_row = labels_df[labels_df['RecordID'] == record_id]
-                else:
-                    # Try matching by subject and recording number
-                    label_row = labels_df[labels_df['Subject'] == subject_id]
+            if signals is None:
+                skipped += 1
+                continue
 
-                if label_row.empty:
-                    continue
+            # Get label based on task
+            if task == 'quality':
+                label = self.get_quality_label(record_id)
+            elif task == 'heart_rate':
+                label = self.get_hr_label(record_id)
+            elif task == 'motion':
+                label = self.get_motion_label(record_id)
+            else:
+                raise ValueError(f"Unknown task: {task}")
 
-                # Load signal
-                signals, metadata = self.load_recording(record_file)
+            if label is None:
+                skipped += 1
+                continue
 
-                if signals is None:
-                    continue
+            # Subject ID (first 3 digits)
+            subject_id = int(record_id[:3])
 
-                # Get label
-                try:
-                    label = label_row[label_column].iloc[0]
-
-                    # Convert quality label (if string)
-                    if task == 'quality':
-                        if isinstance(label, str):
-                            label = 1 if label.lower() in ['good', 'high', '1'] else 0
-
-                    all_signals.append(signals)
-                    all_labels.append(label)
-                    all_subjects.append(subject_id)
-
-                except Exception as e:
-                    print(f"  ⚠️  Error processing {record_id}: {e}")
-                    continue
+            all_signals.append(signals)
+            all_labels.append(label)
+            all_subjects.append(subject_id)
 
         if len(all_signals) == 0:
             print(f"  ❌ No valid data collected for {task}")
+            print(f"     Skipped {skipped} recordings")
             return {}
 
         # Convert to numpy arrays
@@ -316,9 +389,17 @@ class BUTPPGProcessor:
         labels_array = np.array(all_labels)    # [N]
         subjects_array = np.array(all_subjects)  # [N]
 
-        print(f"  ✓ Collected {len(signals_array)} samples")
+        print(f"\n  ✓ Collected {len(signals_array)} samples")
+        print(f"    Skipped: {skipped} recordings")
         print(f"    Signals shape: {signals_array.shape}")
         print(f"    Labels shape: {labels_array.shape}")
+
+        if task == 'quality':
+            unique, counts = np.unique(labels_array, return_counts=True)
+            print(f"    Quality distribution: {dict(zip(unique, counts))}")
+        elif task == 'motion':
+            unique, counts = np.unique(labels_array, return_counts=True)
+            print(f"    Motion classes: {dict(zip(unique, counts))}")
 
         # Subject-level split (CRITICAL for medical ML)
         unique_subjects = np.unique(subjects_array)
@@ -332,6 +413,11 @@ class BUTPPGProcessor:
         val_subjects = unique_subjects[n_train:n_train+n_val]
         test_subjects = unique_subjects[n_train+n_val:]
 
+        print(f"\n  Subject-level split:")
+        print(f"    Train subjects: {len(train_subjects)}")
+        print(f"    Val subjects: {len(val_subjects)}")
+        print(f"    Test subjects: {len(test_subjects)}")
+
         # Create splits
         train_mask = np.isin(subjects_array, train_subjects)
         val_mask = np.isin(subjects_array, val_subjects)
@@ -343,7 +429,7 @@ class BUTPPGProcessor:
             'test': (signals_array[test_mask], labels_array[test_mask])
         }
 
-        print(f"  ✓ Split: Train={train_mask.sum()}, Val={val_mask.sum()}, Test={test_mask.sum()}")
+        print(f"\n  ✓ Split: Train={train_mask.sum()}, Val={val_mask.sum()}, Test={test_mask.sum()}")
 
         return splits
 
@@ -376,8 +462,15 @@ def main():
     parser.add_argument(
         '--raw-dir',
         type=str,
-        default='data/but_ppg/raw',
-        help='Directory with raw BUT-PPG data'
+        required=True,
+        help='Directory with raw BUT-PPG recordings (contains *_PPG.dat files)'
+    )
+
+    parser.add_argument(
+        '--annotations-dir',
+        type=str,
+        required=True,
+        help='Directory with annotation CSV files'
     )
 
     parser.add_argument(
@@ -413,10 +506,16 @@ def main():
     print("="*80)
     print("BUT-PPG CLINICAL DATA PROCESSOR")
     print("="*80)
+    print(f"Raw data directory: {args.raw_dir}")
+    print(f"Annotations directory: {args.annotations_dir}")
+    print(f"Output directory: {args.output_dir}")
+    print(f"Target sampling rate: {args.target_fs} Hz")
+    print(f"Window size: {args.window_size} samples ({args.window_size / args.target_fs:.2f} seconds)")
 
     # Initialize processor
     processor = BUTPPGProcessor(
         raw_dir=Path(args.raw_dir),
+        annotations_dir=Path(args.annotations_dir),
         target_fs=args.target_fs,
         window_size=args.window_size
     )
@@ -439,10 +538,10 @@ def main():
             )
 
     print("\n" + "="*80)
-    print("PROCESSING COMPLETE!")
+    print("✅ PROCESSING COMPLETE!")
     print("="*80)
     print(f"✓ Processed data saved to: {args.output_dir}")
-    print("\nNext step:")
+    print("\n📖 Next step:")
     print("  Run downstream evaluation: python scripts/run_downstream_evaluation.py")
 
 
