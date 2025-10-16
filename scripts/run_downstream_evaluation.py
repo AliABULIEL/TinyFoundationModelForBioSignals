@@ -159,14 +159,29 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
                     break
 
         # Infer num_classes from head
+        # Look for the actual classification/regression head, not internal TTM layers
+        head_key = None
         for key in state_dict.keys():
-            if 'head' in key and 'weight' in key:
-                head_shape = state_dict[key].shape
-                if len(head_shape) >= 1:
-                    new_config['num_classes'] = head_shape[0]
-                    new_config['task'] = 'classification'
-                    print(f"    Inferred num_classes={new_config['num_classes']} from {key}: {head_shape}")
+            # Look for these patterns (from fine-tuning script)
+            if key in ['head.fc.weight', 'head.weight', 'classifier.weight']:
+                head_key = key
                 break
+            # Fallback: head.something.weight but NOT encoder.head (TTM internal)
+            if 'head.' in key and 'weight' in key and 'encoder.head' not in key:
+                head_key = key
+                break
+
+        if head_key:
+            head_shape = state_dict[head_key].shape
+            if len(head_shape) >= 1:
+                new_config['num_classes'] = head_shape[0]
+                new_config['task'] = 'classification'
+                print(f"    Inferred num_classes={new_config['num_classes']} from {head_key}: {head_shape}")
+        else:
+            # Default to binary classification if no head found
+            new_config['num_classes'] = 2
+            new_config['task'] = 'classification'
+            print(f"    ⚠️  Could not find classification head, defaulting to num_classes=2")
 
         # Set defaults
         new_config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
