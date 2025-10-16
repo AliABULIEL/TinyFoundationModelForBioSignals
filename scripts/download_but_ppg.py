@@ -1,7 +1,28 @@
 #!/usr/bin/env python3
 """
-BUT PPG Database Download Script
-Downloads and organizes the BUT PPG database for training
+BUT-PPG Database Download Script
+
+Downloads the complete BUT-PPG v2.0.0 dataset from PhysioNet:
+- 50 subjects (25 male, 25 female), ages 19-76 years
+- 3,888 10-second recordings
+- Signals: PPG, ECG, ACC (3-axis accelerometer)
+- Annotations for 3 downstream clinical tasks:
+  1. Signal Quality Classification (binary: good/poor)
+  2. Heart Rate Estimation (regression: BPM)
+  3. Motion Type Classification (8 classes)
+
+Dataset URL: https://physionet.org/content/butppg/2.0.0/
+License: CC BY 4.0 (Open Access)
+
+Usage:
+    # Download complete dataset
+    python scripts/download_but_ppg.py
+
+    # Inspect annotations after download
+    python scripts/download_but_ppg.py --inspect
+
+    # Verify dataset completeness for downstream tasks
+    python scripts/download_but_ppg.py --verify-tasks
 """
 
 import os
@@ -120,6 +141,180 @@ def organize_data(extract_dir: Path) -> Path:
     return actual_data_dir
 
 
+def inspect_annotations(data_dir: Path) -> dict:
+    """
+    Inspect annotation files and validate for downstream tasks.
+
+    Returns dict with task readiness status.
+    """
+    print("\n" + "="*80)
+    print("📋 ANNOTATION INSPECTION")
+    print("="*80)
+
+    task_status = {
+        'quality_classification': {'ready': False, 'issues': []},
+        'heart_rate_regression': {'ready': False, 'issues': []},
+        'motion_classification': {'ready': False, 'issues': []}
+    }
+
+    # Check quality-hr-ann.csv
+    quality_file = data_dir / "quality-hr-ann.csv"
+    if quality_file.exists():
+        print(f"\n✅ Found: {quality_file.name}")
+
+        # Read with actual headers
+        quality_df = pd.read_csv(quality_file)
+        print(f"   Records: {len(quality_df)}")
+        print(f"   Columns: {list(quality_df.columns)}")
+
+        # Show first few rows
+        print(f"\n   Sample data:")
+        print(quality_df.head(3).to_string(index=False, max_colwidth=20))
+
+        # Detect quality column (flexible matching)
+        quality_col = None
+        for col in quality_df.columns:
+            if col.lower() in ['quality', 'ppg_quality', 'signal_quality', 'ppgquality']:
+                quality_col = col
+                break
+
+        if quality_col:
+            quality_counts = quality_df[quality_col].value_counts()
+            print(f"\n   Quality distribution ({quality_col}):")
+            for val, count in quality_counts.items():
+                print(f"     {val}: {count}")
+            task_status['quality_classification']['ready'] = True
+        else:
+            task_status['quality_classification']['issues'].append(
+                f"No quality column found. Columns: {list(quality_df.columns)}"
+            )
+
+        # Detect HR column (flexible matching)
+        hr_col = None
+        for col in quality_df.columns:
+            if col.lower() in ['hr', 'heart_rate', 'heartrate', 'reference_hr', 'hr_reference']:
+                hr_col = col
+                break
+
+        if hr_col:
+            hr_stats = quality_df[hr_col].describe()
+            print(f"\n   Heart Rate statistics ({hr_col}):")
+            print(f"     Min: {hr_stats['min']:.1f} BPM")
+            print(f"     Max: {hr_stats['max']:.1f} BPM")
+            print(f"     Mean: {hr_stats['mean']:.1f} BPM")
+            print(f"     Std: {hr_stats['std']:.1f} BPM")
+            task_status['heart_rate_regression']['ready'] = True
+        else:
+            task_status['heart_rate_regression']['issues'].append(
+                f"No HR column found. Columns: {list(quality_df.columns)}"
+            )
+    else:
+        print(f"\n❌ Missing: quality-hr-ann.csv")
+        task_status['quality_classification']['issues'].append("File not found")
+        task_status['heart_rate_regression']['issues'].append("File not found")
+
+    # Check subject-info.csv
+    subject_file = data_dir / "subject-info.csv"
+    if subject_file.exists():
+        print(f"\n✅ Found: {subject_file.name}")
+
+        subject_df = pd.read_csv(subject_file)
+        print(f"   Records: {len(subject_df)}")
+        print(f"   Columns: {list(subject_df.columns)}")
+
+        # Show first few rows
+        print(f"\n   Sample data:")
+        print(subject_df.head(3).to_string(index=False, max_colwidth=20))
+
+        # Detect motion column (flexible matching)
+        motion_col = None
+        for col in subject_df.columns:
+            if col.lower() in ['motion', 'motion_type', 'motiontype', 'activity', 'activity_type']:
+                motion_col = col
+                break
+
+        if motion_col:
+            motion_counts = subject_df[motion_col].value_counts()
+            print(f"\n   Motion distribution ({motion_col}):")
+            for motion, count in motion_counts.items():
+                print(f"     {motion}: {count}")
+            print(f"   Total classes: {subject_df[motion_col].nunique()}")
+            task_status['motion_classification']['ready'] = True
+        else:
+            task_status['motion_classification']['issues'].append(
+                f"No motion column found. Columns: {list(subject_df.columns)}"
+            )
+
+        # Show demographics if available
+        demo_cols = []
+        for col in subject_df.columns:
+            if col.lower() in ['age', 'gender', 'height', 'weight', 'bmi']:
+                demo_cols.append(col)
+
+        if demo_cols:
+            print(f"\n   Demographics available: {demo_cols}")
+            for col in demo_cols:
+                if col.lower() == 'gender':
+                    print(f"     {col}: {subject_df[col].value_counts().to_dict()}")
+                elif subject_df[col].dtype in ['int64', 'float64']:
+                    print(f"     {col}: {subject_df[col].min():.1f} - {subject_df[col].max():.1f}")
+    else:
+        print(f"\n❌ Missing: subject-info.csv")
+        task_status['motion_classification']['issues'].append("File not found")
+
+    print("\n" + "="*80)
+
+    return task_status
+
+
+def verify_downstream_tasks(data_dir: Path) -> bool:
+    """
+    Verify that all 3 downstream tasks are possible with this dataset.
+
+    Returns True if all tasks ready, False otherwise.
+    """
+    print("\n" + "="*80)
+    print("🎯 DOWNSTREAM TASK VERIFICATION")
+    print("="*80)
+
+    task_status = inspect_annotations(data_dir)
+
+    print("\n📊 Task Readiness Summary:")
+    print("-" * 80)
+
+    all_ready = True
+
+    for task_name, status in task_status.items():
+        task_display = task_name.replace('_', ' ').title()
+
+        if status['ready']:
+            print(f"✅ {task_display}: READY")
+        else:
+            print(f"❌ {task_display}: NOT READY")
+            for issue in status['issues']:
+                print(f"   Issue: {issue}")
+            all_ready = False
+
+    print("-" * 80)
+
+    if all_ready:
+        print("\n✅ ALL DOWNSTREAM TASKS READY!")
+        print("   You can proceed with:")
+        print("   1. Data preprocessing: python scripts/process_butppg_clinical.py")
+        print("   2. Fine-tuning: python scripts/finetune_butppg.py")
+        print("   3. Evaluation: python scripts/run_downstream_evaluation.py")
+    else:
+        print("\n⚠️  SOME TASKS NOT READY")
+        print("   Check annotation files for missing columns")
+        print("   Expected files:")
+        print("     - quality-hr-ann.csv (quality + heart rate)")
+        print("     - subject-info.csv (motion + demographics)")
+
+    print("="*80)
+
+    return all_ready
+
+
 def verify_dataset(data_dir: Path) -> dict:
     """Verify the downloaded dataset and gather statistics."""
     print("\n✅ Verifying dataset...")
@@ -143,12 +338,22 @@ def verify_dataset(data_dir: Path) -> dict:
 
     if quality_file.exists():
         stats['has_annotations'] = True
-        quality_df = pd.read_csv(quality_file, names=['record_id', 'quality', 'reference_hr'])
-        stats['quality_good'] = int((quality_df['quality'] == 1).sum())
-        stats['quality_poor'] = int((quality_df['quality'] == 0).sum())
-        print(f"  ✓ Quality annotations: {len(quality_df)} records")
-        print(f"    - Good quality: {stats['quality_good']}")
-        print(f"    - Poor quality: {stats['quality_poor']}")
+        # Read with actual headers (don't assume column names)
+        quality_df = pd.read_csv(quality_file)
+
+        # Flexible quality column detection
+        quality_col = None
+        for col in quality_df.columns:
+            if col.lower() in ['quality', 'ppg_quality', 'signal_quality']:
+                quality_col = col
+                break
+
+        if quality_col:
+            stats['quality_good'] = int((quality_df[quality_col] == 1).sum())
+            stats['quality_poor'] = int((quality_df[quality_col] == 0).sum())
+            print(f"  ✓ Quality annotations: {len(quality_df)} records")
+            print(f"    - Good quality: {stats['quality_good']}")
+            print(f"    - Poor quality: {stats['quality_poor']}")
 
     if subject_file.exists():
         stats['has_subject_info'] = True
@@ -288,11 +493,70 @@ def create_index_files(data_dir: Path, stats: dict):
 
 def main():
     """Main download function."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Download and verify BUT-PPG dataset for downstream clinical tasks"
+    )
+    parser.add_argument(
+        '--inspect',
+        action='store_true',
+        help='Inspect annotation files and exit (requires dataset to be downloaded)'
+    )
+    parser.add_argument(
+        '--verify-tasks',
+        action='store_true',
+        help='Verify all 3 downstream tasks are ready and exit'
+    )
+    parser.add_argument(
+        '--skip-download',
+        action='store_true',
+        help='Skip download, only run inspection/verification'
+    )
+
+    args = parser.parse_args()
+
     print("\n" + "=" * 60)
     print("📥 BUT PPG DATABASE DOWNLOAD")
     print("=" * 60)
     print("Dataset: Smartphone PPG with ECG, ACC, and demographics")
     print("Source: PhysioNet")
+
+    # If inspection/verification only, find existing dataset
+    if args.inspect or args.verify_tasks or args.skip_download:
+        # Try to find dataset
+        possible_dirs = [
+            DATA_DIR / "dataset",
+            RAW_DIR / "extracted",
+            Path("data/but_ppg/raw/brno-university-of-technology-smartphone-ppg-database-but-ppg-2.0.0")
+        ]
+
+        data_dir = None
+        for d in possible_dirs:
+            if d.exists() and (d / "quality-hr-ann.csv").exists():
+                data_dir = d
+                break
+
+        if data_dir is None:
+            print("\n❌ Dataset not found!")
+            print("   Please run without --inspect or --verify-tasks to download first")
+            print(f"   Checked: {possible_dirs}")
+            return False
+
+        print(f"\nFound dataset at: {data_dir}")
+
+        # Run requested inspection
+        if args.inspect:
+            inspect_annotations(data_dir)
+            return True
+
+        if args.verify_tasks:
+            return verify_downstream_tasks(data_dir)
+
+        # If skip-download, just verify and exit
+        if args.skip_download:
+            verify_dataset(data_dir)
+            return True
 
     start_time = time.time()
 
@@ -353,11 +617,21 @@ def main():
         print(f"  • {OUTPUT_DIR}/dataset_info.json - Dataset metadata")
         print(f"  • {data_dir}/ - Raw signal data")
 
+        # Step 5: Verify downstream tasks
+        print(f"\n🎯 Step 5: Verifying downstream tasks...")
+        all_tasks_ready = verify_downstream_tasks(data_dir)
+
         print("\n🚀 Next Steps:")
-        print("1. Data is ready for the data loader module")
-        print("2. Use waveform_index.csv to load signals")
-        print("3. Use labels.csv for downstream tasks")
-        print("4. Run training with PPG-only or multi-modal approach")
+        if all_tasks_ready:
+            print("1. ✅ All clinical tasks ready!")
+            print("2. Process data: python scripts/process_butppg_clinical.py")
+            print("3. Fine-tune model: python scripts/finetune_butppg.py")
+            print("4. Run evaluation: python scripts/run_downstream_evaluation.py")
+        else:
+            print("1. ⚠️  Some tasks not ready - check annotation files")
+            print("2. Re-run with --inspect to see details")
+            print("3. Use waveform_index.csv for signals")
+            print("4. Use labels.csv for available tasks")
 
         return True
 
