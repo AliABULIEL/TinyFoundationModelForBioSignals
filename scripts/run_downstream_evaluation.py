@@ -123,29 +123,89 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
         raise ValueError("Checkpoint format not recognized")
 
     # Infer missing config fields from state dict
-    # The fine-tuning script saves the argparse config, not the full model config
-    # We need to fill in missing fields by inspecting the state dict
+    # The fine-tuning script saves the argparse config, not the full model config!
+    # We need to build a proper model config by inspecting the state dict
 
-    # Infer num_classes from head weights
-    if 'task' in config and config['task'] == 'classification':
+    print("  Inspecting checkpoint config and state dict...")
+
+    # Check if this is a model config or training config (argparse)
+    is_training_config = 'pretrained' in config or 'data_dir' in config
+
+    if is_training_config:
+        print("  ⚠️  Checkpoint contains training config, not model config")
+        print("  Building model config from state dict...")
+
+        # Build model config from state dict
+        new_config = {}
+
+        # Infer input_channels from embedding layer
+        for key in state_dict.keys():
+            if 'backbone.input_projection.weight' in key or 'input_embedding' in key:
+                weight_shape = state_dict[key].shape
+                # Shape should be [d_model, input_channels, patch_size]
+                if len(weight_shape) >= 2:
+                    new_config['input_channels'] = weight_shape[1]
+                    print(f"    Inferred input_channels={new_config['input_channels']} from {key}: {weight_shape}")
+                break
+
+        # Infer context_length and patch_size from positional encoding
+        for key in state_dict.keys():
+            if 'position' in key.lower():
+                pos_shape = state_dict[key].shape
+                # Position encoding shape gives us num_patches
+                if len(pos_shape) >= 1:
+                    num_patches = pos_shape[0]
+                    print(f"    Found num_patches={num_patches} from {key}")
+                    break
+
+        # Infer num_classes from head
+        for key in state_dict.keys():
+            if 'head' in key and 'weight' in key:
+                head_shape = state_dict[key].shape
+                if len(head_shape) >= 1:
+                    new_config['num_classes'] = head_shape[0]
+                    new_config['task'] = 'classification'
+                    print(f"    Inferred num_classes={new_config['num_classes']} from {key}: {head_shape}")
+                break
+
+        # Set defaults
+        new_config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
+        new_config['head_type'] = 'linear'
+
+        # Try to get context_length and patch_size from original config if available
+        if 'finetune_channels' in config:
+            new_config['input_channels'] = config['finetune_channels']
+        if 'input_channels' in config and 'input_channels' not in new_config:
+            new_config['input_channels'] = config['input_channels']
+
+        # Use reasonable defaults based on typical fine-tuning setup
+        if 'context_length' not in new_config:
+            new_config['context_length'] = 1024  # Standard for BUT-PPG
+        if 'patch_size' not in new_config:
+            new_config['patch_size'] = 128  # Standard for 1024 context
+
+        config = new_config
+        print(f"    Built model config: {config}")
+
+    else:
+        # This is already a model config, just fill in missing fields
         if 'num_classes' not in config or config['num_classes'] is None:
             # Look for classification head in state dict
             for key in state_dict.keys():
                 if 'head' in key and 'weight' in key:
-                    # Extract num_classes from head output size
                     head_shape = state_dict[key].shape
                     if len(head_shape) >= 1:
                         config['num_classes'] = head_shape[0]
-                        print(f"  Inferred num_classes={config['num_classes']} from head shape: {head_shape}")
+                        print(f"    Inferred num_classes={config['num_classes']} from head shape: {head_shape}")
                         break
 
-    # Ensure variant is set
-    if 'variant' not in config:
-        config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
-
-    # Ensure head_type is set
-    if 'head_type' not in config:
-        config['head_type'] = 'linear'
+        # Ensure required fields are set
+        if 'variant' not in config:
+            config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
+        if 'head_type' not in config:
+            config['head_type'] = 'linear'
+        if 'task' not in config:
+            config['task'] = 'classification'
 
     # Create model
     model = create_ttm_model(config)
