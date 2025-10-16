@@ -64,39 +64,43 @@ Downloads raw BUT-PPG v2.0.0 dataset from PhysioNet.
 ```bash
 python scripts/download_butppg_dataset.py \
     --output-dir data/but_ppg/raw \
-    --subjects all \
+    --method zip \
     --skip-if-exists
 ```
 
 **Arguments:**
 - `--output-dir`: Output directory for raw data (default: `data/but_ppg/raw`)
-- `--subjects`: Subject IDs to download (comma-separated or "all")
-- `--skip-if-exists`: Skip downloading if data already exists
+- `--method`: Download method ('zip' - downloads complete 86.7MB archive)
+- `--skip-if-exists`: Skip downloading if ZIP file already exists
+- `--keep-zip`: Keep ZIP file after extraction (default: delete after extraction)
 
 **What it Downloads:**
-- All subject recordings (50 subjects × ~78 recordings each)
+- Complete dataset ZIP (86.7 MB)
+- 3,888 recordings from 50 subjects
+- Each recording has separate files for PPG, ECG, ACC signals
 - Annotation files:
-  - `PPGQualityLabels.csv` - Expert consensus quality labels
-  - `HRReference.csv` - Reference heart rate values
-  - `MotionLabels.csv` - Motion type annotations
+  - `quality-hr-ann.csv` - Quality labels + reference heart rates (combined)
+  - `subject-info.csv` - Subject demographics + motion type labels
 
 **Output Structure:**
 
 ```
 data/but_ppg/raw/
-├── subject_100/
-│   ├── 100001.dat
-│   ├── 100001.hea
-│   ├── 100002.dat
-│   ├── 100002.hea
-│   └── ...
-├── subject_101/
-│   └── ...
-└── annotations/
-    ├── PPGQualityLabels.csv
-    ├── HRReference.csv
-    └── MotionLabels.csv
+├── but-ppg-an-annotated-photoplethysmography-dataset-2.0.0/
+│   ├── 100001_PPG.dat, 100001_PPG.hea
+│   ├── 100001_ECG.dat, 100001_ECG.hea
+│   ├── 100001_ACC.dat, 100001_ACC.hea  (from 112001 onwards)
+│   ├── 100002_PPG.dat, 100002_PPG.hea
+│   └── ... (3,888 recordings)
+├── annotations/
+│   ├── quality-hr-ann.csv
+│   └── subject-info.csv
+└── README.txt  (dataset info)
 ```
+
+**Note:** Record IDs are 6-digit format (e.g., 100001, 112001), where:
+- First 3 digits: Subject identifier
+- Last 3 digits: Measurement number for that subject
 
 ---
 
@@ -108,7 +112,8 @@ Processes raw signals into task-specific datasets with proper preprocessing.
 
 ```bash
 python scripts/process_butppg_clinical.py \
-    --raw-dir data/but_ppg/raw \
+    --raw-dir data/but_ppg/raw/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0 \
+    --annotations-dir data/but_ppg/raw/annotations \
     --output-dir data/processed/butppg \
     --target-fs 125 \
     --window-size 1024 \
@@ -116,7 +121,8 @@ python scripts/process_butppg_clinical.py \
 ```
 
 **Arguments:**
-- `--raw-dir`: Directory with raw BUT-PPG data
+- `--raw-dir`: Directory with raw BUT-PPG recordings (contains `*_PPG.dat` files)
+- `--annotations-dir`: Directory with annotation CSV files
 - `--output-dir`: Output directory for processed data
 - `--target-fs`: Target sampling frequency in Hz (default: 125)
 - `--window-size`: Window size in samples (default: 1024)
@@ -270,52 +276,85 @@ python scripts/run_downstream_evaluation.py \
 
 ### Issue: Download Fails with 404 Error
 
-**Cause**: PhysioNet rate limiting or network issues
+**Cause**: Network issues or PhysioNet unavailable
 
 **Solution**:
 ```bash
-# Retry download with --skip-if-exists
+# Method 1: Retry with skip-if-exists
 python scripts/download_butppg_dataset.py \
     --output-dir data/but_ppg/raw \
     --skip-if-exists
+
+# Method 2: Manual download with wget
+wget -O data/but_ppg/raw/but-ppg-2.0.0.zip \
+  https://physionet.org/static/published-projects/butppg/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0.zip
+
+# Then extract manually
+cd data/but_ppg/raw
+unzip but-ppg-2.0.0.zip
 ```
 
 ### Issue: Missing Annotation Files
 
-**Cause**: PhysioNet changed URL structure or filenames
+**Cause**: Extraction failed or incomplete download
 
 **Solution**:
-1. Manually download from https://physionet.org/content/butppg/2.0.0/
-2. Place CSV files in `data/but_ppg/raw/annotations/`
-3. Re-run processor
+1. Check if ZIP file is complete (should be 86.7 MB)
+2. Re-extract: `unzip -o data/but_ppg/raw/but-ppg-2.0.0.zip`
+3. Annotation files should be in extracted directory:
+   - `quality-hr-ann.csv`
+   - `subject-info.csv`
+4. Processor will copy them to `data/but_ppg/raw/annotations/`
 
 ### Issue: No Samples Collected for Task
 
-**Cause**: Label column name mismatch in CSV
+**Cause**: Label column name mismatch or missing annotation files
 
 **Solution**:
-1. Check CSV column names:
+1. Check annotation files exist:
    ```bash
-   head -n 1 data/but_ppg/raw/annotations/PPGQualityLabels.csv
+   ls -lh data/but_ppg/raw/annotations/
+   # Should show: quality-hr-ann.csv, subject-info.csv
    ```
-2. Update `process_butppg_clinical.py` lines 252-258 with correct column names
+
+2. Check CSV structure:
+   ```bash
+   head -n 3 data/but_ppg/raw/annotations/quality-hr-ann.csv
+   ```
+
+3. The processor automatically detects common column name variations:
+   - ID columns: `id`, `record_id`, `signal_id`, `signalid`
+   - Quality: `quality`, `ppg_quality`, `ppgquality`
+   - HR: `hr`, `heart_rate`, `heartrate`, `reference_hr`
+   - Motion: `motion`, `motion_type`, `motiontype`, `activity`
+
+4. If columns still not detected, check processor output for:
+   ```
+   ✓ Loaded quality-hr-ann.csv: X entries
+     Columns: ['actual', 'column', 'names']
+   ```
 
 ### Issue: Processing Takes Too Long
 
-**Cause**: Large number of recordings
+**Cause**: Large number of recordings (3,888 total)
 
 **Solution**:
-```bash
-# Process subset of subjects first
-python scripts/download_butppg_dataset.py \
-    --subjects 100,101,102,103,104 \
-    --output-dir data/but_ppg/raw
+1. Processing all 3,888 recordings takes ~10-15 minutes
+2. To test with subset, manually filter recordings:
+   ```bash
+   # Process only recordings from subject 100 (first 3 digits)
+   cd data/but_ppg/raw/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0
+   mkdir -p ../test_subset
+   cp 100*_PPG.* ../test_subset/
+   cp 100*_ECG.* ../test_subset/
+   cp 100*_ACC.* ../test_subset/
 
-# Then process
-python scripts/process_butppg_clinical.py \
-    --raw-dir data/but_ppg/raw \
-    --output-dir data/processed/butppg
-```
+   # Process subset
+   python scripts/process_butppg_clinical.py \
+       --raw-dir data/but_ppg/raw/test_subset \
+       --annotations-dir data/but_ppg/raw/annotations \
+       --output-dir data/processed/butppg_test
+   ```
 
 ### Issue: Dimension Mismatch During Evaluation
 
