@@ -3,21 +3,28 @@
 BUT-PPG Window Processor with Embedded Labels
 
 Creates one NPZ file per window with:
-- Synchronized PPG + ECG + ACC signals (5 channels)
-- Recording-level clinical labels (quality, HR, BP, SpO2, etc.)
+- Synchronized PPG + ECG signals (2 channels - NO accelerometer in BUT-PPG dataset)
+- Recording-level clinical labels (quality, HR, BP, SpO2, motion, etc.)
 - Quality metrics
 - Normalization statistics
+- Overlapping windows (default 25%)
 
 Output: One window = One NPZ file with all metadata
 
+Dataset Structure:
+- Separate _PPG and _ECG WFDB files per recording
+- PPG: 1 channel @ ~30 Hz
+- ECG: 1 channel @ 1000 Hz
+- Both resampled to target fs (default 125 Hz)
+
 Usage:
     python scripts/create_butppg_windows_with_labels.py \
-        --data-dir data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0 \
+        --data-dir data/but_ppg/dataset \
         --output-dir data/processed/butppg/windows_with_labels \
         --splits-file configs/splits/butppg_splits.json \
         --window-sec 8.192 \
         --fs 125 \
-        --max-recordings 100
+        --overlap 0.25
 """
 
 import sys
@@ -37,85 +44,69 @@ import wfdb
 def load_and_sync_signals(
     record_path: Path,
     fs_target: int = 125
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    """Load PPG, ECG, and ACC with proper temporal synchronization.
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Load PPG and ECG from separate files with temporal synchronization.
 
-    CRITICAL: Ensures all modalities come from EXACT same time points.
+    BUT-PPG dataset structure:
+    - Separate _PPG and _ECG files per recording
+    - PPG: 1 channel @ ~30 Hz
+    - ECG: 1 channel @ 1000 Hz
+    - NO accelerometer data
 
     Args:
-        record_path: Path to WFDB record (without extension)
+        record_path: Path to WFDB PPG record (e.g., .../100001/100001_PPG)
         fs_target: Target sampling rate (Hz)
 
     Returns:
         ppg_sync: Synchronized PPG signal [N]
         ecg_sync: Synchronized ECG signal [N]
-        acc_sync: Synchronized ACC signal [N, 3]
     """
     try:
-        # Load WFDB record
-        record = wfdb.rdrecord(str(record_path))
+        # Load PPG file
+        ppg_record = wfdb.rdrecord(str(record_path))
 
-        # Extract signals
-        # BUT-PPG channels: [ACC_X, ACC_Y, ACC_Z, PPG, ECG]
-        if record.n_sig != 5:
-            print(f"  Warning: Expected 5 channels, got {record.n_sig}")
-            return None, None, None
+        # Load ECG file (replace _PPG with _ECG)
+        ecg_path = str(record_path).replace('_PPG', '_ECG')
+        ecg_record = wfdb.rdrecord(ecg_path)
 
-        acc_x = record.p_signal[:, 0]
-        acc_y = record.p_signal[:, 1]
-        acc_z = record.p_signal[:, 2]
-        ppg = record.p_signal[:, 3]
-        ecg = record.p_signal[:, 4]
+        # Extract signals (handle shape quirks - WFDB can return (samples,) or (samples, 1))
+        ppg = ppg_record.p_signal
+        if ppg.ndim == 2:
+            ppg = ppg[:, 0] if ppg.shape[1] == 1 else ppg.flatten()
 
-        # Original sampling rates
-        # ACC: 64 Hz, PPG: 64 Hz, ECG: 250 Hz
-        acc_fs = 64
-        ppg_fs = 64
-        ecg_fs = 250
+        ecg = ecg_record.p_signal
+        if ecg.ndim == 2:
+            ecg = ecg[:, 0] if ecg.shape[1] == 1 else ecg.flatten()
+
+        # Get original sampling rates
+        ppg_fs = ppg_record.fs
+        ecg_fs = ecg_record.fs
 
         # Resample to target frequency
-        ppg_resampled = scipy_signal.resample_poly(ppg, fs_target, ppg_fs)
-        ecg_resampled = scipy_signal.resample_poly(ecg, fs_target, ecg_fs)
-        acc_x_resampled = scipy_signal.resample_poly(acc_x, fs_target, acc_fs)
-        acc_y_resampled = scipy_signal.resample_poly(acc_y, fs_target, acc_fs)
-        acc_z_resampled = scipy_signal.resample_poly(acc_z, fs_target, acc_fs)
+        ppg_resampled = scipy_signal.resample_poly(ppg, fs_target, int(ppg_fs))
+        ecg_resampled = scipy_signal.resample_poly(ecg, fs_target, int(ecg_fs))
 
-        # CRITICAL: Synchronize to same length
-        min_len = min(
-            len(ppg_resampled),
-            len(ecg_resampled),
-            len(acc_x_resampled),
-            len(acc_y_resampled),
-            len(acc_z_resampled)
-        )
-
+        # Synchronize to same length
+        min_len = min(len(ppg_resampled), len(ecg_resampled))
         ppg_sync = ppg_resampled[:min_len]
         ecg_sync = ecg_resampled[:min_len]
-        acc_x_sync = acc_x_resampled[:min_len]
-        acc_y_sync = acc_y_resampled[:min_len]
-        acc_z_sync = acc_z_resampled[:min_len]
-
-        # Stack ACC channels
-        acc_sync = np.stack([acc_x_sync, acc_y_sync, acc_z_sync], axis=1)
 
         # Remove NaN values
         ppg_valid = ~np.isnan(ppg_sync)
         ecg_valid = ~np.isnan(ecg_sync)
-        acc_valid = ~np.any(np.isnan(acc_sync), axis=1)
-        valid_mask = ppg_valid & ecg_valid & acc_valid
+        valid_mask = ppg_valid & ecg_valid
 
         if not np.any(valid_mask):
-            return None, None, None
+            return None, None
 
         ppg_sync = ppg_sync[valid_mask]
         ecg_sync = ecg_sync[valid_mask]
-        acc_sync = acc_sync[valid_mask]
 
-        return ppg_sync, ecg_sync, acc_sync
+        return ppg_sync, ecg_sync
 
     except Exception as e:
         print(f"  Error loading record {record_path}: {e}")
-        return None, None, None
+        return None, None
 
 
 def compute_sqi_ppg(signal: np.ndarray, fs: int) -> float:
@@ -380,25 +371,22 @@ def process_recording(
     if not (record_path.parent / f"{record_path.name}.dat").exists():
         return 0, 0, window_counter
 
-    # Load and synchronize signals
-    ppg, ecg, acc = load_and_sync_signals(record_path, fs_target=fs)
+    # Load and synchronize signals (only PPG and ECG - no ACC in BUT-PPG)
+    result = load_and_sync_signals(record_path, fs_target=fs)
 
-    if ppg is None or ecg is None or acc is None:
+    if result is None or result[0] is None or result[1] is None:
         return 0, 0, window_counter
+
+    ppg, ecg = result
 
     # Normalize per-recording (z-score)
     ppg_mean, ppg_std = ppg.mean(), ppg.std()
     ecg_mean, ecg_std = ecg.mean(), ecg.std()
-    acc_mean = acc.mean(axis=0)
-    acc_std = acc.std(axis=0)
 
     if ppg_std > 0:
         ppg = (ppg - ppg_mean) / ppg_std
     if ecg_std > 0:
         ecg = (ecg - ecg_mean) / ecg_std
-    for i in range(3):
-        if acc_std[i] > 0:
-            acc[:, i] = (acc[:, i] - acc_mean[i]) / acc_std[i]
 
     # Load recording labels
     recording_labels = get_recording_labels(record_id, quality_hr_df, subject_info_df)
@@ -431,7 +419,6 @@ def process_recording(
 
         ppg_window = ppg[start_idx:end_idx]
         ecg_window = ecg[start_idx:end_idx]
-        acc_window = acc[start_idx:end_idx]
 
         # Quality check
         if quality_filter:
@@ -444,13 +431,10 @@ def process_recording(
             ppg_sqi = compute_sqi_ppg(ppg_window, fs)
             ecg_sqi = compute_sqi_ecg(ecg_window, fs)
 
-        # Stack into [5, T] format: [ACC_X, ACC_Y, ACC_Z, PPG, ECG]
+        # Stack into [2, T] format: [PPG, ECG]
         signal = np.stack([
-            acc_window[:, 0],  # ACC_X
-            acc_window[:, 1],  # ACC_Y
-            acc_window[:, 2],  # ACC_Z
-            ppg_window,        # PPG
-            ecg_window         # ECG
+            ppg_window,        # PPG (channel 0)
+            ecg_window         # ECG (channel 1)
         ], axis=0).astype(np.float32)
 
         # Save as individual NPZ
@@ -459,7 +443,7 @@ def process_recording(
         np.savez_compressed(
             output_file,
             # Signal data
-            signal=signal,  # [5, 1024]
+            signal=signal,  # [2, 1024] - PPG and ECG only
 
             # Metadata
             record_id=record_id,
@@ -487,13 +471,11 @@ def process_recording(
             ppg_quality=ppg_sqi,
             ecg_quality=ecg_sqi,
 
-            # Normalization stats
+            # Normalization stats (per-recording stats before normalization)
             ppg_mean=ppg_mean,
             ppg_std=ppg_std,
             ecg_mean=ecg_mean,
             ecg_std=ecg_std,
-            acc_mean=acc_mean,
-            acc_std=acc_std,
 
             # Window overlap info
             overlap_ratio=overlap_ratio,
@@ -607,8 +589,9 @@ def main():
         'window_samples': int(args.window_sec * args.fs),
         'overlap_ratio': args.overlap,
         'stride_samples': stride_samples,
-        'n_channels': 5,
-        'channel_names': ['ACC_X', 'ACC_Y', 'ACC_Z', 'PPG', 'ECG'],
+        'n_channels': 2,
+        'channel_names': ['PPG', 'ECG'],
+        'note': 'BUT-PPG dataset contains only PPG and ECG signals (no accelerometer)',
         'stats': stats
     }
 
