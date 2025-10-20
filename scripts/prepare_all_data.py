@@ -654,7 +654,7 @@ class DataPreparationPipeline:
             cmd = [
                 sys.executable,
                 'scripts/create_butppg_windows_with_labels.py',
-                '--data-dir', str(self.butppg_raw_dir / 'but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'),
+                '--data-dir', str(self.butppg_raw_dir),  # ✅ FIXED: CSV files are directly in this directory
                 '--output-dir', str(self.dirs['butppg_windows']),
                 '--splits-file', splits_file,
                 '--window-sec', str(self.window_sec),  # ✅ FROM CONFIG!
