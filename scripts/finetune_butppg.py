@@ -733,11 +733,16 @@ def main():
     print(f"Loading checkpoint: {args.pretrained}")
     checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
 
-    # Get state dict
+    # Get state dict - handle different checkpoint formats
     if 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
+        print("  ✓ Found 'model_state_dict' (fine-tuning checkpoint)")
+    elif 'encoder_state_dict' in checkpoint:
+        state_dict = checkpoint['encoder_state_dict']
+        print("  ✓ Found 'encoder_state_dict' (SSL checkpoint)")
     else:
         state_dict = checkpoint
+        print("  ⚠ Using raw checkpoint (assuming state dict)")
 
     # CRITICAL: Detect actual architecture from checkpoint weights
     # The saved config may be incorrect - we must use the actual weight shapes
@@ -747,9 +752,13 @@ def main():
     patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
 
     if not patch_mixer_keys:
+        # Show available keys for debugging
+        sample_keys = list(state_dict.keys())[:10]
+        print(f"\n  ⚠ Could not find patch_mixer weights")
+        print(f"  Sample keys in checkpoint: {sample_keys}")
         raise ValueError(
             "Could not find patch_mixer weights in checkpoint.\n"
-            "This may not be a valid TTM checkpoint."
+            "This may not be a valid TTM checkpoint or may have a different key structure."
         )
 
     # Get num_patches from patch_mixer MLP input dimension

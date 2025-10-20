@@ -25,13 +25,24 @@ def inspect_checkpoint(checkpoint_path):
         for key, value in config.items():
             print(f"  {key}: {value}")
 
-    # Inspect model state dict
+    # Inspect model state dict - handle different checkpoint formats
     if 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
+        print("\n  Using 'model_state_dict'")
+    elif 'encoder_state_dict' in checkpoint:
+        state_dict = checkpoint['encoder_state_dict']
+        print("\n  Using 'encoder_state_dict' (SSL checkpoint)")
     else:
         state_dict = checkpoint
+        print("\n  Using raw checkpoint (assuming state dict)")
 
     print("\n🔍 Model architecture from weight shapes:")
+    print(f"  Total keys in state dict: {len(state_dict)}")
+
+    # Show first few keys to understand structure
+    print("\n  Sample keys:")
+    for i, key in enumerate(list(state_dict.keys())[:10]):
+        print(f"    {key}")
 
     # Find patch_mixer weights to determine num_patches
     patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
@@ -40,12 +51,19 @@ def inspect_checkpoint(checkpoint_path):
         # Get first patch_mixer MLP weight
         key = patch_mixer_keys[0]
         weight = state_dict[key]
+        print(f"\n  ✓ Found patch_mixer weights!")
         print(f"\n  {key}")
         print(f"    Shape: {weight.shape}")
 
         # For TTM, the patch_mixer MLP input dimension = num_patches
         num_patches = weight.shape[1]
         print(f"\n  ✓ Detected num_patches: {num_patches}")
+    else:
+        print(f"\n  ❌ No patch_mixer keys found")
+        print(f"\n  All keys in state_dict:")
+        for key in sorted(state_dict.keys()):
+            print(f"    {key}")
+        return
 
     # Find embedding or input projection to determine d_model
     embed_keys = [k for k in state_dict.keys() if 'backbone.encoder' in k and 'fc1.weight' in k]
