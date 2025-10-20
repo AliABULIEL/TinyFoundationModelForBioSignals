@@ -310,8 +310,18 @@ def get_recording_labels(
         row = subject_info_df.loc[record_id]
 
         # Motion class (0-7)
+        # Note: Some recordings have multiple motion classes (e.g., "2;3")
+        # Take the first value in such cases
         if 'motion' in row and not pd.isna(row['motion']):
-            labels['motion'] = int(row['motion'])
+            motion_str = str(row['motion']).strip()
+            if ';' in motion_str:
+                # Multiple motion classes - take first
+                motion_str = motion_str.split(';')[0].strip()
+            try:
+                labels['motion'] = int(motion_str)
+            except ValueError:
+                # Skip if still can't convert
+                pass
 
         # Blood pressure (parse "120/80" format)
         # Try both 'bp' and 'blood pressure' (normalized from 'Blood pressure [mmHg]')
