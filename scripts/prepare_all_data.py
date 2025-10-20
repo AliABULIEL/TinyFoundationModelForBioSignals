@@ -866,46 +866,135 @@ class DataPreparationPipeline:
             logger.warning("No BUT-PPG training data found")
             return {'error': 'No training data'}
 
-        train_file = Path(windows_info['train']['file'])
-        if not train_file.exists():
-            logger.error(f"Training file not found: {train_file}")
-            return {'error': 'File not found'}
+        train_info = windows_info['train']
 
-        logger.info(f"Loading BUT-PPG training data from {train_file}...")
-        data = np.load(train_file)
-        windows = data['data']
+        # New windowed format - directory with individual window files
+        if 'dir' in train_info:
+            train_dir = Path(train_info['dir'])
 
-        logger.info(f"Training data shape: {windows.shape}")
+            if not train_dir.exists():
+                logger.error(f"Training directory not found: {train_dir}")
+                return {'error': 'Directory not found'}
 
-        # Compute per-channel statistics
-        if windows.ndim == 2:
-            windows = windows[:, :, np.newaxis]
+            logger.info(f"Loading windowed training data from {train_dir}...")
 
-        stats = {
-            'mean': float(np.mean(windows)),
-            'std': float(np.std(windows)),
-            'min': float(np.min(windows)),
-            'max': float(np.max(windows)),
-            'n_windows': len(windows),
-            'n_channels': windows.shape[2] if windows.ndim >= 3 else 1
-        }
+            # Load all window files from training set
+            window_files = list(train_dir.glob('window_*.npz'))
 
-        # Save statistics
-        stats_file = self.dirs['butppg_windows'] / 'train_stats.npz'
-        np.savez(
-            stats_file,
-            mean=stats['mean'],
-            std=stats['std'],
-            min=stats['min'],
-            max=stats['max'],
-            method='zscore'
-        )
+            if len(window_files) == 0:
+                logger.error(f"No window files found in {train_dir}")
+                return {'error': 'No window files'}
 
-        logger.info(f"✓ Saved normalization stats to {stats_file}")
-        logger.info(f"  Mean: {stats['mean']:.4f}, Std: {stats['std']:.4f}")
-        logger.info(f"  Channels: {stats['n_channels']}")
+            # Collect all windows
+            all_signals = []
+            for window_file in window_files:
+                data = np.load(window_file)
+                all_signals.append(data['signal'])  # [2, T] for BUT-PPG (PPG + ECG)
 
-        return stats
+            # Stack all windows: [N, 2, T]
+            windows = np.stack(all_signals, axis=0)
+
+            logger.info(f"Training data shape: {windows.shape}")
+            logger.info(f"  {len(window_files)} windows")
+            logger.info(f"  Format: [N, 2, T] - Channel 0=PPG, Channel 1=ECG")
+
+            # Compute per-channel statistics
+            ppg_windows = windows[:, 0, :]  # [N, T]
+            ecg_windows = windows[:, 1, :]  # [N, T]
+
+            stats = {
+                'mean': float(np.mean(windows)),
+                'std': float(np.std(windows)),
+                'min': float(np.min(windows)),
+                'max': float(np.max(windows)),
+                'n_windows': len(windows),
+                'n_channels': 2,
+                'channel_stats': {
+                    'PPG': {
+                        'mean': float(np.mean(ppg_windows)),
+                        'std': float(np.std(ppg_windows)),
+                        'min': float(np.min(ppg_windows)),
+                        'max': float(np.max(ppg_windows))
+                    },
+                    'ECG': {
+                        'mean': float(np.mean(ecg_windows)),
+                        'std': float(np.std(ecg_windows)),
+                        'min': float(np.min(ecg_windows)),
+                        'max': float(np.max(ecg_windows))
+                    }
+                }
+            }
+
+            # Save statistics
+            stats_file = self.dirs['butppg_windows'] / 'train_stats.npz'
+            np.savez(
+                stats_file,
+                mean=stats['mean'],
+                std=stats['std'],
+                min=stats['min'],
+                max=stats['max'],
+                ppg_mean=stats['channel_stats']['PPG']['mean'],
+                ppg_std=stats['channel_stats']['PPG']['std'],
+                ecg_mean=stats['channel_stats']['ECG']['mean'],
+                ecg_std=stats['channel_stats']['ECG']['std'],
+                method='zscore'
+            )
+
+            logger.info(f"✓ Saved normalization stats to {stats_file}")
+            logger.info(f"  Overall: Mean={stats['mean']:.4f}, Std={stats['std']:.4f}")
+            logger.info(f"  PPG: Mean={stats['channel_stats']['PPG']['mean']:.4f}, "
+                       f"Std={stats['channel_stats']['PPG']['std']:.4f}")
+            logger.info(f"  ECG: Mean={stats['channel_stats']['ECG']['mean']:.4f}, "
+                       f"Std={stats['channel_stats']['ECG']['std']:.4f}")
+
+            return stats
+
+        # Legacy format - single file
+        elif 'file' in train_info:
+            train_file = Path(train_info['file'])
+            if not train_file.exists():
+                logger.error(f"Training file not found: {train_file}")
+                return {'error': 'File not found'}
+
+            logger.info(f"Loading BUT-PPG training data from {train_file}...")
+            data = np.load(train_file)
+            windows = data['data']
+
+            logger.info(f"Training data shape: {windows.shape}")
+
+            # Compute per-channel statistics
+            if windows.ndim == 2:
+                windows = windows[:, :, np.newaxis]
+
+            stats = {
+                'mean': float(np.mean(windows)),
+                'std': float(np.std(windows)),
+                'min': float(np.min(windows)),
+                'max': float(np.max(windows)),
+                'n_windows': len(windows),
+                'n_channels': windows.shape[2] if windows.ndim >= 3 else 1
+            }
+
+            # Save statistics
+            stats_file = self.dirs['butppg_windows'] / 'train_stats.npz'
+            np.savez(
+                stats_file,
+                mean=stats['mean'],
+                std=stats['std'],
+                min=stats['min'],
+                max=stats['max'],
+                method='zscore'
+            )
+
+            logger.info(f"✓ Saved normalization stats to {stats_file}")
+            logger.info(f"  Mean: {stats['mean']:.4f}, Std: {stats['std']:.4f}")
+            logger.info(f"  Channels: {stats['n_channels']}")
+
+            return stats
+
+        else:
+            logger.error("Unknown BUT-PPG data structure")
+            return {'error': 'Unknown structure'}
 
     def validate_vitaldb_data(self, windows_info: Dict) -> Dict:
         """Validate VitalDB paired data integrity."""
@@ -1015,61 +1104,134 @@ class DataPreparationPipeline:
         }
 
         for split_name, split_info in windows_info.items():
-            if 'file' not in split_info:
-                continue
+            # Handle new windowed format - directory with individual window files
+            if 'dir' in split_info:
+                split_dir = Path(split_info['dir'])
 
-            file_path = Path(split_info['file'])
-            if not file_path.exists():
-                validation['issues'].append(f"{split_name}: file not found")
-                continue
+                if not split_dir.exists():
+                    validation['issues'].append(f"{split_name}: directory not found")
+                    continue
 
-            # Load and validate
-            try:
-                data = np.load(file_path)
-                windows = data['data']
-                labels = data.get('labels', None)
+                # Load and validate window files
+                try:
+                    window_files = list(split_dir.glob('window_*.npz'))
 
-                # Check for NaN/Inf
-                has_nan = np.any(np.isnan(windows))
-                has_inf = np.any(np.isinf(windows))
+                    if len(window_files) == 0:
+                        validation['issues'].append(f"{split_name}: no window files found")
+                        continue
 
-                # ✅ USE CONFIG VALUE - NO HARD-CODED!
-                # Check shape consistency
-                expected_samples = self.expected_samples  # ✅ FROM CONFIG!
-                expected_channels = 5  # PPG + ECG + ACC (3-axis)
-                valid_shape = windows.shape[1] == expected_samples
-                valid_channels = windows.shape[2] == expected_channels if windows.ndim >= 3 else False
+                    # Validate sample windows
+                    all_has_nan = []
+                    all_has_inf = []
+                    all_means = []
+                    all_stds = []
 
-                validation['splits'][split_name] = {
-                    'shape': windows.shape,
-                    'has_nan': bool(has_nan),
-                    'has_inf': bool(has_inf),
-                    'valid_shape': valid_shape,
-                    'valid_channels': valid_channels,
-                    'mean': float(np.mean(windows)),
-                    'std': float(np.std(windows))
-                }
+                    for window_file in window_files:
+                        data = np.load(window_file)
+                        signal = data['signal']  # [2, T] for BUT-PPG (PPG + ECG)
 
-                if has_nan:
-                    validation['issues'].append(f"{split_name}: contains NaN")
-                if has_inf:
-                    validation['issues'].append(f"{split_name}: contains Inf")
-                if not valid_shape:
-                    validation['issues'].append(
-                        f"{split_name}: wrong time shape {windows.shape[1]} (expected {expected_samples})"
-                    )
-                if not valid_channels and windows.ndim >= 3:
-                    validation['issues'].append(
-                        f"{split_name}: wrong channels {windows.shape[2]} (expected {expected_channels})"
-                    )
+                        # Check for NaN/Inf
+                        all_has_nan.append(np.any(np.isnan(signal)))
+                        all_has_inf.append(np.any(np.isinf(signal)))
+                        all_means.append(np.mean(signal))
+                        all_stds.append(np.std(signal))
 
-                logger.info(f"✓ {split_name}: {windows.shape}, "
-                            f"mean={validation['splits'][split_name]['mean']:.3f}, "
-                            f"std={validation['splits'][split_name]['std']:.3f}")
+                        # Check shape consistency
+                        expected_channels = 2  # PPG + ECG only
+                        expected_samples = self.expected_samples  # From config
 
-            except Exception as e:
-                validation['issues'].append(f"{split_name}: {str(e)}")
-                logger.error(f"Error validating {split_name}: {e}")
+                        if signal.ndim != 2:
+                            validation['issues'].append(
+                                f"{split_name}/{window_file.name}: wrong ndim {signal.ndim} (expected 2)"
+                            )
+                        elif signal.shape[0] != expected_channels:
+                            validation['issues'].append(
+                                f"{split_name}/{window_file.name}: wrong channels {signal.shape[0]} (expected 2)"
+                            )
+                        elif signal.shape[1] != expected_samples:
+                            validation['issues'].append(
+                                f"{split_name}/{window_file.name}: wrong samples {signal.shape[1]} (expected {expected_samples})"
+                            )
+
+                    # Aggregate results
+                    has_nan = any(all_has_nan)
+                    has_inf = any(all_has_inf)
+
+                    validation['splits'][split_name] = {
+                        'num_windows': len(window_files),
+                        'format': '[2, T]',
+                        'has_nan': bool(has_nan),
+                        'has_inf': bool(has_inf),
+                        'mean': float(np.mean(all_means)),
+                        'std': float(np.mean(all_stds))
+                    }
+
+                    if has_nan:
+                        validation['issues'].append(f"{split_name}: contains NaN in some windows")
+                    if has_inf:
+                        validation['issues'].append(f"{split_name}: contains Inf in some windows")
+
+                    logger.info(f"✓ {split_name}: {len(window_files)} windows, "
+                                f"mean={validation['splits'][split_name]['mean']:.3f}, "
+                                f"std={validation['splits'][split_name]['std']:.3f}")
+
+                except Exception as e:
+                    validation['issues'].append(f"{split_name}: {str(e)}")
+                    logger.error(f"Error validating {split_name}: {e}")
+
+            # Handle legacy format - single file
+            elif 'file' in split_info:
+                file_path = Path(split_info['file'])
+                if not file_path.exists():
+                    validation['issues'].append(f"{split_name}: file not found")
+                    continue
+
+                # Load and validate
+                try:
+                    data = np.load(file_path)
+                    windows = data['data']
+                    labels = data.get('labels', None)
+
+                    # Check for NaN/Inf
+                    has_nan = np.any(np.isnan(windows))
+                    has_inf = np.any(np.isinf(windows))
+
+                    # Check shape consistency
+                    expected_samples = self.expected_samples
+                    expected_channels = 5  # PPG + ECG + ACC (3-axis) for legacy
+                    valid_shape = windows.shape[1] == expected_samples
+                    valid_channels = windows.shape[2] == expected_channels if windows.ndim >= 3 else False
+
+                    validation['splits'][split_name] = {
+                        'shape': windows.shape,
+                        'has_nan': bool(has_nan),
+                        'has_inf': bool(has_inf),
+                        'valid_shape': valid_shape,
+                        'valid_channels': valid_channels,
+                        'mean': float(np.mean(windows)),
+                        'std': float(np.std(windows))
+                    }
+
+                    if has_nan:
+                        validation['issues'].append(f"{split_name}: contains NaN")
+                    if has_inf:
+                        validation['issues'].append(f"{split_name}: contains Inf")
+                    if not valid_shape:
+                        validation['issues'].append(
+                            f"{split_name}: wrong time shape {windows.shape[1]} (expected {expected_samples})"
+                        )
+                    if not valid_channels and windows.ndim >= 3:
+                        validation['issues'].append(
+                            f"{split_name}: wrong channels {windows.shape[2]} (expected {expected_channels})"
+                        )
+
+                    logger.info(f"✓ {split_name}: {windows.shape}, "
+                                f"mean={validation['splits'][split_name]['mean']:.3f}, "
+                                f"std={validation['splits'][split_name]['std']:.3f}")
+
+                except Exception as e:
+                    validation['issues'].append(f"{split_name}: {str(e)}")
+                    logger.error(f"Error validating {split_name}: {e}")
 
         if validation['issues']:
             logger.warning(f"Found {len(validation['issues'])} validation issues")
