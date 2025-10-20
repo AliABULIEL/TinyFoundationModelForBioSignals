@@ -866,31 +866,35 @@ def main():
     # Note: state_dict was already loaded earlier for architecture detection
     # It contains encoder weights with 'encoder.' prefix that needs to be stripped
 
-    print("\n📦 Loading encoder weights into fine-tuning model...")
+    print("\n📦 Loading backbone encoder weights (skipping SSL decoder)...")
 
-    # Strip 'encoder.' prefix from SSL checkpoint keys if present
-    # SSL checkpoint: encoder.backbone.encoder.mlp_mixer_encoder...
-    # Fine-tuning model: encoder.backbone.encoder.mlp_mixer_encoder...
-    # Actually, they should match! Let me check if we need to strip anything
+    # Filter state_dict to only include backbone encoder weights
+    # IMPORTANT: Skip SSL decoder (decoder_dim=128) which won't match fine-tuning decoder
+    # Include: encoder.backbone.* and backbone.*
+    # Exclude: encoder.decoder.* (SSL reconstruction decoder), encoder.head.* (SSL head)
+    backbone_state_dict = {}
+    skipped_decoder = 0
+    skipped_head = 0
 
-    # Try loading as-is first
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    for key, value in state_dict.items():
+        # Include backbone weights (the actual TTM encoder)
+        if 'encoder.backbone' in key or (key.startswith('backbone.') and 'decoder' not in key):
+            backbone_state_dict[key] = value
+        # Skip decoder weights (SSL-specific, different dimensions)
+        elif 'encoder.decoder' in key:
+            skipped_decoder += 1
+            continue
+        # Skip SSL head (base_forecast_block)
+        elif 'encoder.head' in key:
+            skipped_head += 1
+            continue
 
-    # If many missing keys, try stripping 'encoder.' prefix
-    encoder_keys = [k for k in missing_keys if 'encoder' in k]
-    if len(encoder_keys) > 100:
-        print("  ⚠ Many missing keys, trying to strip 'encoder.' prefix...")
-        # Create new state dict with stripped prefix
-        stripped_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('encoder.'):
-                new_key = key[len('encoder.'):]  # Remove 'encoder.' prefix
-                stripped_state_dict[new_key] = value
-            else:
-                stripped_state_dict[key] = value
+    print(f"  Backbone weights: {len(backbone_state_dict)} keys")
+    print(f"  Skipped SSL decoder: {skipped_decoder} keys (different architecture)")
+    print(f"  Skipped SSL head: {skipped_head} keys (task-specific)")
 
-        # Try loading again
-        missing_keys, unexpected_keys = model.load_state_dict(stripped_state_dict, strict=False)
+    # Try loading backbone weights
+    missing_keys, unexpected_keys = model.load_state_dict(backbone_state_dict, strict=False)
 
     print("✓ Loaded SSL encoder weights")
     print("✓ Initialized new classification head (2 classes)")
