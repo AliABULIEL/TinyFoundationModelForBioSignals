@@ -59,13 +59,13 @@ def test_butppg_window_generation():
         data_dir = project_root / 'data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'
         if not data_dir.exists():
             print_warning("SKIP: BUT-PPG raw data not found")
-            return False
+            return None
 
         # Check if window generation script exists
         script_path = project_root / 'scripts/test_one_sample_generation.py'
         if not script_path.exists():
             print_warning("SKIP: test_one_sample_generation.py not found")
-            return False
+            return None
 
         # Run the one sample generation test
         import subprocess
@@ -107,7 +107,7 @@ def test_butppg_backward_compatibility():
         data_dir = project_root / 'data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'
         if not data_dir.exists():
             print_warning("SKIP: BUT-PPG raw data not found")
-            return False
+            return None
 
         print_info("Creating dataset with default parameters (should use RAW mode)...")
 
@@ -156,11 +156,11 @@ def test_butppg_preprocessed_mode():
         if not data_dir.exists():
             print_warning("SKIP: Preprocessed data not found. Run:")
             print_info("  python scripts/prepare_all_data.py --mode fasttrack --dataset butppg --format windowed")
-            return False
+            return None
 
         print_info("Creating dataset in PREPROCESSED mode with labels...")
 
-        # Create dataset in PREPROCESSED mode
+        # Create dataset in PREPROCESSED mode (without filtering to see all samples)
         dataset = BUTPPGDataset(
             data_dir=str(data_dir),
             modality=['ppg', 'ecg'],
@@ -168,10 +168,19 @@ def test_butppg_preprocessed_mode():
             mode='preprocessed',
             task='quality',
             return_labels=True,
-            filter_missing=True
+            filter_missing=False  # Don't filter to see all generated windows
         )
 
         print_success(f"Dataset created with {len(dataset)} samples")
+
+        # Check how many have valid quality labels
+        if len(dataset) > 0:
+            valid_quality = 0
+            for i in range(min(100, len(dataset))):
+                _, _, lbl = dataset[i]
+                if not np.isnan(lbl['quality']) and lbl['quality'] in [0, 1, 0.0, 1.0]:
+                    valid_quality += 1
+            print_info(f"  Valid quality labels: {valid_quality}/{min(100, len(dataset))} sampled")
 
         if len(dataset) > 0:
             # Test loading with labels
@@ -228,7 +237,7 @@ def test_vitaldb_backward_compatibility():
         except ImportError:
             print_warning("SKIP: VitalDB package not installed")
             print_info("  Install: pip install vitaldb")
-            return False
+            return None
 
         print_info("Creating dataset with default parameters (should use RAW mode)...")
 
@@ -278,7 +287,7 @@ def test_vitaldb_preprocessed_mode():
         if not data_dir.exists():
             print_warning("SKIP: Preprocessed data not found. Run:")
             print_info("  python scripts/prepare_all_data.py --mode fasttrack --dataset vitaldb --format windowed")
-            return False
+            return None
 
         print_info("Creating dataset in PREPROCESSED mode with labels...")
 
@@ -426,6 +435,12 @@ def test_overlapping_windows():
                 multi_window_recs = [k for k, v in windows_by_record.items() if len(v) >= 2]
                 print_info(f"  Found {len(multi_window_recs)} recordings with 2+ windows")
 
+                # Show distribution
+                window_counts = [len(v) for v in windows_by_record.values()]
+                from collections import Counter
+                dist = Counter(window_counts)
+                print_info(f"  Distribution: {dict(sorted(dist.items())[:5])}")  # Show first 5 bins
+
                 # Test multiple recordings
                 overlaps_tested = 0
                 overlaps_passed = 0
@@ -556,7 +571,7 @@ def test_unified_window_loader():
         data_dir = project_root / 'data/processed/butppg/windows_with_labels/train'
         if not data_dir.exists():
             print_warning("SKIP: Preprocessed data not found")
-            return False
+            return None
 
         print_info("Creating UnifiedWindowDataset...")
 
@@ -618,8 +633,11 @@ def main():
     # Print summary
     print_header("TEST SUMMARY")
 
-    passed = sum(1 for v in results.values() if v)
-    total = len([v for v in results.values() if v is not False])  # Exclude None/skipped
+    # Count tests (excluding skipped ones)
+    passed = sum(1 for v in results.values() if v is True)
+    failed = sum(1 for v in results.values() if v is False)
+    skipped = sum(1 for v in results.values() if v is None)
+    total_ran = passed + failed
 
     for test_name, result in results.items():
         if result is True:
@@ -630,18 +648,25 @@ def main():
             print(f"  ⚠️  {test_name}: SKIPPED")
 
     print("\n" + "="*80)
-    if passed == total and total > 0:
-        print_success(f"ALL TESTS PASSED! ({passed}/{total})")
+    print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
+
+    if failed == 0 and total_ran > 0:
+        print_success(f"ALL TESTS PASSED! ({passed}/{total_ran})")
+        if skipped > 0:
+            print_info(f"Note: {skipped} tests were skipped (data not available)")
         print("\n🎉 Complete pipeline is working as expected!")
         print("\nYou can now:")
         print("  1. Use BUTPPGDataset in RAW or PREPROCESSED mode")
         print("  2. Use VitalDBDataset in RAW or PREPROCESSED mode")
         print("  3. Train with 5-10x faster data loading (PREPROCESSED mode)")
         print("  4. Access all clinical labels easily")
+    elif total_ran == 0:
+        print_warning("All tests were skipped - no data available to test")
+        print("\nGenerate data first:")
+        print("  python scripts/prepare_all_data.py --mode fasttrack --dataset butppg --format windowed")
     else:
-        print(f"⚠️  {passed}/{total} tests passed")
-        print("\nSome tests failed or were skipped.")
-        print("Check the output above for details.")
+        print(f"⚠️  {passed}/{total_ran} tests passed ({failed} failed)")
+        print("\nSome tests failed. Check the output above for details.")
     print("="*80 + "\n")
 
 
