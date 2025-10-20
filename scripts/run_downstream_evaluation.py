@@ -303,11 +303,9 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
     """
     Load BUT-PPG test data for all tasks
 
-    Expected structure:
-        data_dir/
-            quality/test.npz  # {'signals': [N,C,T], 'labels': [N]}
-            heart_rate/test.npz
-            motion/test.npz
+    Supports two structures:
+    1. Legacy: data_dir/quality/test.npz, data_dir/heart_rate/test.npz
+    2. Unified: data_dir/windows/test/test_windows.npz (with all clinical labels)
 
     Args:
         data_dir: Directory containing processed BUT-PPG data
@@ -321,7 +319,92 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
 
     print("\nLoading BUT-PPG test data...")
 
-    # Quality task
+    # Try unified format first (from prepare_all_data.py)
+    unified_paths = [
+        data_dir / 'windows' / 'test' / 'test_windows.npz',
+        data_dir / 'test' / 'test_windows.npz',
+        data_dir / 'test_windows.npz',
+    ]
+
+    unified_data = None
+    for path in unified_paths:
+        if path.exists():
+            print(f"  ✓ Found unified data: {path}")
+            unified_data = np.load(path)
+            break
+
+    if unified_data is not None:
+        # Load from unified format (all labels in one file)
+        print("  Loading from unified format with clinical labels...")
+
+        # Get signals (handle both 'data' and 'signals' keys)
+        if 'data' in unified_data:
+            signals_array = unified_data['data']
+        elif 'signals' in unified_data:
+            signals_array = unified_data['signals']
+        else:
+            raise KeyError(f"No 'data' or 'signals' key found in {path}")
+
+        signals = torch.from_numpy(signals_array).float()
+
+        # Handle shape: [N, T, C] → [N, C, T] if needed
+        if signals.shape[1] == 1024 and signals.shape[2] == 5:
+            print(f"    Transposing from [N, T, C] to [N, C, T]")
+            signals = signals.transpose(1, 2)  # [N, 1024, 5] → [N, 5, 1024]
+
+        # Quality task
+        if 'quality' in unified_data:
+            quality_labels = torch.from_numpy(unified_data['quality']).long()
+            # Filter out missing values (-1)
+            valid_mask = quality_labels != -1
+            if valid_mask.sum() > 0:
+                dataset = TensorDataset(signals[valid_mask], quality_labels[valid_mask])
+                loaders['quality'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                print(f"    ✓ Quality: {len(dataset)} samples")
+        elif 'labels' in unified_data:
+            # Fallback to 'labels' key (backwards compatibility)
+            quality_labels = torch.from_numpy(unified_data['labels']).long()
+            dataset = TensorDataset(signals, quality_labels)
+            loaders['quality'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ Quality (from 'labels'): {len(dataset)} samples")
+
+        # Heart rate task
+        if 'hr' in unified_data:
+            hr_labels = torch.from_numpy(unified_data['hr']).float()
+            valid_mask = hr_labels != -1
+            if valid_mask.sum() > 0:
+                dataset = TensorDataset(signals[valid_mask], hr_labels[valid_mask])
+                loaders['hr_estimation'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                print(f"    ✓ Heart Rate: {len(dataset)} samples")
+
+        # Motion task
+        if 'motion' in unified_data:
+            motion_labels = torch.from_numpy(unified_data['motion']).long()
+            valid_mask = motion_labels != -1
+            if valid_mask.sum() > 0:
+                dataset = TensorDataset(signals[valid_mask], motion_labels[valid_mask])
+                loaders['motion'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                print(f"    ✓ Motion: {len(dataset)} samples")
+            else:
+                print(f"    ⚠️  Motion: All labels are -1 (dataset issue)")
+
+        # Blood pressure tasks (bonus!)
+        if 'bp_systolic' in unified_data and 'bp_diastolic' in unified_data:
+            bp_sys = torch.from_numpy(unified_data['bp_systolic']).float()
+            bp_dia = torch.from_numpy(unified_data['bp_diastolic']).float()
+            valid_mask = (bp_sys != -1) & (bp_dia != -1)
+            if valid_mask.sum() > 0:
+                bp_labels = torch.stack([bp_sys[valid_mask], bp_dia[valid_mask]], dim=1)
+                dataset = TensorDataset(signals[valid_mask], bp_labels)
+                loaders['bp_estimation'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                print(f"    ✓ Blood Pressure: {len(dataset)} samples")
+
+        return loaders
+
+    # Fallback to legacy format (separate directories per task)
+    print("  Unified format not found, trying legacy format...")
+
+    # Quality task (legacy)
     quality_path = data_dir / 'quality' / 'test.npz'
     if quality_path.exists():
         data = np.load(quality_path)
@@ -334,14 +417,12 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
         else:
             dataset = TensorDataset(signals, labels)
 
-        loaders['quality'] = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False
-        )
+        loaders['quality'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         print(f"  ✓ Quality: {len(dataset)} samples")
     else:
         print(f"  ⚠ Quality data not found: {quality_path}")
 
-    # Heart rate task
+    # Heart rate task (legacy)
     hr_path = data_dir / 'heart_rate' / 'test.npz'
     if hr_path.exists():
         data = np.load(hr_path)
@@ -354,14 +435,12 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
         else:
             dataset = TensorDataset(signals, labels)
 
-        loaders['hr_estimation'] = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False
-        )
+        loaders['hr_estimation'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         print(f"  ✓ Heart Rate: {len(dataset)} samples")
     else:
         print(f"  ⚠ Heart Rate data not found: {hr_path}")
 
-    # Motion task
+    # Motion task (legacy)
     motion_path = data_dir / 'motion' / 'test.npz'
     if motion_path.exists():
         data = np.load(motion_path)
@@ -374,9 +453,7 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
         else:
             dataset = TensorDataset(signals, labels)
 
-        loaders['motion'] = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False
-        )
+        loaders['motion'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         print(f"  ✓ Motion: {len(dataset)} samples")
     else:
         print(f"  ⚠ Motion data not found: {motion_path}")

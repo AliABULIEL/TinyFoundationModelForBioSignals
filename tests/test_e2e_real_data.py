@@ -393,7 +393,7 @@ def main():
         'task': 'ssl',
         'input_channels': 2,
         'context_length': 1024,
-        'patch_size': 128,
+        'patch_size': 125,
         'freeze_encoder': False
     }).to(device)
     
@@ -479,7 +479,7 @@ def main():
         'task': 'classification',
         'input_channels': 2,
         'context_length': 1024,
-        'patch_size': 128,
+        'patch_size': 125,
         'num_classes': 2
     })
     

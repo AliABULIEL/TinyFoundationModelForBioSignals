@@ -162,35 +162,42 @@ class DataPreparationPipeline:
             output_dir: str = 'data/processed',
             num_workers: Optional[int] = None,
             datasets: List[str] = ['vitaldb', 'butppg'],
-            download_butppg: bool = False
+            download_butppg: bool = False,
+            format: str = 'legacy',
+            overlap: float = 0.25
     ):
         """
         Initialize data preparation pipeline.
-        
+
         Args:
             mode: 'fasttrack' (70 cases) or 'full' (all cases)
             output_dir: Base directory for processed data
             num_workers: Number of parallel workers (None = auto)
             datasets: Which datasets to prepare ['vitaldb', 'butppg', or both]
             download_butppg: Whether to download BUT-PPG if not found
+            format: 'legacy' (multi-window NPZ) or 'windowed' (one NPZ per window with labels)
+            overlap: Window overlap ratio (0.25 = 25% overlap, default)
         """
         self.mode = mode
         self.output_dir = Path(output_dir)
         self.num_workers = num_workers or min(os.cpu_count() - 1, 8)
         self.datasets = datasets
         self.download_butppg = download_butppg
+        self.format = format
+        self.overlap = overlap
 
         # BUT-PPG paths (from download script)
         self.butppg_raw_dir = Path('data/but_ppg/dataset')
         self.butppg_index_dir = Path('data/outputs')
 
         # Create directory structure
+        windows_suffix = 'windows_with_labels' if self.format == 'windowed' else 'windows'
         self.dirs = {
             'base': self.output_dir,
             'vitaldb_splits': self.output_dir / 'vitaldb' / 'splits',
-            'vitaldb_windows': self.output_dir / 'vitaldb' / 'windows',
+            'vitaldb_windows': self.output_dir / 'vitaldb' / windows_suffix,
             'butppg_splits': self.output_dir / 'butppg' / 'splits',
-            'butppg_windows': self.output_dir / 'butppg' / 'windows',
+            'butppg_windows': self.output_dir / 'butppg' / windows_suffix,
             'reports': self.output_dir / 'reports'
         }
 
@@ -202,6 +209,8 @@ class DataPreparationPipeline:
 
         logger.info(f"Initialized pipeline in {self.mode} mode")
         logger.info(f"Output directory: {self.output_dir}")
+        logger.info(f"Format: {self.format}")
+        logger.info(f"Window overlap: {self.overlap*100:.0f}% ({int(self.expected_samples * self.overlap)} samples)")
         logger.info(f"Workers: {self.num_workers}")
         logger.info(f"Datasets: {', '.join(self.datasets)}")
 
@@ -633,34 +642,24 @@ class DataPreparationPipeline:
             logger.warning("Skipping BUT-PPG window building due to previous error")
             return split_info
 
-        logger.info("Building BUT-PPG windows using BUTPPGDataset...")
-        logger.info("  Modality: ALL (PPG + ECG + ACC = 5 channels)")
+        if self.format == 'windowed':
+            # NEW FORMAT: One NPZ per window with embedded labels
+            logger.info("Building BUT-PPG windows using NEW WINDOWED FORMAT...")
+            logger.info("  Format: One NPZ per window with embedded labels")
+            logger.info("  Modality: ALL (PPG + ECG + ACC = 5 channels)")
 
-        splits_file = split_info['file']
-        results = {}
+            splits_file = split_info['file']
 
-        # Build windows using the dedicated script that uses BUTPPGDataset
-        for split_name in ['train', 'val', 'test']:
-            if split_name not in split_info['splits']:
-                logger.info(f"Skipping {split_name} (not in splits)")
-                continue
-
-            logger.info(f"\nProcessing {split_name} split...")
-
-            output_dir = self.dirs['butppg_windows'] / split_name
-
-            # ✅ USE CONFIG VALUE - NO HARD-CODED!
-            # Call the BUT-PPG window builder script
+            # Call the NEW windowed window builder script
             cmd = [
                 sys.executable,
-                'scripts/build_butppg_windows.py',
-                '--data-dir', str(self.butppg_raw_dir),
+                'scripts/create_butppg_windows_with_labels.py',
+                '--data-dir', str(self.butppg_raw_dir / 'but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'),
+                '--output-dir', str(self.dirs['butppg_windows']),
                 '--splits-file', splits_file,
-                '--output-dir', str(output_dir),
-                '--modality', 'all',  # PPG + ECG + ACC (5 channels)
                 '--window-sec', str(self.window_sec),  # ✅ FROM CONFIG!
                 '--fs', '125',
-                '--batch-size', '32'
+                '--overlap', str(self.overlap)  # ✅ OVERLAPPING WINDOWS!
             ]
 
             logger.info(f"Running: {' '.join(cmd)}")
@@ -668,27 +667,102 @@ class DataPreparationPipeline:
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
-                logger.error(f"Failed to process {split_name}")
+                logger.error(f"Failed to build windowed format")
                 logger.error(result.stderr)
-                continue
+                return {'error': 'Windowed format building failed'}
 
             logger.info(result.stdout)
 
-            # Check output
-            output_file = output_dir / f'{split_name}_windows.npz'
-            if output_file.exists():
-                data = np.load(output_file)
-                results[split_name] = {
-                    'file': str(output_file),
-                    'shape': data['data'].shape,
-                    'size_mb': output_file.stat().st_size / 1024 / 1024
-                }
-                logger.info(f"✓ {split_name}: {data['data'].shape} "
-                            f"({results[split_name]['size_mb']:.1f} MB)")
-            else:
-                logger.warning(f"Output file not found: {output_file}")
+            # Check outputs
+            results = {}
+            for split_name in ['train', 'val', 'test']:
+                split_dir = self.dirs['butppg_windows'] / split_name
 
-        return results
+                if not split_dir.exists():
+                    logger.warning(f"Split directory not found: {split_dir}")
+                    continue
+
+                # Count window files
+                window_files = list(split_dir.glob('window_*.npz'))
+
+                if len(window_files) == 0:
+                    logger.warning(f"No window files in {split_dir}")
+                    continue
+
+                # Get total size
+                total_size = sum(f.stat().st_size for f in window_files)
+
+                results[split_name] = {
+                    'dir': str(split_dir),
+                    'num_windows': len(window_files),
+                    'size_mb': total_size / 1024 / 1024,
+                    'format': 'windowed - one NPZ per window'
+                }
+
+                logger.info(f"✓ {split_name}: {len(window_files)} windows "
+                            f"({results[split_name]['size_mb']:.1f} MB)")
+
+            return results
+
+        else:
+            # LEGACY FORMAT: Multi-window NPZ
+            logger.info("Building BUT-PPG windows using LEGACY FORMAT...")
+            logger.info("  Format: Multi-window NPZ")
+            logger.info("  Modality: ALL (PPG + ECG + ACC = 5 channels)")
+
+            splits_file = split_info['file']
+            results = {}
+
+            # Build windows using the dedicated script that uses BUTPPGDataset
+            for split_name in ['train', 'val', 'test']:
+                if split_name not in split_info['splits']:
+                    logger.info(f"Skipping {split_name} (not in splits)")
+                    continue
+
+                logger.info(f"\nProcessing {split_name} split...")
+
+                output_dir = self.dirs['butppg_windows'] / split_name
+
+                # ✅ USE CONFIG VALUE - NO HARD-CODED!
+                # Call the BUT-PPG window builder script
+                cmd = [
+                    sys.executable,
+                    'scripts/build_butppg_windows.py',
+                    '--data-dir', str(self.butppg_raw_dir),
+                    '--splits-file', splits_file,
+                    '--output-dir', str(output_dir),
+                    '--modality', 'all',  # PPG + ECG + ACC (5 channels)
+                    '--window-sec', str(self.window_sec),  # ✅ FROM CONFIG!
+                    '--fs', '125',
+                    '--batch-size', '32'
+                ]
+
+                logger.info(f"Running: {' '.join(cmd)}")
+
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+                if result.returncode != 0:
+                    logger.error(f"Failed to process {split_name}")
+                    logger.error(result.stderr)
+                    continue
+
+                logger.info(result.stdout)
+
+                # Check output
+                output_file = output_dir / f'{split_name}_windows.npz'
+                if output_file.exists():
+                    data = np.load(output_file)
+                    results[split_name] = {
+                        'file': str(output_file),
+                        'shape': data['data'].shape,
+                        'size_mb': output_file.stat().st_size / 1024 / 1024
+                    }
+                    logger.info(f"✓ {split_name}: {data['data'].shape} "
+                                f"({results[split_name]['size_mb']:.1f} MB)")
+                else:
+                    logger.warning(f"Output file not found: {output_file}")
+
+            return results
 
     def compute_vitaldb_stats(self, windows_info: Dict) -> Dict:
         """Compute normalization statistics from VitalDB training set (paired data)."""
@@ -1099,21 +1173,44 @@ def main():
 Examples:
   # Prepare all data in fasttrack mode (recommended for testing)
   python scripts/prepare_all_data.py --mode fasttrack
-  
+
   # Prepare all data in full mode
   python scripts/prepare_all_data.py --mode full
-  
+
+  # NEW: Use windowed format (one NPZ per window with embedded labels)
+  python scripts/prepare_all_data.py --mode fasttrack --format windowed
+
+  # With custom overlap (default is 25%)
+  python scripts/prepare_all_data.py --mode fasttrack --format windowed --overlap 0.5
+
+  # No overlap (non-overlapping windows)
+  python scripts/prepare_all_data.py --mode fasttrack --format windowed --overlap 0.0
+
   # Only prepare VitalDB
   python scripts/prepare_all_data.py --dataset vitaldb
-  
+
   # Only prepare BUT-PPG (download if needed)
   python scripts/prepare_all_data.py --dataset butppg --download-butppg
-  
+
+  # BUT-PPG with windowed format and overlapping windows
+  python scripts/prepare_all_data.py --dataset butppg --format windowed --overlap 0.25
+
   # Use 16 workers for faster processing
   python scripts/prepare_all_data.py --num-workers 16
-  
+
   # Custom output directory
   python scripts/prepare_all_data.py --output data/my_processed_data
+
+Data Formats:
+  --format legacy (default):
+    Multi-window NPZ files (data=[N, T, C], labels=[N])
+    Compatible with existing fine-tuning scripts
+
+  --format windowed (NEW):
+    One NPZ per window with embedded labels
+    Better for multi-task learning
+    Includes: signal quality, demographics, clinical labels
+    Use with UnifiedWindowDataset loader
 
 BUT-PPG Data:
   The script expects BUT-PPG data at: data/but_ppg/dataset/
@@ -1164,6 +1261,20 @@ BUT-PPG Data:
         help='Skip final validation phase'
     )
 
+    parser.add_argument(
+        '--format',
+        choices=['legacy', 'windowed'],
+        default='legacy',
+        help='Data format: legacy (multi-window NPZ) or windowed (one NPZ per window with labels)'
+    )
+
+    parser.add_argument(
+        '--overlap',
+        type=float,
+        default=0.25,
+        help='Window overlap ratio (0.25 = 25%% overlap, 0.0 = no overlap)'
+    )
+
     args = parser.parse_args()
 
     # Determine datasets
@@ -1195,7 +1306,9 @@ BUT-PPG Data:
         output_dir=args.output,
         num_workers=args.num_workers,
         datasets=datasets,
-        download_butppg=args.download_butppg
+        download_butppg=args.download_butppg,
+        format=args.format,
+        overlap=args.overlap  # ✅ OVERLAPPING WINDOWS!
     )
 
     try:

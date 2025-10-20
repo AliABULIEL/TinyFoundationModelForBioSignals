@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 from scipy import signal as scipy_signal
@@ -28,29 +29,56 @@ import wfdb
 
 class BUTPPGDataset(Dataset):
     """BUT PPG dataset with multi-modal support.
-    
-    Supports loading PPG, ECG, and ACC simultaneously for multi-modal learning.
-    
+
+    Supports two modes:
+    1. **RAW mode** (default): Load from WFDB files on-the-fly (flexible, slower)
+    2. **PREPROCESSED mode**: Load from window_*.npz files (fast, requires pre-processing)
+
     Args:
         data_dir: Root directory containing BUT PPG data
+                  - RAW mode: Path to WFDB files (e.g., 'data/but_ppg/dataset')
+                  - PREPROCESSED mode: Path to window_*.npz files (e.g., 'data/processed/butppg/windows_with_labels')
         modality: Single modality string, list of modalities, or 'all' for PPG+ECG+ACC
                  Options: 'ppg', 'ecg', 'acc', ['ppg', 'ecg'], 'ppg,ecg,acc', 'all'
         split: 'train', 'val', or 'test'
         window_sec: Window duration in seconds (default: 10.0)
         fs: Target sampling rate in Hz (default: 125 to match VitalDB)
-        quality_filter: If True, filter out low quality signals
+        quality_filter: If True, filter out low quality signals (RAW mode only)
         return_participant_id: If True, return participant ID with segments
-        return_labels: If True, return demographic labels
-        segment_overlap: Overlap between consecutive windows (0.0-1.0)
-        random_seed: Random seed for reproducible splits
-        train_ratio: Ratio of data for training (default: 0.7)
-        val_ratio: Ratio of data for validation (default: 0.15)
-    
+        return_labels: If True, return clinical labels
+        segment_overlap: Overlap between consecutive windows (0.0-1.0, RAW mode only)
+        random_seed: Random seed for reproducible splits (RAW mode only)
+        train_ratio: Ratio of data for training (default: 0.7, RAW mode only)
+        val_ratio: Ratio of data for validation (default: 0.15, RAW mode only)
+        mode: 'raw' (default) or 'preprocessed'
+        task: Task name for label filtering (PREPROCESSED mode only)
+              Options: 'quality', 'hr', 'blood_pressure', etc.
+        filter_missing: Filter samples with missing labels (PREPROCESSED mode only)
+
     Returns:
-        (seg1, seg2): Two segments from same participant
+        (seg1, seg2): Two segments (RAW mode: from same participant, PREPROCESSED mode: same window twice)
         Each segment has shape [C, T] where:
         - C = number of channels (1 for PPG/ECG, 3 for ACC, or sum for multi-modal)
         - T = window_sec * fs samples
+
+    Examples:
+        # RAW mode (existing behavior - on-the-fly processing)
+        dataset = BUTPPGDataset(
+            data_dir='data/but_ppg/dataset',
+            modality='all',
+            split='train',
+            mode='raw'  # Default
+        )
+
+        # PREPROCESSED mode (fast - load from pre-processed windows)
+        dataset = BUTPPGDataset(
+            data_dir='data/processed/butppg/windows_with_labels',
+            modality=['ppg', 'ecg'],
+            split='train',
+            mode='preprocessed',
+            task='quality',
+            return_labels=True
+        )
     """
     
     SUPPORTED_MODALITIES = ['ppg', 'ecg', 'acc']
@@ -84,11 +112,18 @@ class BUTPPGDataset(Dataset):
         train_ratio: float = 0.7,
         val_ratio: float = 0.15,
         use_cache: bool = True,
-        cache_size: int = 500
+        cache_size: int = 500,
+        mode: str = 'raw',  # NEW: 'raw' or 'preprocessed'
+        task: Optional[str] = None,  # NEW: for task-specific label loading
+        filter_missing: bool = True  # NEW: filter samples with missing labels
     ):
         super().__init__()
-        
+
         self.data_dir = Path(data_dir)
+        self.mode = mode  # NEW
+        self.task = task  # NEW
+        self.filter_missing = filter_missing  # NEW
+
         if not self.data_dir.exists():
             raise ValueError(f"Data directory not found: {data_dir}")
             
@@ -96,40 +131,32 @@ class BUTPPGDataset(Dataset):
         self.modalities = self._parse_modalities(modality)
         self.n_channels = self._get_total_channels()
         self.is_multimodal = len(self.modalities) > 1
-        
+
         self.split = split
         self.window_sec = window_sec
         self.fs = fs  # Target sampling rate
         self.T = int(window_sec * fs)  # Samples per window
-        
+
         self.quality_filter = quality_filter
         self.return_participant_id = return_participant_id
         self.return_labels = return_labels
         self.segment_overlap = segment_overlap
         self.random_seed = random_seed
-        
-        # Caching
+
+        # Caching (for raw mode only)
         self.use_cache = use_cache
         self.cache_size = cache_size
         self.signal_cache = OrderedDict()
         self._failed_records = set()
-        
-        # Load annotations
-        self._load_annotations()
-        
-        # Create participant splits
-        self._create_splits(train_ratio, val_ratio)
-        
-        # Build segment pairs for SSL
-        self._build_segment_pairs()
-        
-        print(f"\nBUT PPG Dataset initialized for {split}:")
-        print(f"  Modalities: {self.modalities} ({self.n_channels} channels)")
-        print(f"  Participants: {len(self.split_participants)}")
-        print(f"  Records: {len(self.split_records)}")
-        print(f"  Positive pairs: {len(self.segment_pairs)}")
-        print(f"  Window: {window_sec}s @ {fs}Hz = {self.T} samples")
-        print(f"  Output shape: [{self.n_channels}, {self.T}]")
+
+        # Initialize based on mode
+        if self.mode == 'preprocessed':
+            self._init_preprocessed_mode()
+        else:  # raw mode (default)
+            self._init_raw_mode(train_ratio, val_ratio)
+
+        # Print summary
+        self._print_summary()
         
     def _parse_modalities(self, modality: Union[str, List[str]]) -> List[str]:
         """Parse modality specification into list."""
@@ -154,17 +181,125 @@ class BUTPPGDataset(Dataset):
             else:
                 total += 1  # Single channel for PPG/ECG
         return total
-        
+
+    def _init_raw_mode(self, train_ratio: float, val_ratio: float):
+        """Initialize dataset in RAW mode (load from WFDB files)."""
+        # Load annotations
+        self._load_annotations()
+
+        # Create participant splits
+        self._create_splits(train_ratio, val_ratio)
+
+        # Build segment pairs for SSL
+        self._build_segment_pairs()
+
+    def _init_preprocessed_mode(self):
+        """Initialize dataset in PREPROCESSED mode (load from window NPZ files)."""
+        # Look for window_*.npz files in split directory
+        split_dir = self.data_dir / self.split
+        if not split_dir.exists():
+            # Try without split subdirectory
+            split_dir = self.data_dir
+
+        # Find all window files
+        self.window_files = sorted(split_dir.glob('window_*.npz'))
+
+        if len(self.window_files) == 0:
+            raise FileNotFoundError(
+                f"No window_*.npz files found in {split_dir}. "
+                f"Did you run create_butppg_windows_with_labels.py?"
+            )
+
+        # For preprocessed mode, we load individual windows (not pairs)
+        # If task is specified, filter by valid labels
+        if self.task and self.filter_missing:
+            self.valid_indices = self._find_valid_samples_preprocessed()
+        else:
+            self.valid_indices = list(range(len(self.window_files)))
+
+        # Set some dummy values for compatibility
+        self.split_participants = []
+        self.split_records = []
+        self.segment_pairs = []  # No pairs in preprocessed mode
+
+    def _find_valid_samples_preprocessed(self) -> List[int]:
+        """Find samples with valid labels for specified task."""
+        from src.data.unified_window_loader import UnifiedWindowDataset
+
+        # Use UnifiedWindowDataset's task definitions
+        task_configs = UnifiedWindowDataset.TASK_CONFIGS
+
+        if self.task not in task_configs:
+            print(f"Warning: Unknown task '{self.task}', loading all samples")
+            return list(range(len(self.window_files)))
+
+        task_config = task_configs[self.task]
+        label_keys = task_config['label_keys']
+
+        valid_indices = []
+        for idx, window_file in enumerate(self.window_files):
+            try:
+                data = np.load(window_file)
+
+                # Check if all required labels are valid
+                labels_valid = True
+                for label_key in label_keys:
+                    if label_key not in data:
+                        labels_valid = False
+                        break
+
+                    label_value = data[label_key]
+                    if isinstance(label_value, (np.ndarray, np.generic)):
+                        label_value = label_value.item()
+
+                    if np.isnan(label_value) or np.isinf(label_value) or label_value == -1:
+                        labels_valid = False
+                        break
+
+                if labels_valid:
+                    valid_indices.append(idx)
+
+            except Exception:
+                continue
+
+        return valid_indices
+
+    def _print_summary(self):
+        """Print dataset summary."""
+        print(f"\nBUT PPG Dataset initialized for {self.split}:")
+        print(f"  Mode: {self.mode}")
+        print(f"  Modalities: {self.modalities} ({self.n_channels} channels)")
+
+        if self.mode == 'raw':
+            print(f"  Participants: {len(self.split_participants)}")
+            print(f"  Records: {len(self.split_records)}")
+            print(f"  Positive pairs: {len(self.segment_pairs)}")
+        else:
+            print(f"  Window files: {len(self.window_files)}")
+            print(f"  Valid samples: {len(self.valid_indices)}")
+            if self.task:
+                print(f"  Task: {self.task}")
+
+        print(f"  Window: {self.window_sec}s @ {self.fs}Hz = {self.T} samples")
+        print(f"  Output shape: [{self.n_channels}, {self.T}]")
+
     def _load_annotations(self):
         """Load quality annotations and subject info."""
-        # Load subject info
+        # Load subject info (demographics, motion, BP, SpO2, glycaemia)
         subject_path = self.data_dir / 'subject-info.csv'
         if subject_path.exists():
-            import pandas as pd
             self.subject_df = pd.read_csv(subject_path)
             print(f"  Loaded subject info: {len(self.subject_df)} entries")
         else:
             self.subject_df = None
+
+        # Load quality and HR annotations
+        quality_path = self.data_dir / 'quality-hr-ann.csv'
+        if quality_path.exists():
+            self.quality_hr_df = pd.read_csv(quality_path)
+            print(f"  Loaded quality-hr annotations: {len(self.quality_hr_df)} entries")
+        else:
+            self.quality_hr_df = None
             
         # Build participant mapping
         self.participant_records = {}
@@ -264,41 +399,51 @@ class BUTPPGDataset(Dataset):
             np.random.shuffle(self.segment_pairs)
             
     def __len__(self):
-        return len(self.segment_pairs) if self.segment_pairs else 1
-        
+        if self.mode == 'preprocessed':
+            return len(self.valid_indices)
+        else:
+            return len(self.segment_pairs) if self.segment_pairs else 1
+
     def __getitem__(self, idx):
-        """Get pair of segments from same participant."""
+        """Get sample (mode-dependent behavior)."""
+        if self.mode == 'preprocessed':
+            return self._getitem_preprocessed(idx)
+        else:
+            return self._getitem_raw(idx)
+
+    def _getitem_raw(self, idx):
+        """Get pair of segments from same participant (RAW mode)."""
         if not self.segment_pairs:
             # Return zeros if no pairs
             zeros = torch.zeros(self.n_channels, self.T, dtype=torch.float32)
             return zeros, zeros
-            
+
         pair_info = self.segment_pairs[idx % len(self.segment_pairs)]
         participant_id = pair_info['participant_id']
         record1 = pair_info['record1']
         record2 = pair_info['record2']
         is_self_pair = pair_info.get('is_self_pair', False)
-        
+
         # Load multi-modal signals
         signals1 = self._load_multimodal_signals(record1)
-        
+
         if is_self_pair:
             signals2 = signals1  # Use same signals
         else:
             signals2 = self._load_multimodal_signals(record2)
-            
+
         # Create segments
         seg1 = self._create_segment(signals1, seed=idx)
         seg2 = self._create_segment(signals2, seed=idx + 1000 if is_self_pair else idx)
-        
+
         # Stack modalities into multi-channel tensor
         seg1 = self._stack_modalities(seg1)
         seg2 = self._stack_modalities(seg2)
-        
+
         # Convert to tensors
         seg1 = torch.from_numpy(seg1).float()
         seg2 = torch.from_numpy(seg2).float()
-        
+
         # Return with optional metadata
         if self.return_labels and self.return_participant_id:
             labels = self._get_participant_info(participant_id)
@@ -310,6 +455,70 @@ class BUTPPGDataset(Dataset):
             return seg1, seg2, labels
         else:
             return seg1, seg2
+
+    def _getitem_preprocessed(self, idx):
+        """Get single window from preprocessed NPZ file."""
+        # Map to actual file index
+        file_idx = self.valid_indices[idx]
+        window_file = self.window_files[file_idx]
+
+        # Load data
+        data = np.load(window_file)
+
+        # Extract signal
+        signal = data['signal']  # [n_channels, T]
+
+        # Select channels based on modality
+        # BUT-PPG NPZ format: [ACC_X, ACC_Y, ACC_Z, PPG, ECG] = channels [0, 1, 2, 3, 4]
+        channel_map = {'acc': [0, 1, 2], 'ppg': [3], 'ecg': [4]}
+
+        selected_channels = []
+        for mod in self.modalities:
+            selected_channels.extend(channel_map[mod])
+
+        signal = signal[selected_channels, :]  # Select requested channels
+
+        # Convert to tensor
+        signal = torch.from_numpy(signal).float()
+
+        # Return based on what's requested
+        if self.return_labels:
+            # Extract ALL labels
+            labels = self._extract_labels_from_npz(data)
+
+            if self.return_participant_id:
+                record_id = str(data['record_id'])
+                participant_id = record_id[:3] if len(record_id) >= 3 else record_id
+                return signal, signal, participant_id, labels  # Return (seg1, seg2, ...) for compatibility
+            else:
+                return signal, signal, labels  # Return (seg1, seg2, labels) for compatibility
+        else:
+            if self.return_participant_id:
+                record_id = str(data['record_id'])
+                participant_id = record_id[:3] if len(record_id) >= 3 else record_id
+                return signal, signal, participant_id
+            else:
+                return signal, signal  # Return (seg1, seg2) for compatibility
+
+    def _extract_labels_from_npz(self, data) -> Dict:
+        """Extract all available labels from NPZ file."""
+        labels = {}
+
+        label_keys = [
+            'quality', 'hr', 'motion', 'bp_systolic', 'bp_diastolic', 'spo2', 'glycaemia',
+            'age', 'sex', 'bmi', 'height', 'weight'
+        ]
+
+        for key in label_keys:
+            if key in data:
+                value = data[key]
+                if isinstance(value, (np.ndarray, np.generic)):
+                    value = value.item()
+                labels[key] = value
+            else:
+                labels[key] = -1
+
+        return labels
             
     def _load_multimodal_signals(self, record_id: str) -> Dict[str, np.ndarray]:
         """Load all modality signals for a record."""
@@ -476,48 +685,123 @@ class BUTPPGDataset(Dataset):
         # Stack all channels
         return np.vstack(stacked)
         
+    def _get_record_labels(self, record_id: str) -> Dict:
+        """
+        Get all clinical labels for a specific recording.
+
+        Args:
+            record_id: Recording ID (e.g., "100001")
+
+        Returns:
+            Dict with all available labels:
+            - Demographics: age, sex, bmi, height, weight
+            - Quality: quality (binary), hr (float)
+            - Clinical: motion (int), bp_systolic, bp_diastolic, spo2, glycaemia
+        """
+        labels = {
+            # Demographics
+            'age': -1,
+            'sex': -1,
+            'bmi': -1,
+            'height': -1,
+            'weight': -1,
+            # Quality/HR from quality-hr-ann.csv
+            'quality': -1,
+            'hr': -1,
+            # Clinical from subject-info.csv
+            'motion': -1,
+            'bp_systolic': -1,
+            'bp_diastolic': -1,
+            'spo2': -1,
+            'glycaemia': -1
+        }
+
+        try:
+            record_num = int(record_id)
+
+            # Extract from subject-info.csv
+            if self.subject_df is not None:
+                mask = self.subject_df['ID'] == record_num
+
+                if mask.any():
+                    row = self.subject_df[mask].iloc[0]
+
+                    # Demographics
+                    age = row.get('Age [years]', row.get('Age', -1))
+                    labels['age'] = float(age) if not pd.isna(age) and age != -1 else -1
+
+                    gender = row.get('Gender', '')
+                    labels['sex'] = 1 if gender == 'M' else (0 if gender == 'F' else -1)
+
+                    height = row.get('Height [cm]', row.get('Height', -1))
+                    weight = row.get('Weight [kg]', row.get('Weight', -1))
+                    labels['height'] = float(height) if not pd.isna(height) and height > 0 else -1
+                    labels['weight'] = float(weight) if not pd.isna(weight) and weight > 0 else -1
+
+                    if labels['height'] > 0 and labels['weight'] > 0:
+                        labels['bmi'] = labels['weight'] / ((labels['height'] / 100) ** 2)
+
+                    # Motion
+                    motion = row.get('Motion', -1)
+                    labels['motion'] = int(motion) if not pd.isna(motion) else -1
+
+                    # Blood pressure (parse "120/80" format)
+                    bp = row.get('Blood pressure [mmHg]', '')
+                    if not pd.isna(bp) and str(bp).strip():
+                        bp_str = str(bp).strip()
+                        if '/' in bp_str:
+                            try:
+                                parts = bp_str.split('/')
+                                labels['bp_systolic'] = float(parts[0])
+                                labels['bp_diastolic'] = float(parts[1])
+                            except (ValueError, IndexError):
+                                pass
+
+                    # SpO2
+                    spo2 = row.get('SpO2 [%]', -1)
+                    labels['spo2'] = float(spo2) if not pd.isna(spo2) and spo2 != -1 else -1
+
+                    # Glycaemia
+                    glyc = row.get('Glycaemia [mmol/l]', -1)
+                    labels['glycaemia'] = float(glyc) if not pd.isna(glyc) and glyc != -1 else -1
+
+            # Extract from quality-hr-ann.csv
+            if self.quality_hr_df is not None:
+                mask = self.quality_hr_df['ID'] == record_num
+
+                if mask.any():
+                    row = self.quality_hr_df[mask].iloc[0]
+
+                    # Quality (binary)
+                    quality = row.get('Quality', -1)
+                    labels['quality'] = int(quality) if not pd.isna(quality) else -1
+
+                    # Heart rate
+                    hr = row.get('HR', -1)
+                    labels['hr'] = float(hr) if not pd.isna(hr) and hr != -1 else -1
+
+        except Exception as e:
+            print(f"Error getting labels for record {record_id}: {e}")
+
+        return labels
+
     def _get_participant_info(self, participant_id: str) -> Dict:
-        """Get demographic info for participant."""
-        if self.subject_df is None:
-            return {'age': -1, 'sex': -1, 'bmi': -1}
-            
+        """
+        Get clinical labels for participant (uses first recording as representative).
+
+        Args:
+            participant_id: Participant ID (first 3 digits of record ID)
+
+        Returns:
+            Dict with all available clinical labels
+        """
         # Find records for this participant
         records = self.participant_records.get(participant_id, [])
         if not records:
-            return {'age': -1, 'sex': -1, 'bmi': -1}
-            
-        # Get first record ID to look up demographics
-        try:
-            record_num = int(records[0])
-            mask = self.subject_df['ID'] == record_num
-            
-            if mask.any():
-                row = self.subject_df[mask].iloc[0]
-                
-                # Extract demographics
-                age = row.get('Age [years]', row.get('Age', -1))
-                gender = row.get('Gender', '')
-                sex = 1 if gender == 'M' else (0 if gender == 'F' else -1)
-                
-                # Calculate BMI
-                height = row.get('Height [cm]', row.get('Height', 0))
-                weight = row.get('Weight [kg]', row.get('Weight', 0))
-                
-                if height > 0 and weight > 0:
-                    bmi = weight / ((height / 100) ** 2)
-                else:
-                    bmi = -1
-                    
-                return {
-                    'age': float(age) if age != -1 else -1,
-                    'sex': sex,
-                    'bmi': float(bmi) if bmi != -1 else -1
-                }
-                
-        except Exception as e:
-            print(f"Error getting participant info: {e}")
-            
-        return {'age': -1, 'sex': -1, 'bmi': -1}
+            return self._get_record_labels('')  # Return default -1 values
+
+        # Use first record as representative
+        return self._get_record_labels(records[0])
 
 
 def create_butppg_dataloaders(

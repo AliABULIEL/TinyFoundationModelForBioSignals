@@ -151,12 +151,16 @@ def organize_dataset(dataset_dir: Path, output_dir: Path):
 
     # Expected structure after extraction:
     # but-ppg-an-annotated-photoplethysmography-dataset-2.0.0/
-    # ├── 100001_ACC.dat, 100001_ACC.hea
-    # ├── 100001_ECG.dat, 100001_ECG.hea
-    # ├── 100001_PPG.dat, 100001_PPG.hea
+    # ├── 100001/
+    # │   ├── 100001_ACC.dat, 100001_ACC.hea
+    # │   ├── 100001_ECG.dat, 100001_ECG.hea
+    # │   ├── 100001_PPG.dat, 100001_PPG.hea
+    # │   └── 100001.qrs
+    # ├── 100002/
+    # │   └── ...
     # ├── quality-hr-ann.csv
     # ├── subject-info.csv
-    # └── ...
+    # └── ... (3,888 subdirectories total)
 
     # Create organized structure
     recordings_dir = output_dir / "recordings"
@@ -176,10 +180,10 @@ def organize_dataset(dataset_dir: Path, output_dir: Path):
         else:
             print(f"  ⚠️  Not found: {ann_file}")
 
-    # Count and organize recording files
-    dat_files = list(dataset_dir.glob("*.dat"))
-    hea_files = list(dataset_dir.glob("*.hea"))
-    qrs_files = list(dataset_dir.glob("*.qrs"))
+    # Count and organize recording files (in subdirectories)
+    dat_files = list(dataset_dir.glob("*/*.dat"))
+    hea_files = list(dataset_dir.glob("*/*.hea"))
+    qrs_files = list(dataset_dir.glob("*/*.qrs"))
 
     print(f"\n  Total .dat files: {len(dat_files)}")
     print(f"  Total .hea files: {len(hea_files)}")
@@ -199,8 +203,13 @@ def organize_dataset(dataset_dir: Path, output_dir: Path):
         f.write("Dataset Contents:\n")
         f.write(f"  - 3,888 recordings (10-second signals)\n")
         f.write(f"  - 50 subjects (25 male, 25 female)\n")
-        f.write(f"  - Signals: PPG, ECG, ACC (3-axis)\n")
-        f.write(f"  - Annotations: quality-hr-ann.csv, subject-info.csv\n")
+        f.write(f"  - Signals: PPG, ECG, ACC (3-axis)\n\n")
+        f.write("Annotation Files:\n")
+        f.write("  quality-hr-ann.csv:\n")
+        f.write("    - ID, Quality (signal quality label), HR (heart rate reference)\n")
+        f.write("  subject-info.csv:\n")
+        f.write("    - ID, Gender, Age, Height, Weight, Ear/finger (sensor placement)\n")
+        f.write("    - Motion (activity type), Blood pressure, Glycaemia, SpO2\n")
 
     print(f"  ✓ Created: {readme_path}")
 
@@ -214,12 +223,16 @@ def verify_dataset(dataset_dir: Path, annotations_dir: Path):
     print("DATASET VERIFICATION")
     print("="*80)
 
-    # Count files
-    ppg_files = list(dataset_dir.glob("*_PPG.dat"))
-    ecg_files = list(dataset_dir.glob("*_ECG.dat"))
-    acc_files = list(dataset_dir.glob("*_ACC.dat"))
+    # Count files (in subdirectories: 100001/100001_PPG.dat format)
+    ppg_files = list(dataset_dir.glob("*/*_PPG.dat"))
+    ecg_files = list(dataset_dir.glob("*/*_ECG.dat"))
+    acc_files = list(dataset_dir.glob("*/*_ACC.dat"))
+
+    # Count subdirectories (one per recording)
+    recording_dirs = [d for d in dataset_dir.iterdir() if d.is_dir()]
 
     print(f"\n📊 Recording files:")
+    print(f"  Recording directories: {len(recording_dirs)}")
     print(f"  PPG files: {len(ppg_files)}")
     print(f"  ECG files: {len(ecg_files)}")
     print(f"  ACC files: {len(acc_files)}")
@@ -235,13 +248,20 @@ def verify_dataset(dataset_dir: Path, annotations_dir: Path):
 
     # Check annotations
     print(f"\n📋 Annotation files:")
+    ann_descriptions = {
+        'quality-hr-ann.csv': 'Signal quality + HR reference',
+        'subject-info.csv': 'Demographics + motion + BP + glycaemia + SpO2'
+    }
     for ann_file in ['quality-hr-ann.csv', 'subject-info.csv']:
         ann_path = annotations_dir / ann_file
         if ann_path.exists():
-            # Count lines
+            # Count lines and show header
             with open(ann_path) as f:
-                num_lines = sum(1 for _ in f) - 1  # Subtract header
+                header = f.readline().strip()
+                num_lines = sum(1 for _ in f)
+            desc = ann_descriptions.get(ann_file, '')
             print(f"  ✓ {ann_file}: {num_lines} entries")
+            print(f"    ({desc})")
         else:
             print(f"  ❌ {ann_file}: NOT FOUND")
 

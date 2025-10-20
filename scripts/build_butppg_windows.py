@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """
-BUT-PPG Window Builder Script
-Uses existing BUTPPGDataset and BUTPPGLoader to prepare windows
+BUT-PPG Window Builder Script with Clinical Labels
 
-This script integrates with the master pipeline to build BUT-PPG windows
-using the existing robust implementation in src/data/butppg_dataset.py
+Uses existing BUTPPGDataset to prepare windows with all clinical labels:
+- Signal quality (quality)
+- Heart rate (hr)
+- Motion class (motion)
+- Blood pressure systolic/diastolic (bp_systolic, bp_diastolic)
+- SpO2 percentage (spo2)
+- Blood glucose (glycaemia)
+
+This script integrates with the master pipeline (prepare_all_data.py) to build
+BUT-PPG windows using the existing robust implementation in src/data/butppg_dataset.py.
+
+Output format: {split}_windows.npz with 'data' and 7 clinical label arrays.
 """
 
 import argparse
@@ -38,7 +47,10 @@ def build_butppg_windows(
 ):
     """
     Build preprocessed windows for BUT-PPG using existing BUTPPGDataset.
-    
+
+    Saves windows with all clinical labels (quality, hr, motion, bp_systolic,
+    bp_diastolic, spo2, glycaemia). Missing values are encoded as -1.
+
     Args:
         data_dir: BUT-PPG data directory
         splits_file: JSON file with splits
@@ -48,6 +60,16 @@ def build_butppg_windows(
         fs: Target sampling rate
         quality_filter: Apply quality filtering
         batch_size: Batch size for processing
+
+    Output format (.npz):
+        data: [N, T, C] - Windows (N samples, T timesteps, C channels)
+        quality: [N] - Signal quality (0=poor, 1=good, -1=missing)
+        hr: [N] - Heart rate in BPM (-1=missing)
+        motion: [N] - Motion class 0-7 (-1=missing)
+        bp_systolic: [N] - Systolic blood pressure in mmHg (-1=missing)
+        bp_diastolic: [N] - Diastolic blood pressure in mmHg (-1=missing)
+        spo2: [N] - SpO2 percentage 0-100 (-1=missing)
+        glycaemia: [N] - Blood glucose in mmol/l (-1=missing)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -80,7 +102,7 @@ def build_butppg_windows(
                 fs=fs,
                 quality_filter=quality_filter,
                 return_participant_id=False,
-                return_labels=False
+                return_labels=True  # Enable clinical labels
             )
             
             logger.info(f"  Dataset created: {len(dataset)} samples")
@@ -94,52 +116,93 @@ def build_butppg_windows(
                 drop_last=False
             )
             
-            # Collect all windows
+            # Collect all windows and clinical labels
             all_windows = []
-            all_labels = []
-            
+            all_labels = {
+                'quality': [],
+                'hr': [],
+                'motion': [],
+                'bp_systolic': [],
+                'bp_diastolic': [],
+                'spo2': [],
+                'glycaemia': []
+            }
+
             for batch_idx, batch in enumerate(dataloader):
-                # Handle different return formats
-                if len(batch) == 2:
+                # Handle return format with labels: (seg1, seg2, labels_dict)
+                if len(batch) == 3:
+                    seg1, seg2, labels_dict = batch
+                elif len(batch) == 2:
                     seg1, seg2 = batch
-                elif len(batch) >= 3:
-                    seg1, seg2 = batch[0], batch[1]
+                    labels_dict = None
                 else:
                     continue
-                
+
                 # Use seg1 (first segment from each pair)
                 # Shape: [B, C, T] where C=channels, T=time
                 windows = seg1.numpy()
-                
+
                 # Transpose to [B, T, C] for consistency with VitalDB
                 windows = np.transpose(windows, (0, 2, 1))
-                
+
                 all_windows.append(windows)
-                # Placeholder labels
-                all_labels.extend([0] * len(windows))
-                
+
+                # Extract clinical labels from labels_dict
+                if labels_dict is not None:
+                    for label_key in all_labels.keys():
+                        if label_key in labels_dict:
+                            # Convert tensor to numpy and extend list
+                            label_values = labels_dict[label_key].numpy()
+                            all_labels[label_key].extend(label_values.tolist())
+                        else:
+                            # Missing label - use -1 for this batch
+                            all_labels[label_key].extend([-1] * len(windows))
+                else:
+                    # No labels returned - use -1 placeholder
+                    for label_key in all_labels.keys():
+                        all_labels[label_key].extend([-1] * len(windows))
+
                 if (batch_idx + 1) % 10 == 0:
                     logger.info(f"  Processed {(batch_idx + 1) * batch_size} samples...")
             
             if not all_windows:
                 logger.warning(f"  No valid windows for {split_name}")
                 continue
-            
+
             # Stack all windows
             windows_array = np.vstack(all_windows)
-            labels_array = np.array(all_labels)
-            
+
+            # Convert label lists to arrays
+            labels_arrays = {
+                key: np.array(values, dtype=np.float32)
+                for key, values in all_labels.items()
+            }
+
             logger.info(f"  Total windows: {len(windows_array)}")
-            logger.info(f"  Shape: {windows_array.shape}")
-            
-            # Save
+            logger.info(f"  Windows shape: {windows_array.shape}")
+            logger.info(f"  Clinical labels:")
+            for label_key, label_array in labels_arrays.items():
+                # Count non-missing values (-1 = missing)
+                valid_count = np.sum(label_array != -1)
+                logger.info(f"    {label_key}: {valid_count}/{len(label_array)} available")
+
+            # Save windows + all clinical labels
             output_file = output_dir / f'{split_name}_windows.npz'
             np.savez_compressed(
                 output_file,
                 data=windows_array,
-                labels=labels_array
+                # Clinical labels (all 7 tasks)
+                quality=labels_arrays['quality'],
+                hr=labels_arrays['hr'],
+                motion=labels_arrays['motion'],
+                bp_systolic=labels_arrays['bp_systolic'],
+                bp_diastolic=labels_arrays['bp_diastolic'],
+                spo2=labels_arrays['spo2'],
+                glycaemia=labels_arrays['glycaemia'],
+                # Backwards compatibility: 'labels' = quality for existing finetune script
+                labels=labels_arrays['quality']
             )
-            
+
             logger.info(f"  ✓ Saved to {output_file}")
             logger.info(f"    Size: {output_file.stat().st_size / 1024 / 1024:.2f} MB")
             

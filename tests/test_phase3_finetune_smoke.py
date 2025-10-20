@@ -183,7 +183,7 @@ def main():
             'task': 'classification',
             'input_channels': 2,
             'context_length': 1024,
-            'patch_size': 128,
+            'patch_size': 125,
             'num_classes': 2
         })
         
@@ -212,7 +212,7 @@ def main():
             'task': 'classification',
             'input_channels': 5,
             'context_length': 1024,
-            'patch_size': 128,
+            'patch_size': 125,
             'num_classes': 2
         })
     
@@ -284,7 +284,7 @@ def main():
         'config': {
             'input_channels': 5,
             'context_length': 1024,
-            'patch_size': 128,
+            'patch_size': 125,
             'num_classes': 2,
             'pretrained_from': args.pretrained
         }

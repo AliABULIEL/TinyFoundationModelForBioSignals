@@ -231,7 +231,7 @@ def main():
         'task': 'ssl',
         'input_channels': 2,
         'context_length': 1024,
-        'patch_size': 128,
+        'patch_size': 125,
         'freeze_encoder': False
     }).to(device)
     
@@ -340,7 +340,7 @@ def main():
         'config': {
             'input_channels': 2,
             'context_length': 1024,
-            'patch_size': 128,
+            'patch_size': 125,
             'mask_ratio': args.mask_ratio
         }
     }, checkpoint_path)
