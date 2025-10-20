@@ -659,7 +659,9 @@ class DataPreparationPipeline:
                 '--splits-file', splits_file,
                 '--window-sec', str(self.window_sec),  # ✅ FROM CONFIG!
                 '--fs', '125',
-                '--overlap', str(self.overlap)  # ✅ OVERLAPPING WINDOWS!
+                '--overlap', str(self.overlap),
+                '--no-quality-filter' # ✅ OVERLAPPING WINDOWS!
+
             ]
 
             logger.info(f"Running: {' '.join(cmd)}")
