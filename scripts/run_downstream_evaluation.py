@@ -108,17 +108,41 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
 
     # Extract config and state dict
     if isinstance(checkpoint, dict):
+        # Try to find config
+        config = None
         if 'config' in checkpoint:
             config = checkpoint['config']
-        else:
-            raise ValueError("Checkpoint missing 'config' key")
+        elif 'args' in checkpoint:
+            config = checkpoint['args']
 
+        # Try to find state dict
+        state_dict = None
         if 'model_state_dict' in checkpoint:
             state_dict = checkpoint['model_state_dict']
         elif 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
+        elif 'encoder' in checkpoint and isinstance(checkpoint['encoder'], dict):
+            # Weights might be under 'encoder' key
+            state_dict = checkpoint['encoder']
+        elif 'model' in checkpoint and isinstance(checkpoint['model'], dict):
+            # Or under 'model' key
+            state_dict = checkpoint['model']
         else:
-            raise ValueError("Checkpoint missing model state dict")
+            # Check if checkpoint IS the state dict (all keys are parameter names)
+            # If all keys start with common prefixes like 'encoder.', 'backbone.', etc.
+            all_keys = list(checkpoint.keys())
+            param_prefixes = ['encoder.', 'backbone.', 'decoder.', 'head.', 'classifier.']
+            if all(any(k.startswith(p) for p in param_prefixes) for k in all_keys[:10]):
+                # Checkpoint is the state dict itself
+                state_dict = checkpoint
+                config = {}  # Will infer config from state dict
+            else:
+                raise ValueError(f"Checkpoint missing model state dict. Keys: {list(checkpoint.keys())[:10]}")
+
+        # If no config found, create empty dict (will infer from state dict)
+        if config is None:
+            config = {}
+
     else:
         raise ValueError("Checkpoint format not recognized")
 
