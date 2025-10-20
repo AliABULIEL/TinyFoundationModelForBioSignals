@@ -711,29 +711,43 @@ def main():
     print("LOADING PRETRAINED MODEL")
     print("=" * 70)
 
-    model_config = {
-        'variant': 'ibm-granite/granite-timeseries-ttm-r1',
-        'task': 'classification',
-        'num_classes': 2,  # Binary classification: good vs poor
-        'input_channels': 2,  # PPG + ECG (same as SSL pre-training)
-        'context_length': 1024,
-        'patch_size': 128,
-        'head_type': 'linear',
-        'freeze_encoder': True  # Start with encoder frozen
-    }
-
     # Load pretrained checkpoint
     print(f"Loading checkpoint: {args.pretrained}")
     checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
 
+    # Extract SSL training config to get exact patch_size and context_length used
+    if 'config' in checkpoint:
+        ssl_config = checkpoint['config']
+        context_length = ssl_config.get('context_length', 1024)
+        patch_size = ssl_config.get('patch_size', 64)  # Default to 64 (TTM auto-adjusts from 128 to 64 for context_length=1024)
+        print(f"✓ Found SSL config in checkpoint")
+        print(f"  Context length: {context_length}")
+        print(f"  Patch size: {patch_size}")
+    else:
+        # For context_length=1024, TTM auto-adjusts patch_size from 128 to 64
+        context_length = 1024
+        patch_size = 64
+        print(f"⚠ No config in checkpoint, using defaults:")
+        print(f"  Context length: {context_length}")
+        print(f"  Patch size: {patch_size} (auto-adjusted for context_length=1024)")
+
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
+
+    print(f"\nCreating TTMAdapter for fine-tuning:")
+    print(f"  Task: classification (2 classes)")
+    print(f"  Input channels: 2 (PPG + ECG)")
+    print(f"  Context length: {context_length}")
+    print(f"  Patch size: {patch_size}")
+    print(f"  Freeze encoder: True (will train head only in Stage 1)")
+
     model = TTMAdapter(
-        variant=model_config['variant'],
+        variant='ibm-granite/granite-timeseries-ttm-r1',
         task='classification',
         num_classes=2,
         input_channels=2,
-        context_length=1024,
+        context_length=context_length,
+        patch_size=patch_size,  # Use same patch_size as SSL training
         freeze_encoder=True
     )
 
@@ -744,9 +758,19 @@ def main():
         state_dict = checkpoint
 
     # Load encoder weights (ignore missing head weights - we have a new task)
-    model.load_state_dict(state_dict, strict=False)
-    print("✓ Loaded SSL encoder weights")
-    print("✓ Initialized new classification head (2 classes)")
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+    print("\n✓ Loaded SSL encoder weights")
+    print(f"✓ Initialized new classification head (2 classes)")
+
+    # Show what was not loaded (expected - head is new)
+    if missing_keys:
+        head_keys = [k for k in missing_keys if 'head' in k or 'classifier' in k]
+        if head_keys:
+            print(f"  New head parameters: {len(head_keys)} keys (expected)")
+
+    if unexpected_keys:
+        print(f"  ⚠ Unexpected keys in checkpoint: {len(unexpected_keys)}")
 
     model = model.to(args.device)
     
