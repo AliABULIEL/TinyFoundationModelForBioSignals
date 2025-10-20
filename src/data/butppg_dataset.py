@@ -469,12 +469,21 @@ class BUTPPGDataset(Dataset):
         signal = data['signal']  # [n_channels, T]
 
         # Select channels based on modality
-        # BUT-PPG NPZ format: [ACC_X, ACC_Y, ACC_Z, PPG, ECG] = channels [0, 1, 2, 3, 4]
-        channel_map = {'acc': [0, 1, 2], 'ppg': [3], 'ecg': [4]}
+        # BUT-PPG NPZ format: [PPG, ECG] = channels [0, 1]
+        # NOTE: No accelerometer data in BUT-PPG dataset
+        channel_map = {'ppg': [0], 'ecg': [1]}
 
         selected_channels = []
         for mod in self.modalities:
-            selected_channels.extend(channel_map[mod])
+            if mod == 'acc':
+                # Accelerometer not available in BUT-PPG dataset
+                print(f"Warning: Accelerometer data not available in BUT-PPG dataset")
+                continue
+            if mod in channel_map:
+                selected_channels.extend(channel_map[mod])
+
+        if not selected_channels:
+            raise ValueError(f"No valid channels found for modalities: {self.modalities}")
 
         signal = signal[selected_channels, :]  # Select requested channels
 

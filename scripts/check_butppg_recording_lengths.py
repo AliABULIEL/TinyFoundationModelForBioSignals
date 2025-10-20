@@ -37,11 +37,14 @@ def check_recording_length(record_path: Path):
 
 def main():
     # Find BUT-PPG data
-    data_dir = Path('data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0')
+    data_dir = Path('data/but_ppg/raw')
 
     if not data_dir.exists():
-        print(f"❌ BUT-PPG data not found at: {data_dir}")
-        return
+        # Try alternative path
+        data_dir = Path('data/but_ppg/dataset')
+        if not data_dir.exists():
+            print(f"❌ BUT-PPG data not found at: data/but_ppg/raw or data/but_ppg/dataset")
+            return
 
     print("="*80)
     print("BUT-PPG Recording Length Analysis")

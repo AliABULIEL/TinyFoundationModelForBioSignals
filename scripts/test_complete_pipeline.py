@@ -56,10 +56,13 @@ def test_butppg_window_generation():
 
     try:
         # Check if raw data exists
-        data_dir = project_root / 'data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'
+        data_dir = project_root / 'data/but_ppg/raw'
         if not data_dir.exists():
-            print_warning("SKIP: BUT-PPG raw data not found")
-            return None
+            # Try alternative path
+            data_dir = project_root / 'data/but_ppg/dataset'
+            if not data_dir.exists():
+                print_warning("SKIP: BUT-PPG raw data not found")
+                return None
 
         # Check if window generation script exists
         script_path = project_root / 'scripts/test_one_sample_generation.py'
@@ -104,10 +107,13 @@ def test_butppg_backward_compatibility():
         from src.data.butppg_dataset import BUTPPGDataset
 
         # Check if data exists
-        data_dir = project_root / 'data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0'
+        data_dir = project_root / 'data/but_ppg/raw'
         if not data_dir.exists():
-            print_warning("SKIP: BUT-PPG raw data not found")
-            return None
+            # Try alternative path
+            data_dir = project_root / 'data/but_ppg/dataset'
+            if not data_dir.exists():
+                print_warning("SKIP: BUT-PPG raw data not found")
+                return None
 
         print_info("Creating dataset with default parameters (should use RAW mode)...")
 
