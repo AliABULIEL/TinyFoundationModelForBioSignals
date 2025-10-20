@@ -288,8 +288,8 @@ def test_vitaldb_preprocessed_mode():
     try:
         from src.data.vitaldb_dataset import VitalDBDataset
 
-        # Check if preprocessed data exists
-        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels'
+        # Check if preprocessed data exists (VitalDB uses 'paired' subdirectory)
+        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels/paired'
         if not data_dir.exists():
             print_warning("SKIP: Preprocessed data not found. Run:")
             print_info("  python scripts/prepare_all_data.py --mode fasttrack --dataset vitaldb --format windowed")
@@ -369,8 +369,8 @@ def test_signal_synchronization():
                         assert not np.any(np.isinf(ecg)), "ECG contains Inf!"
                         print_success("No NaN or Inf values in signals")
 
-        # Check VitalDB
-        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels/train'
+        # Check VitalDB (uses 'paired' subdirectory structure)
+        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels/paired/train'
         if data_dir.exists():
             npz_files = list(data_dir.glob('window_*.npz'))
             if npz_files:
@@ -492,8 +492,8 @@ def test_overlapping_windows():
                 else:
                     print_info("BUT-PPG: No consecutive windows to test")
 
-        # Check VitalDB
-        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels/train'
+        # Check VitalDB (uses 'paired' subdirectory structure)
+        data_dir = project_root / 'data/processed/vitaldb/windows_with_labels/paired/train'
         if data_dir.exists():
             window_files = sorted(list(data_dir.glob('window_*.npz')))
             if len(window_files) >= 2:

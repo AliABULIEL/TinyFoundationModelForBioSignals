@@ -42,7 +42,7 @@ def test_butppg_one_sample() -> bool:
 
     try:
         # Find BUT-PPG data directory
-        butppg_dir = Path('data/but_ppg/dataset/but-ppg-an-annotated-photoplethysmography-dataset-2.0.0')
+        butppg_dir = Path('data/but_ppg/dataset/')
 
         if not butppg_dir.exists():
             print(f"❌ BUT-PPG data not found at: {butppg_dir}")
