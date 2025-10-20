@@ -340,8 +340,8 @@ def test_signal_synchronization():
                     print(f"  Signal shape: {signal.shape}")
 
                     if signal.shape[0] >= 2:
-                        ppg = signal[3, :]  # PPG is channel 3
-                        ecg = signal[4, :]  # ECG is channel 4
+                        ppg = signal[0, :]  # PPG is channel 0 (BUT-PPG: 2 channels only)
+                        ecg = signal[1, :]  # ECG is channel 1
 
                         # Check they have same length
                         assert len(ppg) == len(ecg), "PPG and ECG have different lengths!"
