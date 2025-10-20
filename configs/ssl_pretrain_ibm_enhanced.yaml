@@ -1,0 +1,90 @@
+# SSL Pre-training Configuration with IBM TTM-Enhanced Pretrained Weights
+#
+# This config uses TTM-Enhanced pretrained weights from IBM
+# Context: 1024 samples (8.192s @ 125Hz)
+# Patch: 128 samples (1.024s @ 125Hz)
+# d_model: 192 (automatically set to match IBM pretrained)
+#
+# Benefits:
+# - Starts from IBM's pretrained weights (trained on 100M+ time series)
+# - Faster convergence (20-50 epochs vs 50-100 from scratch)
+# - Better downstream performance (+10% expected improvement)
+
+# Model architecture
+model:
+  variant: 'ibm-granite/granite-timeseries-ttm-r1'
+  task: 'ssl'
+  input_channels: 2  # PPG + ECG
+  context_length: 1024  # 8.192 seconds @ 125Hz
+  patch_size: 128  # 1.024 seconds @ 125Hz (matches TTM-Enhanced!)
+  # d_model: 192  # Auto-set when patch_size=128 matches IBM pretrained
+  use_real_ttm: true  # Enable IBM TTM
+  freeze_encoder: false  # Unfreeze for SSL training
+  decoder_mode: 'mix_channel'
+
+# SSL configuration
+ssl:
+  mask_ratio: 0.4  # Mask 40% of patches
+  mask_type: 'random'  # Random masking strategy
+  decoder_dim: 128  # SSL decoder hidden dimension
+  decoder_depth: 2  # Number of decoder layers
+
+  # Multi-resolution STFT loss
+  use_stft_loss: true
+  stft_weight: 0.3
+  n_ffts: [32, 64, 128]
+  hop_lengths: [8, 16, 32]
+
+# Training configuration
+training:
+  epochs: 50  # Should converge in 20-40 epochs with IBM pretrained
+  batch_size: 32
+  learning_rate: 0.0001  # 1e-4
+  weight_decay: 0.01
+  warmup_epochs: 5
+
+  # Optimization
+  optimizer: 'adamw'
+  scheduler: 'cosine'
+  gradient_clip: 1.0
+
+  # Mixed precision
+  use_amp: true
+
+  # Checkpointing
+  save_every: 5  # Save checkpoint every 5 epochs
+  save_best: true  # Save best model based on validation loss
+
+  # Early stopping
+  early_stop_patience: 15  # Stop if no improvement for 15 epochs
+
+# Data configuration
+data:
+  dataset: 'vitaldb'
+  data_dir: 'data/processed/vitaldb'
+
+  # Use subject-level splits
+  splits_file: 'configs/splits/splits_full.json'
+
+  # Data loading
+  num_workers: 4
+  pin_memory: true
+
+  # Augmentation
+  use_augmentation: false  # Can enable for more robust training
+
+# Validation
+validation:
+  val_every: 1  # Validate every epoch
+  val_samples: 1000  # Number of validation samples
+
+# Logging
+logging:
+  log_dir: 'artifacts/foundation_model_ibm_enhanced'
+  experiment_name: 'ssl_ibm_pretrained_ttm_enhanced'
+  log_every: 50  # Log every 50 batches
+
+# Output
+output:
+  checkpoint_dir: 'artifacts/foundation_model_ibm_enhanced'
+  final_model_name: 'best_model.pt'
