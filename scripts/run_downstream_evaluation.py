@@ -303,9 +303,10 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
     """
     Load BUT-PPG test data for all tasks
 
-    Supports two structures:
-    1. Legacy: data_dir/quality/test.npz, data_dir/heart_rate/test.npz
+    Supports three structures:
+    1. Windowed format (NEW): data_dir/windows_with_labels/test/window_*.npz (labels embedded in each window)
     2. Unified: data_dir/windows/test/test_windows.npz (with all clinical labels)
+    3. Legacy: data_dir/quality/test.npz, data_dir/heart_rate/test.npz
 
     Args:
         data_dir: Directory containing processed BUT-PPG data
@@ -318,6 +319,107 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
     loaders = {}
 
     print("\nLoading BUT-PPG test data...")
+
+    # ====================================================================
+    # FORMAT 1: WINDOWED FORMAT (NEW - labels embedded in each window)
+    # ====================================================================
+    windowed_paths = [
+        data_dir / 'windows_with_labels' / 'test',
+        data_dir / 'test',  # If data_dir already points to windows_with_labels
+    ]
+
+    for windowed_dir in windowed_paths:
+        if not windowed_dir.exists():
+            continue
+
+        window_files = sorted(windowed_dir.glob('window_*.npz'))
+        if len(window_files) == 0:
+            continue
+
+        print(f"  ✓ Found windowed format: {windowed_dir}")
+        print(f"  Loading {len(window_files)} window files with embedded labels...")
+
+        # Load all windows and extract signals + labels
+        signals_list = []
+        quality_labels_list = []
+        hr_labels_list = []
+        motion_labels_list = []
+
+        for window_file in window_files:
+            data = np.load(window_file)
+
+            # Load signal
+            if 'signal' not in data:
+                raise KeyError(f"Expected 'signal' key in {window_file}, found: {list(data.keys())}")
+
+            signal = data['signal']  # [2, 1024] or [C, T]
+            signals_list.append(signal)
+
+            # Load quality label (handle NaN)
+            if 'quality' in data:
+                quality = data['quality']
+                quality_labels_list.append(quality if not np.isnan(quality) else -1)
+            else:
+                quality_labels_list.append(-1)
+
+            # Load HR label
+            if 'hr' in data:
+                hr = data['hr']
+                hr_labels_list.append(hr if not np.isnan(hr) else -1)
+            else:
+                hr_labels_list.append(-1)
+
+            # Load motion label
+            if 'motion' in data:
+                motion = data['motion']
+                motion_labels_list.append(motion if not np.isnan(motion) else -1)
+            else:
+                motion_labels_list.append(-1)
+
+        # Stack into tensors
+        signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, C, T]
+        quality_labels = torch.tensor(quality_labels_list, dtype=torch.long)
+        hr_labels = torch.tensor(hr_labels_list, dtype=torch.float)
+        motion_labels = torch.tensor(motion_labels_list, dtype=torch.long)
+
+        print(f"    Loaded: {signals.shape[0]} samples, signal shape: {signals.shape}")
+
+        # Create DataLoaders for each task
+        # Quality task
+        valid_quality = quality_labels != -1
+        if valid_quality.sum() > 0:
+            dataset = TensorDataset(signals[valid_quality], quality_labels[valid_quality])
+            loaders['quality'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ Quality: {len(dataset)} samples ({valid_quality.sum()}/{len(quality_labels)} have labels)")
+        else:
+            print(f"    ⚠️  Quality: No valid labels (all NaN or -1)")
+
+        # Heart rate task
+        valid_hr = hr_labels != -1
+        if valid_hr.sum() > 0:
+            dataset = TensorDataset(signals[valid_hr], hr_labels[valid_hr])
+            loaders['hr_estimation'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ Heart Rate: {len(dataset)} samples ({valid_hr.sum()}/{len(hr_labels)} have labels)")
+        else:
+            print(f"    ⚠️  Heart Rate: No valid labels (all NaN or -1)")
+
+        # Motion task
+        valid_motion = motion_labels != -1
+        if valid_motion.sum() > 0:
+            dataset = TensorDataset(signals[valid_motion], motion_labels[valid_motion])
+            loaders['motion'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ Motion: {len(dataset)} samples ({valid_motion.sum()}/{len(motion_labels)} have labels)")
+        else:
+            print(f"    ⚠️  Motion: No valid labels (all NaN or -1)")
+
+        # If we found windowed format, return immediately
+        if loaders:
+            return loaders
+
+    # ====================================================================
+    # FORMAT 2: UNIFIED FORMAT (single NPZ with all samples)
+    # ====================================================================
+    print("  Windowed format not found, trying unified format...")
 
     # Try unified format first (from prepare_all_data.py)
     unified_paths = [
