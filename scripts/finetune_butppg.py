@@ -746,16 +746,22 @@ def main():
 
     # CRITICAL: Detect actual architecture from checkpoint weights
     # The saved config may be incorrect - we must use the actual weight shapes
-    print("\n🔍 Detecting architecture from checkpoint weights...")
+    print("🔍 Detecting architecture from checkpoint weights...")
+
+    # Sample keys to understand structure
+    sample_keys = list(state_dict.keys())[:5]
+    print(f"  Sample keys: {sample_keys[0]}")
 
     # Find patch_mixer weights to determine num_patches
+    # SSL checkpoints may have 'encoder.' prefix
     patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
 
     if not patch_mixer_keys:
         # Show available keys for debugging
-        sample_keys = list(state_dict.keys())[:10]
         print(f"\n  ⚠ Could not find patch_mixer weights")
-        print(f"  Sample keys in checkpoint: {sample_keys}")
+        print(f"  Sample keys in checkpoint:")
+        for key in sample_keys:
+            print(f"    {key}")
         raise ValueError(
             "Could not find patch_mixer weights in checkpoint.\n"
             "This may not be a valid TTM checkpoint or may have a different key structure."
@@ -767,6 +773,12 @@ def main():
     num_patches = patch_mixer_weight.shape[1]
 
     print(f"  ✓ Detected from weights: num_patches = {num_patches}")
+    print(f"  Key used: {first_patch_mixer_key}")
+
+    # Try to get architecture from metrics (SSL training saves this)
+    if 'metrics' in checkpoint:
+        metrics = checkpoint['metrics']
+        print(f"  Metrics available: {list(metrics.keys())[:5]}")
 
     # Extract config if available
     if 'config' in checkpoint:
@@ -781,19 +793,39 @@ def main():
             context_length = num_patches * patch_size
             print(f"  ✓ Calculated actual context_length: {num_patches} × {patch_size} = {context_length}")
         else:
-            # Fallback: assume patch_size=64
-            patch_size = 64
-            context_length = num_patches * patch_size
-            print(f"  ⚠ No patch_size in config, assuming {patch_size}")
-            print(f"  Calculated context_length: {context_length}")
+            # Fallback: Infer patch_size from common SSL training configurations
+            # For num_patches=64, common configs:
+            #   - 1024 samples / 64 patches = 16 patch_size (8.192s @ 125Hz window)
+            #   - 4096 samples / 64 patches = 64 patch_size (32.768s @ 125Hz window)
+            #   - 8000 samples / 64 patches = 125 patch_size (64s @ 125Hz window)
+
+            # Based on VitalDB SSL training (8.192s windows), most likely patch_size=16
+            if num_patches == 64:
+                patch_size = 16  # 1024 / 64
+                context_length = 1024
+                print(f"  ⚠ No patch_size in config, inferring from num_patches")
+                print(f"  Calculated: patch_size={patch_size}, context_length={context_length}")
+                print(f"  (Assumes VitalDB SSL training: 8.192s @ 125Hz = 1024 samples)")
+            else:
+                # Generic fallback
+                patch_size = 125
+                context_length = num_patches * patch_size
+                print(f"  ⚠ No patch_size in config, using TTM default={patch_size}")
+                print(f"  Calculated context_length: {context_length}")
     else:
         # No config - make educated guess based on num_patches
         print("  ⚠ No config in checkpoint")
-        # Common configurations: 121 patches could be 7744/64 or other
-        # Let's assume patch_size=64 (most common for SSL)
-        patch_size = 64
-        context_length = num_patches * patch_size
-        print(f"  Guessing: patch_size={patch_size}, context_length={context_length}")
+        # For num_patches=64, infer from VitalDB SSL training
+        if num_patches == 64:
+            patch_size = 16  # 1024 / 64
+            context_length = 1024
+            print(f"  Inferring: patch_size={patch_size}, context_length={context_length}")
+            print(f"  (Assumes VitalDB SSL training: 8.192s @ 125Hz = 1024 samples)")
+        else:
+            # Generic fallback
+            patch_size = 125
+            context_length = num_patches * patch_size
+            print(f"  Guessing: patch_size={patch_size}, context_length={context_length}")
 
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
@@ -816,25 +848,54 @@ def main():
     )
 
     # Load encoder weights from SSL checkpoint
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
+    # Note: state_dict was already loaded earlier for architecture detection
+    # It contains encoder weights with 'encoder.' prefix that needs to be stripped
 
-    # Load encoder weights (ignore missing head weights - we have a new task)
+    print("\n📦 Loading encoder weights into fine-tuning model...")
+
+    # Strip 'encoder.' prefix from SSL checkpoint keys if present
+    # SSL checkpoint: encoder.backbone.encoder.mlp_mixer_encoder...
+    # Fine-tuning model: encoder.backbone.encoder.mlp_mixer_encoder...
+    # Actually, they should match! Let me check if we need to strip anything
+
+    # Try loading as-is first
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
 
-    print("\n✓ Loaded SSL encoder weights")
-    print(f"✓ Initialized new classification head (2 classes)")
+    # If many missing keys, try stripping 'encoder.' prefix
+    encoder_keys = [k for k in missing_keys if 'encoder' in k]
+    if len(encoder_keys) > 100:
+        print("  ⚠ Many missing keys, trying to strip 'encoder.' prefix...")
+        # Create new state dict with stripped prefix
+        stripped_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('encoder.'):
+                new_key = key[len('encoder.'):]  # Remove 'encoder.' prefix
+                stripped_state_dict[new_key] = value
+            else:
+                stripped_state_dict[key] = value
+
+        # Try loading again
+        missing_keys, unexpected_keys = model.load_state_dict(stripped_state_dict, strict=False)
+
+    print("✓ Loaded SSL encoder weights")
+    print("✓ Initialized new classification head (2 classes)")
 
     # Show what was not loaded (expected - head is new)
     if missing_keys:
-        head_keys = [k for k in missing_keys if 'head' in k or 'classifier' in k]
+        head_keys = [k for k in missing_keys if 'head' in k or 'classifier' in k or 'decoder' in k]
+        other_keys = [k for k in missing_keys if k not in head_keys]
+
         if head_keys:
             print(f"  New head parameters: {len(head_keys)} keys (expected)")
+        if other_keys and len(other_keys) < 20:
+            print(f"  Other missing keys: {other_keys[:5]}")
+        elif other_keys:
+            print(f"  ⚠ Missing {len(other_keys)} encoder keys (unexpected!)")
 
-    if unexpected_keys:
-        print(f"  ⚠ Unexpected keys in checkpoint: {len(unexpected_keys)}")
+    if unexpected_keys and len(unexpected_keys) < 20:
+        print(f"  Unexpected keys: {unexpected_keys[:5]}")
+    elif unexpected_keys:
+        print(f"  ⚠ {len(unexpected_keys)} unexpected keys")
 
     model = model.to(args.device)
 
