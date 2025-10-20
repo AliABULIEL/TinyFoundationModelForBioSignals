@@ -79,18 +79,21 @@ class BUTPPGDataset(Dataset):
     Note: BUT-PPG dataset does NOT contain accelerometer data.
     """
 
-    def __init__(self, data_dir: Path, normalize: bool = True):
+    def __init__(self, data_dir: Path, normalize: bool = True, target_length: int = None):
         """Initialize BUT-PPG dataset from windowed format.
 
         Args:
             data_dir: Path to directory containing window_*.npz files
             normalize: Whether to apply z-score normalization per channel
+            target_length: If specified, resize signals to this length (for SSL model compatibility)
         """
         print(f"Loading BUT-PPG data from: {data_dir}")
 
         data_dir = Path(data_dir)
         if not data_dir.exists():
             raise FileNotFoundError(f"Data directory not found: {data_dir}")
+
+        self.target_length = target_length
 
         # Find all window files
         window_files = sorted(data_dir.glob('window_*.npz'))
@@ -129,14 +132,27 @@ class BUTPPGDataset(Dataset):
             labels_list.append(label)
 
         # Stack into tensors
-        self.signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, 2, 1024]
+        self.signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, 2, T]
         self.labels = torch.tensor(labels_list, dtype=torch.long)  # [N]
 
         # Validate shapes
         N, C, T = self.signals.shape
         assert C == 2, f"Expected 2 channels, got {C}"
-        assert T == 1024, f"Expected 1024 timesteps, got {T} (make sure data was prepared with --window-size 1024)"
         assert len(self.labels) == N, f"Label count mismatch: {len(self.labels)} vs {N}"
+
+        # Resize if needed to match SSL model's context_length
+        if self.target_length is not None and T != self.target_length:
+            print(f"  ⚠️  Resizing signals from {T} to {self.target_length} samples (SSL model requirement)")
+            # Use interpolation to resize
+            resized_signals = torch.nn.functional.interpolate(
+                self.signals,  # [N, C, T]
+                size=self.target_length,
+                mode='linear',
+                align_corners=False
+            )
+            self.signals = resized_signals
+            N, C, T = self.signals.shape
+            print(f"  ✓ Resized to: {self.signals.shape}")
 
         # Normalize if requested
         if normalize:
@@ -167,7 +183,8 @@ def create_dataloaders(
     data_dir: Path,
     batch_size: int = 32,
     num_workers: int = 4,
-    use_val: bool = True
+    use_val: bool = True,
+    target_length: int = None
 ) -> Tuple[DataLoader, Optional[DataLoader], Optional[DataLoader]]:
     """Create dataloaders for BUT-PPG.
 
@@ -187,6 +204,7 @@ def create_dataloaders(
         batch_size: Batch size for dataloaders
         num_workers: Number of data loading workers
         use_val: Whether to create validation loader
+        target_length: If specified, resize all signals to this length (for SSL compatibility)
 
     Returns:
         train_loader, val_loader, test_loader
@@ -221,7 +239,7 @@ def create_dataloaders(
 
     # Create training loader
     print(f"\n✓ Found training directory: {train_dir}")
-    train_dataset = BUTPPGDataset(train_dir, normalize=True)
+    train_dataset = BUTPPGDataset(train_dir, normalize=True, target_length=target_length)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -234,7 +252,7 @@ def create_dataloaders(
     val_loader = None
     if use_val and val_dir.exists():
         print(f"✓ Found validation directory: {val_dir}")
-        val_dataset = BUTPPGDataset(val_dir, normalize=True)
+        val_dataset = BUTPPGDataset(val_dir, normalize=True, target_length=target_length)
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -249,7 +267,7 @@ def create_dataloaders(
     test_loader = None
     if test_dir.exists():
         print(f"✓ Found test directory: {test_dir}")
-        test_dataset = BUTPPGDataset(test_dir, normalize=True)
+        test_dataset = BUTPPGDataset(test_dir, normalize=True, target_length=target_length)
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -715,21 +733,58 @@ def main():
     print(f"Loading checkpoint: {args.pretrained}")
     checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
 
-    # Extract SSL training config to get exact patch_size and context_length used
+    # Get state dict
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+
+    # CRITICAL: Detect actual architecture from checkpoint weights
+    # The saved config may be incorrect - we must use the actual weight shapes
+    print("\n🔍 Detecting architecture from checkpoint weights...")
+
+    # Find patch_mixer weights to determine num_patches
+    patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
+
+    if not patch_mixer_keys:
+        raise ValueError(
+            "Could not find patch_mixer weights in checkpoint.\n"
+            "This may not be a valid TTM checkpoint."
+        )
+
+    # Get num_patches from patch_mixer MLP input dimension
+    first_patch_mixer_key = patch_mixer_keys[0]
+    patch_mixer_weight = state_dict[first_patch_mixer_key]
+    num_patches = patch_mixer_weight.shape[1]
+
+    print(f"  ✓ Detected from weights: num_patches = {num_patches}")
+
+    # Extract config if available
     if 'config' in checkpoint:
         ssl_config = checkpoint['config']
-        context_length = ssl_config.get('context_length', 1024)
-        patch_size = ssl_config.get('patch_size', 64)  # Default to 64 (TTM auto-adjusts from 128 to 64 for context_length=1024)
-        print(f"✓ Found SSL config in checkpoint")
-        print(f"  Context length: {context_length}")
-        print(f"  Patch size: {patch_size}")
+        stored_context = ssl_config.get('context_length', None)
+        stored_patch_size = ssl_config.get('patch_size', None)
+        print(f"  Config says: context_length={stored_context}, patch_size={stored_patch_size}")
+
+        # Use stored patch_size, but calculate correct context_length
+        if stored_patch_size:
+            patch_size = stored_patch_size
+            context_length = num_patches * patch_size
+            print(f"  ✓ Calculated actual context_length: {num_patches} × {patch_size} = {context_length}")
+        else:
+            # Fallback: assume patch_size=64
+            patch_size = 64
+            context_length = num_patches * patch_size
+            print(f"  ⚠ No patch_size in config, assuming {patch_size}")
+            print(f"  Calculated context_length: {context_length}")
     else:
-        # For context_length=1024, TTM auto-adjusts patch_size from 128 to 64
-        context_length = 1024
+        # No config - make educated guess based on num_patches
+        print("  ⚠ No config in checkpoint")
+        # Common configurations: 121 patches could be 7744/64 or other
+        # Let's assume patch_size=64 (most common for SSL)
         patch_size = 64
-        print(f"⚠ No config in checkpoint, using defaults:")
-        print(f"  Context length: {context_length}")
-        print(f"  Patch size: {patch_size} (auto-adjusted for context_length=1024)")
+        context_length = num_patches * patch_size
+        print(f"  Guessing: patch_size={patch_size}, context_length={context_length}")
 
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
@@ -773,12 +828,14 @@ def main():
         print(f"  ⚠ Unexpected keys in checkpoint: {len(unexpected_keys)}")
 
     model = model.to(args.device)
-    
-    # Create dataloaders
+
+    # Create dataloaders with target_length matching SSL model
+    print(f"\n📊 Creating dataloaders (resizing windows to {context_length} samples if needed)...")
     train_loader, val_loader, test_loader = create_dataloaders(
         data_dir=Path(args.data_dir),
         batch_size=args.batch_size,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        target_length=context_length  # Resize BUT-PPG windows to match SSL model
     )
     
     # Use test set for validation if no validation set
