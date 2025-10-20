@@ -93,6 +93,7 @@ class TTMAdapter(nn.Module):
         input_channels: int = 2,
         context_length: int = 1250,
         patch_size: int = 125,
+        d_model: Optional[int] = None,  # Allow explicit d_model from checkpoint
         prediction_length: int = 96,
         use_real_ttm: bool = True,
         decoder_mode: str = "mix_channel",
@@ -111,16 +112,19 @@ class TTMAdapter(nn.Module):
         self.using_real_ttm = False
         
         # Calculate encoder dimension based on configuration
+        # If d_model is explicitly provided (e.g., from checkpoint), use it
+        if d_model is not None:
+            self.encoder_dim = d_model
+            print(f"  Using provided d_model: {d_model}")
         # For pretrained TTM variants, use their d_model values
-        # For custom configs, calculate based on patch_size
-        if context_length == 512 and patch_size == 64:
+        elif context_length == 512 and patch_size == 64:
             # TTM-Base pretrained
             self.encoder_dim = 192  # TTM-Base d_model
         elif context_length == 1024 and patch_size == 128:
             # TTM-Enhanced pretrained
             self.encoder_dim = 192  # TTM-Enhanced d_model
         elif context_length == 1536 and patch_size == 128:
-            # TTM-Advanced pretrained  
+            # TTM-Advanced pretrained
             self.encoder_dim = 192  # TTM-Advanced d_model
         else:
             # Custom configuration - calculate d_model based on patch_size
@@ -219,25 +223,16 @@ class TTMAdapter(nn.Module):
                 
                 # Import config class
                 from tsfm_public.models.tinytimemixer.configuration_tinytimemixer import TinyTimeMixerConfig
-                
-                # Calculate appropriate d_model for custom patch_length
-                # Rule: d_model should be 2-5X of patch_length AND divisible by 8
-                # For patch_length=125: use 384 (3X) or 512 (4X)
-                if self.patch_size <= 32:
-                    d_model = 64  # Original TTM default for small patches
-                elif self.patch_size <= 64:
-                    d_model = 256  # 4X for medium patches
-                elif self.patch_size <= 128:
-                    d_model = 384  # 3X for large patches (your case: 125)
-                else:
-                    d_model = 512  # For very large patches
-                
+
+                # Use encoder_dim (already set above based on provided d_model or calculated)
+                d_model = self.encoder_dim
+
                 config = TinyTimeMixerConfig(
                     context_length=self.context_length,
                     patch_length=self.patch_size,
                     num_input_channels=self.input_channels,
                     prediction_length=self.prediction_length,
-                    d_model=d_model,  # Dynamically calculated based on patch_length
+                    d_model=d_model,  # Use the encoder_dim we already determined
                     num_layers=8,  # Standard TTM depth
                     expansion_factor=2,  # TTM default
                     dropout=0.2,
