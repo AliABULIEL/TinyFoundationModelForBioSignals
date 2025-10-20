@@ -245,11 +245,12 @@ def load_csv_annotations(data_dir: Path) -> Tuple[Optional[pd.DataFrame], Option
         # Clean up column names (remove units in brackets)
         subject_info_df.columns = [col.split('[')[0].strip() for col in subject_info_df.columns]
 
-        # Handle 'id' vs 'participant' column
-        if 'id' in subject_info_df.columns and 'participant' not in subject_info_df.columns:
-            # Extract participant ID (first 3 digits from full ID)
-            subject_info_df['participant'] = subject_info_df['id'].astype(str).str[:3].astype(int)
-            subject_info_df.set_index('participant', inplace=True)
+        # Handle 'id' column - use full recording ID as index
+        # BUT-PPG has one row per recording, not per participant
+        if 'id' in subject_info_df.columns:
+            # Convert to string for consistent matching
+            subject_info_df['id'] = subject_info_df['id'].astype(str)
+            subject_info_df.set_index('id', inplace=True)
         elif 'participant' in subject_info_df.columns:
             subject_info_df.set_index('participant', inplace=True)
 
@@ -304,11 +305,9 @@ def get_recording_labels(
             labels['hr'] = float(row['hr'])
 
     # Load subject-level labels from subject-info.csv
-    # Extract participant ID (first 3 digits)
-    participant_id = int(record_id[:3])
-
-    if subject_info_df is not None and participant_id in subject_info_df.index:
-        row = subject_info_df.loc[participant_id]
+    # Use full recording ID (NOT participant ID - BUT-PPG has one row per recording)
+    if subject_info_df is not None and record_id in subject_info_df.index:
+        row = subject_info_df.loc[record_id]
 
         # Motion class (0-7)
         if 'motion' in row and not pd.isna(row['motion']):
