@@ -825,25 +825,32 @@ def main():
     print("\n📦 Loading backbone encoder weights (skipping SSL decoder)...")
 
     # Filter state_dict to only include backbone encoder weights
-    # IMPORTANT: Skip SSL decoder (decoder_dim=128) which won't match fine-tuning decoder
-    # Include: encoder.backbone.* and backbone.*
+    # IMPORTANT:
+    # 1. Skip SSL decoder (decoder_dim=128) which won't match fine-tuning decoder
+    # 2. Strip 'encoder.' prefix from SSL checkpoint keys (encoder.backbone → backbone)
+    # Include: encoder.backbone.* → backbone.*
     # Exclude: encoder.decoder.* (SSL reconstruction decoder), encoder.head.* (SSL head)
     backbone_state_dict = {}
     skipped_decoder = 0
     skipped_head = 0
 
     for key, value in state_dict.items():
-        # Include backbone weights (the actual TTM encoder)
-        if 'encoder.backbone' in key or (key.startswith('backbone.') and 'decoder' not in key):
-            backbone_state_dict[key] = value
         # Skip decoder weights (SSL-specific, different dimensions)
-        elif 'encoder.decoder' in key:
+        if 'encoder.decoder' in key:
             skipped_decoder += 1
             continue
         # Skip SSL head (base_forecast_block)
         elif 'encoder.head' in key:
             skipped_head += 1
             continue
+        # Include backbone weights (the actual TTM encoder)
+        elif 'encoder.backbone' in key:
+            # Strip 'encoder.' prefix: encoder.backbone.X → backbone.X
+            new_key = key.replace('encoder.backbone', 'backbone')
+            backbone_state_dict[new_key] = value
+        elif key.startswith('backbone.') and 'decoder' not in key:
+            # Already has correct prefix
+            backbone_state_dict[key] = value
 
     print(f"  Backbone weights: {len(backbone_state_dict)} keys")
     print(f"  Skipped SSL decoder: {skipped_decoder} keys (different architecture)")
