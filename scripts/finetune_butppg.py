@@ -752,93 +752,49 @@ def main():
     sample_keys = list(state_dict.keys())[:5]
     print(f"  Sample keys: {sample_keys[0]}")
 
-    # Find patch_mixer weights to determine num_patches
-    # CRITICAL: Must use DECODER patch_mixer (operates on num_patches dimension)
-    # NOT backbone encoder patch_mixer (operates on d_model dimension)
-
-    # SSL checkpoint structure: encoder.decoder.decoder_block.mixers...patch_mixer
-    # Look for decoder patch mixer specifically (inside encoder.decoder)
-    decoder_patch_mixer_keys = [k for k in state_dict.keys()
-                                if 'encoder.decoder' in k and 'patch_mixer' in k and 'mlp.fc1.weight' in k]
-
-    if decoder_patch_mixer_keys:
-        # Use decoder patch mixer - this operates on num_patches dimension
-        first_key = decoder_patch_mixer_keys[0]
-        weight = state_dict[first_key]
-        num_patches = weight.shape[1]  # Input dimension = num_patches
-        print(f"  ✓ Detected from decoder patch_mixer: num_patches = {num_patches}")
-        print(f"  Key: {first_key} → shape {weight.shape}")
-    else:
-        # Fallback: try to infer from patcher
-        patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder.backbone' in k]
-        if patcher_keys:
-            patcher_weight = state_dict[patcher_keys[0]]
-            d_model = patcher_weight.shape[0]  # Output dimension
-            patch_input_dim = patcher_weight.shape[1]  # Input dimension
-
-            # Assume 2 input channels (PPG + ECG)
-            patch_size = patch_input_dim // 2
-            num_patches = 1024 // patch_size  # Assume context_length = 1024
-
-            print(f"  ✓ Inferred from patcher weights:")
-            print(f"    d_model={d_model}, patch_input={patch_input_dim}")
-            print(f"    Calculated: patch_size={patch_size}, num_patches={num_patches}")
-        else:
-            raise ValueError(
-                "Could not find decoder patch_mixer or patcher weights.\n"
-                "Cannot determine model architecture."
-            )
-
-    # Detect d_model and patch_size from patcher output dimension
+    # STEP 1: Detect d_model and patch_size from patcher (RELIABLE)
+    # TTM patcher converts [channels, patch_size] → [d_model]
     patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
-    if patcher_keys:
-        patcher_weight = state_dict[patcher_keys[0]]
-        d_model = patcher_weight.shape[0]  # Output dimension
-        patch_size = patcher_weight.shape[1]  # Input dimension = patch_size (TTM patches per channel)
-        context_length = num_patches * patch_size
+    if not patcher_keys:
+        raise ValueError(
+            "Could not find patcher weights in checkpoint.\n"
+            "Cannot determine model architecture."
+        )
 
-        print(f"  ✓ Detected from patcher:")
-        print(f"    d_model={d_model}, patch_size={patch_size}, context_length={context_length}")
-        print(f"    (patcher operates on each channel separately, so patch_input_dim = patch_size)")
-    else:
-        # Fallback to config or defaults
-        if 'config' in checkpoint:
-            ssl_config = checkpoint['config']
-            stored_context = ssl_config.get('context_length', None)
-            stored_patch_size = ssl_config.get('patch_size', None)
+    patcher_weight = state_dict[patcher_keys[0]]
+    d_model = patcher_weight.shape[0]  # Output dimension
+    patch_size = patcher_weight.shape[1]  # Input dimension = patch_size per channel
 
-            if stored_patch_size:
-                patch_size = stored_patch_size
-                context_length = num_patches * patch_size
-                d_model = 256  # Default
-                print(f"  Config: patch_size={patch_size}, context_length={context_length}")
-                print(f"  Using default d_model={d_model}")
-            else:
-                # Infer from num_patches
-                if num_patches == 16:
-                    patch_size = 64  # 1024 / 16
-                    context_length = 1024
-                    d_model = 192  # Common for SSL
-                else:
-                    patch_size = 125  # TTM default
-                    context_length = num_patches * patch_size
-                    d_model = 256  # Common default
+    print(f"  ✓ Step 1: Detected from patcher:")
+    print(f"    Key: {patcher_keys[0]}")
+    print(f"    Shape: {patcher_weight.shape}")
+    print(f"    → d_model: {d_model}")
+    print(f"    → patch_size: {patch_size}")
+    print(f"    (TTM patcher operates per-channel: input_dim = patch_size)")
 
-                print(f"  ⚠ No patch_size in config, inferring:")
-                print(f"    patch_size={patch_size}, context_length={context_length}, d_model={d_model}")
+    # STEP 2: Determine context_length
+    # Try to get from checkpoint config, else assume VitalDB standard (1024)
+    if 'config' in checkpoint:
+        ssl_config = checkpoint['config']
+        context_length = ssl_config.get('context_length', None)
+        if context_length:
+            print(f"  ✓ Step 2: From checkpoint config:")
+            print(f"    → context_length: {context_length}")
         else:
-            # No config - infer everything
-            if num_patches == 16:
-                patch_size = 64
-                context_length = 1024
-                d_model = 192
-            else:
-                patch_size = 125
-                context_length = num_patches * patch_size
-                d_model = 256
+            context_length = 1024  # VitalDB standard
+            print(f"  ⚠️  Step 2: No context_length in config, assuming VitalDB standard:")
+            print(f"    → context_length: {context_length}")
+    else:
+        context_length = 1024  # VitalDB standard
+        print(f"  ⚠️  Step 2: No config in checkpoint, assuming VitalDB standard:")
+        print(f"    → context_length: {context_length}")
 
-            print(f"  ⚠ No config, inferring all parameters:")
-            print(f"    patch_size={patch_size}, context_length={context_length}, d_model={d_model}")
+    # STEP 3: Calculate num_patches
+    num_patches = context_length // patch_size
+    print(f"  ✓ Step 3: Calculated:")
+    print(f"    num_patches = context_length / patch_size")
+    print(f"              = {context_length} / {patch_size}")
+    print(f"              = {num_patches}")
 
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
