@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Fine-tuning Script for BUT-PPG Quality Classification.
 
-This script fine-tunes a 2-channel SSL pretrained model on 5-channel BUT-PPG data
+This script fine-tunes a 2-channel SSL pretrained model on 2-channel BUT-PPG data
 for PPG quality classification (good vs poor).
 
+Data Format:
+- BUT-PPG data: 2 channels [PPG, ECG] in windowed format
+- Each window: individual NPZ file with shape [2, 1024]
+- No channel inflation needed (both SSL and fine-tuning use 2 channels)
+
 Strategy:
-1. Load 2-channel pretrained checkpoint
-2. Inflate to 5 channels (ACC_X, ACC_Y, ACC_Z, PPG, ECG)
+1. Load 2-channel pretrained checkpoint from SSL pre-training
+2. Add classification head for binary quality prediction
 3. Staged unfreezing:
    - Stage 1 (3-5 epochs): Head-only training
    - Stage 2 (remaining epochs): Unfreeze last N encoder blocks
@@ -17,9 +22,7 @@ Usage:
     # Quick test (1 epoch)
     python scripts/finetune_butppg.py \
         --pretrained artifacts/foundation_model/best_model.pt \
-        --data-dir data/processed/butppg/windows \
-        --pretrain-channels 2 \
-        --finetune-channels 5 \
+        --data-dir data/processed/butppg/windows_with_labels \
         --unfreeze-last-n 2 \
         --epochs 1 \
         --lr 2e-5 \
@@ -28,7 +31,7 @@ Usage:
     # Full training (30 epochs with staged unfreezing)
     python scripts/finetune_butppg.py \
         --pretrained artifacts/foundation_model/best_model.pt \
-        --data-dir data/processed/butppg/windows \
+        --data-dir data/processed/butppg/windows_with_labels \
         --epochs 30 \
         --head-only-epochs 5 \
         --unfreeze-last-n 2 \
@@ -56,62 +59,85 @@ from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 from tqdm import tqdm
 
-from src.models.channel_utils import (
-    load_pretrained_with_channel_inflate,
-    unfreeze_last_n_blocks
-)
+from src.models.channel_utils import unfreeze_last_n_blocks
 
 
 class BUTPPGDataset(Dataset):
     """Dataset for BUT-PPG quality classification.
 
-    Expected data format:
-    - signals: [N, 5, 1024] - 5 channels (ACC_X, ACC_Y, ACC_Z, PPG, ECG)
-    - labels: [N] - binary labels (0=poor, 1=good)
+    Expected data format (windowed):
+    - Directory containing individual window files: window_*.npz
+    - Each window NPZ contains:
+      - 'signal': [2, 1024] - 2 channels (PPG, ECG)
+      - 'quality': float - quality label (0=poor, 1=good)
+      - Additional metadata: 'hr', 'motion', 'bp_systolic', 'bp_diastolic', etc.
 
     Channels:
-    0: ACC_X (accelerometer X-axis)
-    1: ACC_Y (accelerometer Y-axis)
-    2: ACC_Z (accelerometer Z-axis)
-    3: PPG (photoplethysmogram)
-    4: ECG (electrocardiogram)
+    0: PPG (photoplethysmogram)
+    1: ECG (electrocardiogram)
+
+    Note: BUT-PPG dataset does NOT contain accelerometer data.
     """
 
-    def __init__(self, data_file: Path, normalize: bool = True):
-        """Initialize BUT-PPG dataset.
+    def __init__(self, data_dir: Path, normalize: bool = True):
+        """Initialize BUT-PPG dataset from windowed format.
 
         Args:
-            data_file: Path to .npz file containing 'signals' and 'labels'
+            data_dir: Path to directory containing window_*.npz files
             normalize: Whether to apply z-score normalization per channel
         """
-        print(f"Loading BUT-PPG data from: {data_file}")
-        data = np.load(data_file)
+        print(f"Loading BUT-PPG data from: {data_dir}")
 
-        # Support both 'signals' and 'data' keys (data prep inconsistency)
-        if 'signals' in data:
-            signals_array = data['signals']
-        elif 'data' in data:
-            signals_array = data['data']
-        else:
-            raise KeyError(f"Expected 'signals' or 'data' key in {data_file}, found: {list(data.keys())}")
+        data_dir = Path(data_dir)
+        if not data_dir.exists():
+            raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
-        self.signals = torch.from_numpy(signals_array).float()
-        self.labels = torch.from_numpy(data['labels']).long()     # [N]
+        # Find all window files
+        window_files = sorted(data_dir.glob('window_*.npz'))
 
-        # Handle different axis orders: [N, T, C] vs [N, C, T]
-        if len(self.signals.shape) == 3:
-            # Check if we need to transpose
-            if self.signals.shape[1] == 1024 and self.signals.shape[2] == 5:
-                # Data is [N, T, C] but we need [N, C, T]
-                print(f"  ⚠️  Transposing from [N, T, C] to [N, C, T]")
-                self.signals = self.signals.transpose(1, 2)  # [N, 1024, 5] → [N, 5, 1024]
+        if len(window_files) == 0:
+            raise FileNotFoundError(
+                f"No window files found in {data_dir}\n"
+                f"Expected files matching pattern: window_*.npz\n"
+                f"Make sure to run data preparation first:\n"
+                f"  python scripts/prepare_all_data.py --dataset butppg --mode fasttrack"
+            )
+
+        # Load all windows
+        signals_list = []
+        labels_list = []
+
+        for window_file in window_files:
+            data = np.load(window_file)
+
+            # Load signal [2, 1024]
+            if 'signal' not in data:
+                raise KeyError(f"Expected 'signal' key in {window_file}, found: {list(data.keys())}")
+
+            signal = data['signal']  # [2, 1024]
+
+            # Load quality label
+            if 'quality' in data:
+                quality = data['quality']
+                # Convert to binary: assume quality is already 0/1 or convert threshold
+                label = int(quality) if not np.isnan(quality) else 0
+            else:
+                # If no quality label, default to 0 (poor)
+                label = 0
+
+            signals_list.append(signal)
+            labels_list.append(label)
+
+        # Stack into tensors
+        self.signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, 2, 1024]
+        self.labels = torch.tensor(labels_list, dtype=torch.long)  # [N]
 
         # Validate shapes
         N, C, T = self.signals.shape
-        assert C == 5, f"Expected 5 channels, got {C}"
+        assert C == 2, f"Expected 2 channels, got {C}"
         assert T == 1024, f"Expected 1024 timesteps, got {T} (make sure data was prepared with --window-size 1024)"
         assert len(self.labels) == N, f"Label count mismatch: {len(self.labels)} vs {N}"
-        
+
         # Normalize if requested
         if normalize:
             # Z-score normalization per channel
@@ -121,11 +147,11 @@ class BUTPPGDataset(Dataset):
                 std = channel_data.std()
                 if std > 0:
                     self.signals[:, c, :] = (channel_data - mean) / std
-        
+
         # Print dataset info
         n_good = (self.labels == 1).sum().item()
         n_poor = (self.labels == 0).sum().item()
-        print(f"  Loaded {N} samples:")
+        print(f"  Loaded {N} samples from {len(window_files)} windows:")
         print(f"    - Good quality: {n_good} ({n_good/N*100:.1f}%)")
         print(f"    - Poor quality: {n_poor} ({n_poor/N*100:.1f}%)")
         print(f"    - Shape: {self.signals.shape}")
@@ -145,12 +171,19 @@ def create_dataloaders(
 ) -> Tuple[DataLoader, Optional[DataLoader], Optional[DataLoader]]:
     """Create dataloaders for BUT-PPG.
 
-    Supports two directory structures:
-    1. Flat: data_dir/{train,val,test}.npz
-    2. Nested: data_dir/{train,val,test}/data.npz (from prepare_all_data.py)
+    Expected structure (windowed format from prepare_all_data.py):
+    data_dir/
+      ├── train/
+      │   ├── window_000001.npz
+      │   ├── window_000002.npz
+      │   └── ...
+      ├── val/
+      │   └── window_*.npz
+      └── test/
+          └── window_*.npz
 
     Args:
-        data_dir: Directory containing BUT-PPG data
+        data_dir: Directory containing train/val/test subdirectories
         batch_size: Batch size for dataloaders
         num_workers: Number of data loading workers
         use_val: Whether to create validation loader
@@ -166,54 +199,29 @@ def create_dataloaders(
     print("=" * 70)
     print(f"Data directory: {data_dir}")
 
-    # Support multiple directory structures
-    def find_data_file(split_name: str) -> Optional[Path]:
-        """Find data file for a split, supporting multiple directory structures."""
-        # Try different possible paths (in order of preference)
-        possible_paths = [
-            # Structure 1: Flat structure with simple names
-            data_dir / f'{split_name}.npz',
+    # Find split directories
+    train_dir = data_dir / 'train'
+    val_dir = data_dir / 'val'
+    test_dir = data_dir / 'test'
 
-            # Structure 2: Nested with data.npz
-            data_dir / split_name / 'data.npz',
-
-            # Structure 3: All in train/ with _windows suffix (from prepare_all_data.py)
-            data_dir / 'train' / f'{split_name}_windows.npz',
-
-            # Structure 4: Direct _windows suffix
-            data_dir / f'{split_name}_windows.npz',
-        ]
-
-        for path in possible_paths:
-            if path.exists():
-                return path
-
-        return None
-
-    train_file = find_data_file('train')
-    val_file = find_data_file('val')
-    test_file = find_data_file('test')
-
-    if train_file is None:
-        # Provide helpful error message
-        possible_paths = [
-            data_dir / 'train.npz',
-            data_dir / 'train' / 'data.npz',
-            data_dir / 'train' / 'train_windows.npz',
-            data_dir / 'train_windows.npz',
-        ]
+    if not train_dir.exists():
         raise FileNotFoundError(
-            f"Training data not found. Looked for:\n" +
-            "\n".join(f"  - {p}" for p in possible_paths) +
-            f"\n\nMake sure to run data preparation first:\n"
+            f"Training directory not found: {train_dir}\n"
+            f"\nExpected structure:\n"
+            f"  {data_dir}/\n"
+            f"    ├── train/\n"
+            f"    │   └── window_*.npz\n"
+            f"    ├── val/\n"
+            f"    └── test/\n"
+            f"\nMake sure to run data preparation first:\n"
             f"  python scripts/prepare_all_data.py --dataset butppg --mode fasttrack\n\n"
             f"Or if you have data elsewhere, use:\n"
-            f"  --data-dir /path/to/your/butppg/data"
+            f"  --data-dir /path/to/your/butppg/windows_with_labels"
         )
-    
+
     # Create training loader
-    print(f"\n✓ Found training data: {train_file}")
-    train_dataset = BUTPPGDataset(train_file, normalize=True)
+    print(f"\n✓ Found training directory: {train_dir}")
+    train_dataset = BUTPPGDataset(train_dir, normalize=True)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -224,9 +232,9 @@ def create_dataloaders(
 
     # Create validation loader
     val_loader = None
-    if use_val and val_file is not None:
-        print(f"✓ Found validation data: {val_file}")
-        val_dataset = BUTPPGDataset(val_file, normalize=True)
+    if use_val and val_dir.exists():
+        print(f"✓ Found validation directory: {val_dir}")
+        val_dataset = BUTPPGDataset(val_dir, normalize=True)
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -235,13 +243,13 @@ def create_dataloaders(
             pin_memory=True
         )
     else:
-        print("⚠ Validation data not found, will use test set for validation")
+        print("⚠ Validation directory not found, will use test set for validation")
 
     # Create test loader
     test_loader = None
-    if test_file is not None:
-        print(f"✓ Found test data: {test_file}")
-        test_dataset = BUTPPGDataset(test_file, normalize=True)
+    if test_dir.exists():
+        print(f"✓ Found test directory: {test_dir}")
+        test_dataset = BUTPPGDataset(test_dir, normalize=True)
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -250,7 +258,7 @@ def create_dataloaders(
             pin_memory=True
         )
     else:
-        print("⚠ Test data not found")
+        print("⚠ Test directory not found")
 
     print("=" * 70)
     return train_loader, val_loader, test_loader
@@ -463,65 +471,73 @@ def verify_data_structure(data_dir: Path):
         print(f"     python scripts/prepare_all_data.py --dataset butppg --mode fasttrack")
         return
 
-    print("\n📁 Directory contents:")
-    has_files = False
-    for item in sorted(data_dir.rglob("*")):
-        if item.is_file():
-            rel_path = item.relative_to(data_dir)
-            size_mb = item.stat().st_size / (1024 * 1024)
-            print(f"  {'📄' if item.suffix == '.npz' else '📝'} {rel_path} ({size_mb:.2f} MB)")
-            has_files = True
+    # Check for train/val/test subdirectories
+    print("\n📁 Expected structure:")
+    for split in ['train', 'val', 'test']:
+        split_dir = data_dir / split
+        if split_dir.exists():
+            window_files = list(split_dir.glob('window_*.npz'))
+            print(f"  ✅ {split}/ ({len(window_files)} windows)")
+        else:
+            print(f"  ❌ {split}/ (not found)")
 
-    if not has_files:
-        print(f"  (empty)")
-        return
+    # Sample and inspect a few window files
+    print("\n🔍 Inspecting sample window files:")
+    sample_count = 0
+    for split in ['train', 'val', 'test']:
+        split_dir = data_dir / split
+        if not split_dir.exists():
+            continue
 
-    # Check .npz files
-    npz_files = list(data_dir.rglob("*.npz"))
-    if npz_files:
-        print(f"\n🔍 Inspecting .npz files:")
-        for npz_file in sorted(npz_files):
-            try:
-                data = np.load(npz_file)
-                rel_path = npz_file.relative_to(data_dir)
-                print(f"\n  {rel_path}:")
-                print(f"    Keys: {list(data.keys())}")
+        window_files = sorted(split_dir.glob('window_*.npz'))
+        if not window_files:
+            print(f"\n  ⚠️  {split}/: No window files found")
+            continue
 
-                # Support both 'signals' and 'data' keys
-                if 'signals' in data:
-                    signals = data['signals']
-                elif 'data' in data:
-                    signals = data['data']
-                else:
-                    signals = None
+        # Inspect first window file
+        sample_file = window_files[0]
+        try:
+            data = np.load(sample_file)
+            rel_path = sample_file.relative_to(data_dir)
+            print(f"\n  {rel_path}:")
+            print(f"    Keys: {list(data.keys())}")
 
-                if signals is not None:
-                    print(f"    Signals shape: {signals.shape}")
-                    if len(signals.shape) == 3:
-                        N, C, T = signals.shape
-                        print(f"      N={N} samples, C={C} channels, T={T} timesteps")
+            # Check signal
+            if 'signal' in data:
+                signal = data['signal']
+                print(f"    Signal shape: {signal.shape}")
 
-                        # Validate
-                        status = []
-                        if C == 5:
-                            status.append("✅ 5 channels")
-                        else:
-                            status.append(f"⚠️  {C} channels (expected 5)")
+                if len(signal.shape) == 2:
+                    C, T = signal.shape
+                    status = []
+                    if C == 2:
+                        status.append("✅ 2 channels (PPG, ECG)")
+                    else:
+                        status.append(f"⚠️  {C} channels (expected 2)")
 
-                        if T == 1024:
-                            status.append("✅ 1024 timesteps")
-                        else:
-                            status.append(f"⚠️  {T} timesteps (expected 1024)")
+                    if T == 1024:
+                        status.append("✅ 1024 timesteps")
+                    else:
+                        status.append(f"⚠️  {T} timesteps (expected 1024)")
 
-                        print(f"      Status: {', '.join(status)}")
+                    print(f"      Status: {', '.join(status)}")
+            else:
+                print(f"    ⚠️  No 'signal' key found")
 
-                if 'labels' in data:
-                    labels = data['labels']
-                    unique = np.unique(labels)
-                    print(f"    Labels: {len(labels)} samples, unique values: {unique}")
+            # Check labels
+            if 'quality' in data:
+                quality = data['quality']
+                print(f"    Quality label: {quality}")
+            else:
+                print(f"    ⚠️  No 'quality' key found")
 
-            except Exception as e:
-                print(f"    ❌ Error loading: {e}")
+            sample_count += 1
+
+        except Exception as e:
+            print(f"    ❌ Error loading: {e}")
+
+    if sample_count == 0:
+        print("\n  ❌ No valid window files found!")
 
     print("\n" + "=" * 70)
     print("✓ Verification complete")
@@ -547,22 +563,8 @@ def parse_args():
     parser.add_argument(
         '--data-dir',
         type=str,
-        default='data/processed/butppg/windows',
-        help='Directory containing BUT-PPG data (supports both flat and nested structure)'
-    )
-    
-    # Channel inflation
-    parser.add_argument(
-        '--pretrain-channels',
-        type=int,
-        default=2,
-        help='Number of channels in pretrained model'
-    )
-    parser.add_argument(
-        '--finetune-channels',
-        type=int,
-        default=5,
-        help='Number of channels for fine-tuning'
+        default='data/processed/butppg/windows_with_labels',
+        help='Directory containing BUT-PPG windowed data (train/val/test subdirectories)'
     )
     
     # Training configuration
@@ -692,7 +694,7 @@ def main():
     print("=" * 70)
     print(f"Pretrained model: {args.pretrained}")
     print(f"Data directory: {args.data_dir}")
-    print(f"Channel inflation: {args.pretrain_channels} → {args.finetune_channels}")
+    print(f"Channels: 2 (PPG + ECG)")
     print(f"Total epochs: {args.epochs}")
     print(f"  Stage 1 (head-only): {args.head_only_epochs} epochs")
     print(f"  Stage 2 (partial unfreeze): {args.epochs - args.head_only_epochs} epochs")
@@ -703,31 +705,50 @@ def main():
     print(f"Device: {args.device}")
     print(f"AMP: {not args.no_amp and torch.cuda.is_available()}")
     print("=" * 70)
-    
-    # Load pretrained model and inflate channels
+
+    # Load pretrained model (2 channels, no inflation needed)
     print("\n" + "=" * 70)
-    print("LOADING PRETRAINED MODEL AND INFLATING CHANNELS")
+    print("LOADING PRETRAINED MODEL")
     print("=" * 70)
-    
+
     model_config = {
         'variant': 'ibm-granite/granite-timeseries-ttm-r1',
         'task': 'classification',
         'num_classes': 2,  # Binary classification: good vs poor
-        'input_channels': args.finetune_channels,
+        'input_channels': 2,  # PPG + ECG (same as SSL pre-training)
         'context_length': 1024,
         'patch_size': 128,
         'head_type': 'linear',
-        'freeze_encoder': False  # Will be set by load_pretrained_with_channel_inflate
+        'freeze_encoder': True  # Start with encoder frozen
     }
-    
-    model = load_pretrained_with_channel_inflate(
-        checkpoint_path=args.pretrained,
-        pretrain_channels=args.pretrain_channels,
-        finetune_channels=args.finetune_channels,
-        freeze_pretrained=True,  # Start with encoder frozen
-        model_config=model_config,
-        device=args.device
+
+    # Load pretrained checkpoint
+    print(f"Loading checkpoint: {args.pretrained}")
+    checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
+
+    # Create model with classification head
+    from src.models.ttm_adapter import TTMAdapter
+    model = TTMAdapter(
+        variant=model_config['variant'],
+        task='classification',
+        num_classes=2,
+        input_channels=2,
+        context_length=1024,
+        freeze_encoder=True
     )
+
+    # Load encoder weights from SSL checkpoint
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+
+    # Load encoder weights (ignore missing head weights - we have a new task)
+    model.load_state_dict(state_dict, strict=False)
+    print("✓ Loaded SSL encoder weights")
+    print("✓ Initialized new classification head (2 classes)")
+
+    model = model.to(args.device)
     
     # Create dataloaders
     train_loader, val_loader, test_loader = create_dataloaders(
