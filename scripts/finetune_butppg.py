@@ -796,6 +796,27 @@ def main():
     print(f"              = {context_length} / {patch_size}")
     print(f"              = {num_patches}")
 
+    # STEP 4: Determine if SSL used IBM pretrained
+    # SSL with patch_size=64, context=1024 likely loaded IBM pretrained first
+    # (IBM pretrained was loaded with patch=128 config, but actually uses patch=64)
+    ssl_used_ibm_pretrained = (context_length == 1024 and patch_size == 64)
+
+    # CRITICAL FIX: For IBM pretrained detection, check d_model=192 as well
+    # IBM TTM-Enhanced has d_model=192, context=1024
+    if context_length == 1024 and d_model == 192:
+        ssl_used_ibm_pretrained = True
+
+    if ssl_used_ibm_pretrained:
+        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced (946K params)")
+        print(f"     Detected: context={context_length}, d_model={d_model}, patch={patch_size}")
+        print(f"     Will load IBM pretrained with patch=128 to match SSL architecture")
+        # Use patch=128 to load IBM pretrained, then it will auto-adjust to patch=64
+        model_patch_size = 128  # This loads IBM pretrained
+    else:
+        print(f"\n  ⚠️  SSL checkpoint used custom architecture (not IBM pretrained)")
+        print(f"     Will create fresh TTM with patch={patch_size}")
+        model_patch_size = patch_size
+
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
 
@@ -803,9 +824,11 @@ def main():
     print(f"  Task: classification (2 classes)")
     print(f"  Input channels: 2 (PPG + ECG)")
     print(f"  Context length: {context_length}")
-    print(f"  Patch size: {patch_size}")
+    print(f"  Patch size for model creation: {model_patch_size} (config)")
+    print(f"  Expected actual patch size: {patch_size} (from SSL checkpoint)")
     print(f"  d_model: {d_model}")
     print(f"  Freeze encoder: True (will train head only in Stage 1)")
+    print(f"  Using IBM pretrained: {ssl_used_ibm_pretrained}")
 
     model = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
@@ -813,10 +836,34 @@ def main():
         num_classes=2,
         input_channels=2,
         context_length=context_length,
-        patch_size=patch_size,  # Match SSL training
-        d_model=d_model,  # Match SSL training
+        patch_size=model_patch_size,  # Use 128 to load IBM pretrained
+        d_model=d_model,
         freeze_encoder=True
     )
+
+    # Verify model architecture matches SSL checkpoint
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"\n✅ Model created successfully:")
+    print(f"  Total parameters: {total_params:,}")
+
+    if ssl_used_ibm_pretrained:
+        # IBM encoder (~946K) + decoder (~28K) + head (~400)
+        expected_params = 946904 + 28490 + 386  # Approx
+        if abs(total_params - expected_params) < 100000:
+            print(f"  ✓ Parameter count matches IBM TTM-Enhanced (~{expected_params:,})")
+        else:
+            print(f"  ⚠️  Parameter mismatch: got {total_params:,}, expected ~{expected_params:,}")
+            print(f"     This may indicate the model didn't load IBM pretrained correctly")
+
+    # Verify actual patch_size after model creation
+    print(f"\nVerifying model configuration:")
+    print(f"  Model context_length: {model.context_length}")
+    print(f"  Model patch_size: {model.patch_size}")
+    print(f"  Model num_patches: {model.num_patches}")
+
+    if model.patch_size != patch_size:
+        print(f"  ⚠️  WARNING: Model patch_size ({model.patch_size}) != SSL checkpoint ({patch_size})")
+        print(f"     Weight loading may have dimension mismatches!")
 
     # Load encoder weights from SSL checkpoint
     # Note: state_dict was already loaded earlier for architecture detection
