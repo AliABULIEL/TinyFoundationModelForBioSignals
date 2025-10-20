@@ -789,17 +789,17 @@ def main():
                 "Cannot determine model architecture."
             )
 
-    # Detect d_model from patcher output dimension
+    # Detect d_model and patch_size from patcher output dimension
     patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
     if patcher_keys:
         patcher_weight = state_dict[patcher_keys[0]]
         d_model = patcher_weight.shape[0]  # Output dimension
-        patch_input_dim = patcher_weight.shape[1]  # Input dimension = patch_size * num_input_channels
-        patch_size = patch_input_dim // 2  # Assume 2 channels (PPG + ECG)
+        patch_size = patcher_weight.shape[1]  # Input dimension = patch_size (TTM patches per channel)
         context_length = num_patches * patch_size
 
         print(f"  ✓ Detected from patcher:")
         print(f"    d_model={d_model}, patch_size={patch_size}, context_length={context_length}")
+        print(f"    (patcher operates on each channel separately, so patch_input_dim = patch_size)")
     else:
         # Fallback to config or defaults
         if 'config' in checkpoint:

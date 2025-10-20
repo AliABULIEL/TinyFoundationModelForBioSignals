@@ -62,14 +62,14 @@ def inspect_checkpoint(checkpoint_path):
         num_patches = weight.shape[1]
         print(f"\n  ✓ Detected num_patches: {num_patches}")
 
-        # Also check patcher for d_model
+        # Also check patcher for d_model and patch_size
         patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
         if patcher_keys:
             patcher_weight = state_dict[patcher_keys[0]]
             d_model = patcher_weight.shape[0]
-            patch_input_dim = patcher_weight.shape[1]
-            print(f"\n  ✓ From patcher: d_model={d_model}, patch_input_dim={patch_input_dim}")
-            print(f"    Inferred patch_size={patch_input_dim // 2} (assuming 2 input channels)")
+            patch_size = patcher_weight.shape[1]  # TTM patcher operates per channel
+            print(f"\n  ✓ From patcher: d_model={d_model}, patch_size={patch_size}")
+            print(f"    (patcher input_dim = patch_size, operates on each channel separately)")
     else:
         print(f"\n  ❌ No patch_mixer keys found")
         print(f"\n  All keys in state_dict:")
@@ -94,9 +94,8 @@ def inspect_checkpoint(checkpoint_path):
 
         # Use detected patch_size if available, otherwise use stored
         if 'patcher_keys' in locals() and patcher_keys:
-            calc_patch_size = patch_input_dim // 2
-            context_length = num_patches * calc_patch_size
-            print(f"\n  Calculated context_length: {num_patches} × {calc_patch_size} = {context_length} samples")
+            context_length = num_patches * patch_size
+            print(f"\n  Calculated context_length: {num_patches} × {patch_size} = {context_length} samples")
         elif stored_patch_size:
             context_length = num_patches * stored_patch_size
             print(f"\n  Calculated context_length: {num_patches} × {stored_patch_size} = {context_length} samples")
@@ -109,8 +108,8 @@ def inspect_checkpoint(checkpoint_path):
         print(f"\nWhen loading this checkpoint for fine-tuning, use:")
         print(f"  - num_patches: {num_patches}")
         if 'patcher_keys' in locals() and patcher_keys:
-            print(f"  - patch_size: {patch_input_dim // 2}")
-            print(f"  - context_length: {num_patches * (patch_input_dim // 2)}")
+            print(f"  - patch_size: {patch_size}")
+            print(f"  - context_length: {num_patches * patch_size}")
             print(f"  - d_model: {d_model}")
 
         if 'config' in checkpoint:
