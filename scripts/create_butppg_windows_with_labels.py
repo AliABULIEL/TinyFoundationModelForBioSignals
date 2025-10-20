@@ -219,8 +219,18 @@ def load_csv_annotations(data_dir: Path) -> Tuple[Optional[pd.DataFrame], Option
     quality_hr_df = None
     if quality_hr_path.exists():
         quality_hr_df = pd.read_csv(quality_hr_path)
+
+        # Normalize column names (handle both lowercase and capitalized)
+        quality_hr_df.columns = quality_hr_df.columns.str.lower().str.strip()
+
+        # Handle 'ID' vs 'record' column
+        if 'id' in quality_hr_df.columns and 'record' not in quality_hr_df.columns:
+            quality_hr_df.rename(columns={'id': 'record'}, inplace=True)
+
         # Set record ID as index for fast lookup
         if 'record' in quality_hr_df.columns:
+            # Convert to string for consistent matching
+            quality_hr_df['record'] = quality_hr_df['record'].astype(str)
             quality_hr_df.set_index('record', inplace=True)
 
     # Load subject-info.csv
@@ -228,7 +238,19 @@ def load_csv_annotations(data_dir: Path) -> Tuple[Optional[pd.DataFrame], Option
     subject_info_df = None
     if subject_info_path.exists():
         subject_info_df = pd.read_csv(subject_info_path)
-        if 'participant' in subject_info_df.columns:
+
+        # Normalize column names
+        subject_info_df.columns = subject_info_df.columns.str.lower().str.strip()
+
+        # Clean up column names (remove units in brackets)
+        subject_info_df.columns = [col.split('[')[0].strip() for col in subject_info_df.columns]
+
+        # Handle 'id' vs 'participant' column
+        if 'id' in subject_info_df.columns and 'participant' not in subject_info_df.columns:
+            # Extract participant ID (first 3 digits from full ID)
+            subject_info_df['participant'] = subject_info_df['id'].astype(str).str[:3].astype(int)
+            subject_info_df.set_index('participant', inplace=True)
+        elif 'participant' in subject_info_df.columns:
             subject_info_df.set_index('participant', inplace=True)
 
     return quality_hr_df, subject_info_df
@@ -249,6 +271,9 @@ def get_recording_labels(
     Returns:
         Dictionary of clinical labels
     """
+    # Ensure record_id is string
+    record_id = str(record_id)
+
     labels = {
         # Primary clinical labels
         'quality': np.nan,
@@ -290,8 +315,15 @@ def get_recording_labels(
             labels['motion'] = int(row['motion'])
 
         # Blood pressure (parse "120/80" format)
-        if 'bp' in row and pd.notna(row['bp']):
-            bp_str = str(row['bp']).strip()
+        # Try both 'bp' and 'blood pressure' (normalized from 'Blood pressure [mmHg]')
+        bp_col = None
+        for col in ['bp', 'blood pressure']:
+            if col in row:
+                bp_col = col
+                break
+
+        if bp_col and pd.notna(row[bp_col]):
+            bp_str = str(row[bp_col]).strip()
             if '/' in bp_str:
                 try:
                     sys, dia = bp_str.split('/')
@@ -312,8 +344,15 @@ def get_recording_labels(
         if 'age' in row and not pd.isna(row['age']):
             labels['age'] = float(row['age'])
 
-        if 'sex' in row and not pd.isna(row['sex']):
-            labels['sex'] = str(row['sex'])
+        # Gender/sex (try both column names)
+        sex_col = None
+        for col in ['sex', 'gender']:
+            if col in row:
+                sex_col = col
+                break
+
+        if sex_col and not pd.isna(row[sex_col]):
+            labels['sex'] = str(row[sex_col])
 
         if 'bmi' in row and not pd.isna(row['bmi']):
             labels['bmi'] = float(row['bmi'])
