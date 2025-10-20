@@ -44,20 +44,32 @@ def inspect_checkpoint(checkpoint_path):
     for i, key in enumerate(list(state_dict.keys())[:10]):
         print(f"    {key}")
 
-    # Find patch_mixer weights to determine num_patches
-    patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
+    # Find DECODER patch_mixer weights to determine num_patches
+    # (Backbone encoder patch_mixer operates on d_model, not num_patches)
+    # SSL checkpoint structure: encoder.decoder.decoder_block...
+    decoder_patch_mixer_keys = [k for k in state_dict.keys()
+                                if 'encoder.decoder' in k and 'patch_mixer' in k and 'mlp.fc1.weight' in k]
 
-    if patch_mixer_keys:
-        # Get first patch_mixer MLP weight
-        key = patch_mixer_keys[0]
+    if decoder_patch_mixer_keys:
+        # Get first decoder patch_mixer MLP weight
+        key = decoder_patch_mixer_keys[0]
         weight = state_dict[key]
-        print(f"\n  ✓ Found patch_mixer weights!")
+        print(f"\n  ✓ Found decoder patch_mixer weights!")
         print(f"\n  {key}")
         print(f"    Shape: {weight.shape}")
 
-        # For TTM, the patch_mixer MLP input dimension = num_patches
+        # For decoder patch_mixer, input dimension = num_patches
         num_patches = weight.shape[1]
         print(f"\n  ✓ Detected num_patches: {num_patches}")
+
+        # Also check patcher for d_model
+        patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
+        if patcher_keys:
+            patcher_weight = state_dict[patcher_keys[0]]
+            d_model = patcher_weight.shape[0]
+            patch_input_dim = patcher_weight.shape[1]
+            print(f"\n  ✓ From patcher: d_model={d_model}, patch_input_dim={patch_input_dim}")
+            print(f"    Inferred patch_size={patch_input_dim // 2} (assuming 2 input channels)")
     else:
         print(f"\n  ❌ No patch_mixer keys found")
         print(f"\n  All keys in state_dict:")
@@ -74,28 +86,38 @@ def inspect_checkpoint(checkpoint_path):
         print(f"    Shape: {weight.shape}")
 
     # Calculate implied context_length
-    if 'config' in checkpoint and patch_mixer_keys:
-        patch_size = checkpoint['config'].get('patch_size', None)
-        if patch_size:
-            implied_context_length = num_patches * patch_size
-            print(f"\n  Implied context_length: {num_patches} patches × {patch_size} = {implied_context_length} samples")
+    if decoder_patch_mixer_keys:
+        if 'config' in checkpoint:
+            stored_patch_size = checkpoint['config'].get('patch_size', None)
+        else:
+            stored_patch_size = None
+
+        # Use detected patch_size if available, otherwise use stored
+        if 'patcher_keys' in locals() and patcher_keys:
+            calc_patch_size = patch_input_dim // 2
+            context_length = num_patches * calc_patch_size
+            print(f"\n  Calculated context_length: {num_patches} × {calc_patch_size} = {context_length} samples")
+        elif stored_patch_size:
+            context_length = num_patches * stored_patch_size
+            print(f"\n  Calculated context_length: {num_patches} × {stored_patch_size} = {context_length} samples")
 
     print("\n" + "=" * 70)
     print("RECOMMENDATIONS:")
     print("=" * 70)
 
-    if patch_mixer_keys:
+    if decoder_patch_mixer_keys:
         print(f"\nWhen loading this checkpoint for fine-tuning, use:")
         print(f"  - num_patches: {num_patches}")
+        if 'patcher_keys' in locals() and patcher_keys:
+            print(f"  - patch_size: {patch_input_dim // 2}")
+            print(f"  - context_length: {num_patches * (patch_input_dim // 2)}")
+            print(f"  - d_model: {d_model}")
+
         if 'config' in checkpoint:
             stored_context = checkpoint['config'].get('context_length', 'unknown')
             stored_patch = checkpoint['config'].get('patch_size', 'unknown')
             print(f"\nNote: Config says context_length={stored_context}, patch_size={stored_patch}")
-            print(f"      But actual weights expect num_patches={num_patches}")
-
-            if stored_patch and stored_patch != 'unknown':
-                correct_context = num_patches * stored_patch
-                print(f"      Correct context_length should be: {correct_context}")
+            print(f"      Detected from weights: num_patches={num_patches}")
 
     print("\n" + "=" * 70)
 

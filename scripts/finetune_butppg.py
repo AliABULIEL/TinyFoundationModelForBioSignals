@@ -753,79 +753,92 @@ def main():
     print(f"  Sample keys: {sample_keys[0]}")
 
     # Find patch_mixer weights to determine num_patches
-    # SSL checkpoints may have 'encoder.' prefix
-    patch_mixer_keys = [k for k in state_dict.keys() if 'patch_mixer' in k and 'mlp.fc1.weight' in k]
+    # CRITICAL: Must use DECODER patch_mixer (operates on num_patches dimension)
+    # NOT backbone encoder patch_mixer (operates on d_model dimension)
 
-    if not patch_mixer_keys:
-        # Show available keys for debugging
-        print(f"\n  ⚠ Could not find patch_mixer weights")
-        print(f"  Sample keys in checkpoint:")
-        for key in sample_keys:
-            print(f"    {key}")
-        raise ValueError(
-            "Could not find patch_mixer weights in checkpoint.\n"
-            "This may not be a valid TTM checkpoint or may have a different key structure."
-        )
+    # SSL checkpoint structure: encoder.decoder.decoder_block.mixers...patch_mixer
+    # Look for decoder patch mixer specifically (inside encoder.decoder)
+    decoder_patch_mixer_keys = [k for k in state_dict.keys()
+                                if 'encoder.decoder' in k and 'patch_mixer' in k and 'mlp.fc1.weight' in k]
 
-    # Get num_patches from patch_mixer MLP input dimension
-    first_patch_mixer_key = patch_mixer_keys[0]
-    patch_mixer_weight = state_dict[first_patch_mixer_key]
-    num_patches = patch_mixer_weight.shape[1]
+    if decoder_patch_mixer_keys:
+        # Use decoder patch mixer - this operates on num_patches dimension
+        first_key = decoder_patch_mixer_keys[0]
+        weight = state_dict[first_key]
+        num_patches = weight.shape[1]  # Input dimension = num_patches
+        print(f"  ✓ Detected from decoder patch_mixer: num_patches = {num_patches}")
+        print(f"  Key: {first_key} → shape {weight.shape}")
+    else:
+        # Fallback: try to infer from patcher
+        patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder.backbone' in k]
+        if patcher_keys:
+            patcher_weight = state_dict[patcher_keys[0]]
+            d_model = patcher_weight.shape[0]  # Output dimension
+            patch_input_dim = patcher_weight.shape[1]  # Input dimension
 
-    print(f"  ✓ Detected from weights: num_patches = {num_patches}")
-    print(f"  Key used: {first_patch_mixer_key}")
+            # Assume 2 input channels (PPG + ECG)
+            patch_size = patch_input_dim // 2
+            num_patches = 1024 // patch_size  # Assume context_length = 1024
 
-    # Try to get architecture from metrics (SSL training saves this)
-    if 'metrics' in checkpoint:
-        metrics = checkpoint['metrics']
-        print(f"  Metrics available: {list(metrics.keys())[:5]}")
-
-    # Extract config if available
-    if 'config' in checkpoint:
-        ssl_config = checkpoint['config']
-        stored_context = ssl_config.get('context_length', None)
-        stored_patch_size = ssl_config.get('patch_size', None)
-        print(f"  Config says: context_length={stored_context}, patch_size={stored_patch_size}")
-
-        # Use stored patch_size, but calculate correct context_length
-        if stored_patch_size:
-            patch_size = stored_patch_size
-            context_length = num_patches * patch_size
-            print(f"  ✓ Calculated actual context_length: {num_patches} × {patch_size} = {context_length}")
+            print(f"  ✓ Inferred from patcher weights:")
+            print(f"    d_model={d_model}, patch_input={patch_input_dim}")
+            print(f"    Calculated: patch_size={patch_size}, num_patches={num_patches}")
         else:
-            # Fallback: Infer patch_size from common SSL training configurations
-            # For num_patches=64, common configs:
-            #   - 1024 samples / 64 patches = 16 patch_size (8.192s @ 125Hz window)
-            #   - 4096 samples / 64 patches = 64 patch_size (32.768s @ 125Hz window)
-            #   - 8000 samples / 64 patches = 125 patch_size (64s @ 125Hz window)
+            raise ValueError(
+                "Could not find decoder patch_mixer or patcher weights.\n"
+                "Cannot determine model architecture."
+            )
 
-            # Based on VitalDB SSL training (8.192s windows), most likely patch_size=16
-            if num_patches == 64:
-                patch_size = 16  # 1024 / 64
-                context_length = 1024
-                print(f"  ⚠ No patch_size in config, inferring from num_patches")
-                print(f"  Calculated: patch_size={patch_size}, context_length={context_length}")
-                print(f"  (Assumes VitalDB SSL training: 8.192s @ 125Hz = 1024 samples)")
+    # Detect d_model from patcher output dimension
+    patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
+    if patcher_keys:
+        patcher_weight = state_dict[patcher_keys[0]]
+        d_model = patcher_weight.shape[0]  # Output dimension
+        patch_input_dim = patcher_weight.shape[1]  # Input dimension = patch_size * num_input_channels
+        patch_size = patch_input_dim // 2  # Assume 2 channels (PPG + ECG)
+        context_length = num_patches * patch_size
+
+        print(f"  ✓ Detected from patcher:")
+        print(f"    d_model={d_model}, patch_size={patch_size}, context_length={context_length}")
+    else:
+        # Fallback to config or defaults
+        if 'config' in checkpoint:
+            ssl_config = checkpoint['config']
+            stored_context = ssl_config.get('context_length', None)
+            stored_patch_size = ssl_config.get('patch_size', None)
+
+            if stored_patch_size:
+                patch_size = stored_patch_size
+                context_length = num_patches * patch_size
+                d_model = 256  # Default
+                print(f"  Config: patch_size={patch_size}, context_length={context_length}")
+                print(f"  Using default d_model={d_model}")
             else:
-                # Generic fallback
+                # Infer from num_patches
+                if num_patches == 16:
+                    patch_size = 64  # 1024 / 16
+                    context_length = 1024
+                    d_model = 192  # Common for SSL
+                else:
+                    patch_size = 125  # TTM default
+                    context_length = num_patches * patch_size
+                    d_model = 256  # Common default
+
+                print(f"  ⚠ No patch_size in config, inferring:")
+                print(f"    patch_size={patch_size}, context_length={context_length}, d_model={d_model}")
+        else:
+            # No config - infer everything
+            if num_patches == 16:
+                patch_size = 64
+                context_length = 1024
+                d_model = 192
+            else:
                 patch_size = 125
                 context_length = num_patches * patch_size
-                print(f"  ⚠ No patch_size in config, using TTM default={patch_size}")
-                print(f"  Calculated context_length: {context_length}")
-    else:
-        # No config - make educated guess based on num_patches
-        print("  ⚠ No config in checkpoint")
-        # For num_patches=64, infer from VitalDB SSL training
-        if num_patches == 64:
-            patch_size = 16  # 1024 / 64
-            context_length = 1024
-            print(f"  Inferring: patch_size={patch_size}, context_length={context_length}")
-            print(f"  (Assumes VitalDB SSL training: 8.192s @ 125Hz = 1024 samples)")
-        else:
-            # Generic fallback
-            patch_size = 125
-            context_length = num_patches * patch_size
-            print(f"  Guessing: patch_size={patch_size}, context_length={context_length}")
+                d_model = 256
+
+            print(f"  ⚠ No config, inferring all parameters:")
+            print(f"    patch_size={patch_size}, context_length={context_length}, d_model={d_model}")
 
     # Create model with classification head
     from src.models.ttm_adapter import TTMAdapter
@@ -835,6 +848,7 @@ def main():
     print(f"  Input channels: 2 (PPG + ECG)")
     print(f"  Context length: {context_length}")
     print(f"  Patch size: {patch_size}")
+    print(f"  d_model: {d_model}")
     print(f"  Freeze encoder: True (will train head only in Stage 1)")
 
     model = TTMAdapter(
@@ -843,7 +857,8 @@ def main():
         num_classes=2,
         input_channels=2,
         context_length=context_length,
-        patch_size=patch_size,  # Use same patch_size as SSL training
+        patch_size=patch_size,  # Match SSL training
+        d_model=d_model,  # Match SSL training
         freeze_encoder=True
     )
 
