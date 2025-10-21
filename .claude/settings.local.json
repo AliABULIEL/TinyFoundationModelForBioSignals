@@ -8,7 +8,9 @@
       "WebFetch(domain:physionet.org)",
       "Bash(git commit -m \"$(cat <<''EOF''\nUpdate BUT-PPG pipeline documentation for correct dataset structure\n\nUpdated documentation to reflect the actual BUT-PPG dataset structure\ndiscovered during implementation:\n\nChanges:\n========\n\n1. Download section:\n   - Updated to ZIP download method (86.7 MB single file)\n   - Corrected annotation filenames (quality-hr-ann.csv, subject-info.csv)\n   - Fixed output structure showing actual extracted directory layout\n   - Added note about 6-digit record ID format\n\n2. Processor section:\n   - Updated usage with --annotations-dir argument\n   - Corrected raw-dir path to point to extracted dataset directory\n   - Updated arguments list\n\n3. Troubleshooting section:\n   - Fixed 404 error solutions (ZIP download vs individual records)\n   - Updated missing annotations troubleshooting\n   - Added automatic column detection explanation\n   - Realistic processing time estimates (~10-15 minutes for 3,888 recordings)\n   - Better subset testing instructions\n\nKey Corrections:\n===============\nBEFORE: Individual record download, separate annotation files\nAFTER: Single ZIP download, combined annotation files\n\nBEFORE: subject_100/100001.dat\nAFTER: but-ppg-an-annotated-photoplethysmography-dataset-2.0.0/100001_PPG.dat\n\nBEFORE: PPGQualityLabels.csv, HRReference.csv, MotionLabels.csv\nAFTER: quality-hr-ann.csv (quality+HR), subject-info.csv (motion+demographics)\n\nRelated to: dd207d0 (pipeline fix)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(python:*)",
-      "Bash(tree -L 3 -d /Users/aliab/Desktop/TinyFoundationModelForBioSignals)"
+      "Bash(tree -L 3 -d /Users/aliab/Desktop/TinyFoundationModelForBioSignals)",
+      "Bash(find:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

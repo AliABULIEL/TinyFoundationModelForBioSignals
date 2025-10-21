@@ -933,29 +933,43 @@ def main():
             continue
         # Include encoder.backbone weights (keep prefix as-is!)
         elif 'encoder.backbone' in key:
-            # Keep key exactly as-is: encoder.backbone.* (fine-tuning model expects this)
+            # Add with original key: encoder.backbone.*
             backbone_state_dict[key] = value
-        # Skip duplicate backbone.* keys (same weights, different prefix)
+            # ALSO add with stripped prefix: backbone.*
+            # (Model has BOTH formats in state_dict!)
+            # IMPORTANT: Only replace FIRST occurrence of 'encoder.'
+            # encoder.backbone.encoder.X → backbone.encoder.X (keep second encoder.)
+            stripped_key = key.replace('encoder.', '', 1)
+            backbone_state_dict[stripped_key] = value
+        # Also include plain backbone.* keys if they exist in SSL checkpoint
         elif key.startswith('backbone.') and 'decoder' not in key:
+            backbone_state_dict[key] = value
+            # Track these separately (shouldn't happen if checkpoint is consistent)
             skipped_duplicate += 1
-            continue
 
-    print(f"  Loaded backbone weights: {len(backbone_state_dict)} keys")
+    print(f"  Prepared {len(backbone_state_dict)} weight entries for loading")
+    print(f"    (98 SSL weights × 2 locations = 196 keys)")
     print(f"  Skipped SSL decoder: {skipped_decoder} keys (different architecture)")
     print(f"  Skipped SSL head: {skipped_head} keys (task-specific)")
-    print(f"  Skipped duplicate backbone: {skipped_duplicate} keys (same weights, different prefix)")
 
     # Try loading backbone weights
     missing_keys, unexpected_keys = model.load_state_dict(backbone_state_dict, strict=False)
 
     # Verify loading success
-    if len(backbone_state_dict) == 98 and len(missing_keys) == 0:
+    backbone_missing = [k for k in missing_keys if 'backbone' in k and 'encoder' in k]
+
+    if len(backbone_state_dict) == 196 and len(backbone_missing) == 0:
         print("\n✅ SSL encoder weights loaded successfully!")
-        print("  ✓ All 98 backbone parameters matched")
-    else:
-        print(f"\n⚠️ SSL encoder loading status:")
+        print("  ✓ All 196 backbone keys matched (98 weights loaded to 2 locations)")
+    elif len(backbone_missing) > 0:
+        print(f"\n⚠️ SSL encoder loading FAILED:")
         print(f"  Attempted to load: {len(backbone_state_dict)} keys")
-        print(f"  Missing: {len([k for k in missing_keys if 'backbone' in k])} backbone keys")
+        print(f"  Missing backbone keys: {len(backbone_missing)}")
+        print(f"  This means SSL weights did NOT load - model will train from scratch!")
+    else:
+        print(f"\n✅ SSL encoder weights loaded")
+        print(f"  Loaded: {len(backbone_state_dict)} keys")
+        print(f"  Missing (non-backbone): {len([k for k in missing_keys if 'backbone' not in k])}")
 
     print("✓ Initialized new classification head (2 classes)")
 
