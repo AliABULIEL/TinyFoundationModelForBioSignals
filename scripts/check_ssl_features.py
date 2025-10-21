@@ -17,16 +17,27 @@ print("="*70)
 print("TESTING SSL FEATURE QUALITY")
 print("="*70)
 
-# Load data
+# Load data from individual window files
 print("\n1. Loading BUT-PPG data...")
-train_data = np.load('data/processed/butppg/windows_with_labels/train/data.npz')
-test_data = np.load('data/processed/butppg/windows_with_labels/test/data.npz')
 
-X_train = torch.FloatTensor(train_data['signals'])
-y_train = train_data['labels']
+def load_window_files(directory):
+    """Load all window_*.npz files from a directory."""
+    signals = []
+    labels = []
 
-X_test = torch.FloatTensor(test_data['signals'])
-y_test = test_data['labels']
+    window_files = sorted(Path(directory).glob('window_*.npz'))
+    for f in window_files:
+        data = np.load(f)
+        signals.append(data['signal'])  # [2, 1024]
+        labels.append(int(data['quality']))  # 0 or 1
+
+    return np.array(signals), np.array(labels)
+
+X_train, y_train = load_window_files('data/processed/butppg/windows_with_labels/train')
+X_test, y_test = load_window_files('data/processed/butppg/windows_with_labels/test')
+
+X_train = torch.FloatTensor(X_train)
+X_test = torch.FloatTensor(X_test)
 
 print(f"   Train: {len(X_train)} samples")
 print(f"   Test: {len(X_test)} samples")
