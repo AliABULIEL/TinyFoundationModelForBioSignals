@@ -821,9 +821,10 @@ def main():
     if ssl_used_ibm_pretrained:
         print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced (946K params)")
         print(f"     Detected: context={context_length}, d_model={d_model}, patch={patch_size}")
-        print(f"     Will load IBM pretrained with patch=128 to match SSL architecture")
-        # Use patch=128 to load IBM pretrained, then it will auto-adjust to patch=64
-        model_patch_size = 128  # This loads IBM pretrained
+        print(f"     Will create model with detected patch_size={patch_size} to match SSL")
+        # CRITICAL FIX: Use the detected patch_size from SSL checkpoint, not config
+        # The SSL model already loaded IBM pretrained and adapted to patch_size=64
+        model_patch_size = patch_size  # Use detected patch_size (64)
     else:
         print(f"\n  ⚠️  SSL checkpoint used custom architecture (not IBM pretrained)")
         print(f"     Will create fresh TTM with patch={patch_size}")
@@ -836,11 +837,11 @@ def main():
     print(f"  Task: classification (2 classes)")
     print(f"  Input channels: 2 (PPG + ECG)")
     print(f"  Context length: {context_length}")
-    print(f"  Patch size for model creation: {model_patch_size} (config)")
-    print(f"  Expected actual patch size: {patch_size} (from SSL checkpoint)")
+    print(f"  Patch size: {model_patch_size} (matches SSL checkpoint)")
     print(f"  d_model: {d_model}")
     print(f"  Freeze encoder: True (will train head only in Stage 1)")
-    print(f"  Using IBM pretrained: {ssl_used_ibm_pretrained}")
+    print(f"  Note: Will create fresh TTM architecture (context={context_length}, patch={model_patch_size})")
+    print(f"        Then load SSL encoder weights (not IBM pretrained)")
 
     model = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
@@ -848,7 +849,7 @@ def main():
         num_classes=2,
         input_channels=2,
         context_length=context_length,
-        patch_size=model_patch_size,  # Use 128 to load IBM pretrained
+        patch_size=model_patch_size,  # Use detected patch_size (64) to match SSL checkpoint
         d_model=d_model,
         freeze_encoder=True
     )
@@ -857,15 +858,7 @@ def main():
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\n✅ Model created successfully:")
     print(f"  Total parameters: {total_params:,}")
-
-    if ssl_used_ibm_pretrained:
-        # IBM encoder (~946K) + decoder (~28K) + head (~400)
-        expected_params = 946904 + 28490 + 386  # Approx
-        if abs(total_params - expected_params) < 100000:
-            print(f"  ✓ Parameter count matches IBM TTM-Enhanced (~{expected_params:,})")
-        else:
-            print(f"  ⚠️  Parameter mismatch: got {total_params:,}, expected ~{expected_params:,}")
-            print(f"     This may indicate the model didn't load IBM pretrained correctly")
+    print(f"  Note: Fresh TTM architecture created - will load SSL encoder weights next")
 
     # Verify actual patch_size after model creation
     print(f"\nVerifying model configuration:")
@@ -953,9 +946,25 @@ def main():
     if val_loader is None and test_loader is not None:
         val_loader = test_loader
         print("\n⚠ Using test set for validation (no separate val set)")
-    
-    # Setup training
-    criterion = nn.CrossEntropyLoss()
+
+    # Calculate class weights to handle imbalance
+    print("\n⚙️  Computing class weights for imbalanced data...")
+    all_labels = []
+    for _, labels in train_loader:
+        all_labels.extend(labels.numpy())
+    all_labels = np.array(all_labels)
+
+    class_counts = np.bincount(all_labels)
+    total_samples = len(all_labels)
+    class_weights = total_samples / (len(class_counts) * class_counts)
+    class_weights = torch.FloatTensor(class_weights).to(args.device)
+
+    print(f"  Class 0 (Poor): {class_counts[0]} samples, weight: {class_weights[0]:.3f}")
+    print(f"  Class 1 (Good): {class_counts[1]} samples, weight: {class_weights[1]:.3f}")
+    print(f"  ✓ Using weighted loss to handle {class_counts[0]/class_counts[1]:.1f}:1 imbalance")
+
+    # Setup training with class weights
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
     

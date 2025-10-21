@@ -121,6 +121,10 @@ def load_model(checkpoint_path: str, device: str) -> nn.Module:
             state_dict = checkpoint['model_state_dict']
         elif 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
+        elif 'encoder_state_dict' in checkpoint:
+            # SSL checkpoint format - use encoder only (decoder was for reconstruction)
+            print("  Detected SSL checkpoint format - loading encoder weights")
+            state_dict = checkpoint['encoder_state_dict']
         elif 'encoder' in checkpoint and isinstance(checkpoint['encoder'], dict):
             # Weights might be under 'encoder' key
             state_dict = checkpoint['encoder']
