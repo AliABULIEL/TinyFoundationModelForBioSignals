@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
-"""Self-Supervised Pre-training on BUT-PPG Dataset.
+"""Self-Supervised Domain Adaptation on BUT-PPG Dataset.
 
-This script performs SSL pre-training (MSM + STFT loss) on BUT-PPG data
-WITHOUT using any labels (fully unsupervised domain adaptation).
+This script performs SSL domain adaptation (MSM + STFT loss) on BUT-PPG data
+WITHOUT using any labels (fully unsupervised transfer learning).
+
+RECOMMENDED TRANSFER LEARNING HIERARCHY:
+1. IBM TTM pre-trained weights (general time series)
+2. VitalDB SSL pre-training (large biosignal dataset, ~50k samples)
+3. BUT-PPG SSL domain adaptation (target domain, this script)
+4. BUT-PPG supervised fine-tuning (with labels)
+5. BUT-PPG downstream evaluation (test set)
 
 Usage:
-    # Quick test (5 epochs)
+    # Transfer from VitalDB SSL checkpoint (RECOMMENDED)
     python scripts/pretrain_butppg_ssl.py \
+        --pretrained artifacts/foundation_model/best_model.pt \
         --data-dir data/processed/butppg/windows_with_labels \
         --output-dir artifacts/butppg_ssl \
-        --epochs 5 \
-        --batch-size 64
+        --epochs 20 \
+        --batch-size 64 \
+        --lr 5e-5
 
-    # Full training (50 epochs)
+    # Train from scratch (not recommended, small dataset)
     python scripts/pretrain_butppg_ssl.py \
         --data-dir data/processed/butppg/windows_with_labels \
         --output-dir artifacts/butppg_ssl \
@@ -222,6 +231,12 @@ def parse_args():
 
     # Model
     parser.add_argument(
+        '--pretrained',
+        type=str,
+        default=None,
+        help='Path to VitalDB SSL pre-trained checkpoint (for transfer learning)'
+    )
+    parser.add_argument(
         '--context-length',
         type=int,
         default=1024,
@@ -331,9 +346,20 @@ def main():
 
     # Print config
     print("\n" + "=" * 80)
-    print("BUT-PPG SSL PRE-TRAINING")
+    print("BUT-PPG SSL DOMAIN ADAPTATION")
     print("=" * 80)
-    print(f"Data directory: {args.data_dir}")
+    print(f"Transfer Learning Hierarchy:")
+    if args.pretrained:
+        print(f"  1. ✓ IBM TTM pre-trained (general time series)")
+        print(f"  2. ✓ VitalDB SSL pre-training (~50k samples)")
+        print(f"  3. → BUT-PPG SSL adaptation (3.5k samples) ← THIS STAGE")
+        print(f"  4. → BUT-PPG supervised fine-tuning (next)")
+        print(f"  5. → Downstream evaluation (final)")
+        print(f"\nPre-trained checkpoint: {args.pretrained}")
+    else:
+        print(f"  ⚠️  Training from scratch (not using VitalDB SSL weights)")
+        print(f"  Note: Transfer learning from VitalDB is recommended for better performance")
+    print(f"\nData directory: {args.data_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Context length: {args.context_length}")
     print(f"Channels: {args.num_channels}")
@@ -374,15 +400,91 @@ def main():
 
     # Create model
     print("Creating model...")
-    model = TTMAdapter(
-        num_channels=args.num_channels,
-        context_length=args.context_length,
-        patch_length=16,  # TTM will auto-adjust
-        num_layers=4,
-        d_model=64,
-        use_positional_encoding=True,
-        dropout=0.1
-    ).to(args.device)
+
+    if args.pretrained:
+        # Load pre-trained VitalDB SSL model
+        print(f"Loading pre-trained checkpoint: {args.pretrained}")
+
+        checkpoint = torch.load(args.pretrained, map_location='cpu')
+
+        # Extract state dict (handle different checkpoint formats)
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'encoder' in checkpoint and isinstance(checkpoint['encoder'], dict):
+                state_dict = checkpoint['encoder']
+            else:
+                # Checkpoint IS the state dict
+                state_dict = checkpoint
+        else:
+            raise ValueError("Unrecognized checkpoint format")
+
+        # Create model with same architecture
+        model = TTMAdapter(
+            num_channels=args.num_channels,
+            context_length=args.context_length,
+            patch_length=16,  # TTM will auto-adjust
+            num_layers=4,
+            d_model=64,
+            use_positional_encoding=True,
+            dropout=0.1
+        )
+
+        # Load weights (handle prefix mismatches)
+        try:
+            model.load_state_dict(state_dict, strict=True)
+            print("  ✓ Loaded weights with strict=True")
+        except Exception as e:
+            print(f"  ⚠️  Strict loading failed: {e}")
+            print("  Attempting flexible loading...")
+
+            # Remove mismatched keys
+            model_keys = set(model.state_dict().keys())
+            ckpt_keys = set(state_dict.keys())
+
+            # Try to match keys with different prefixes
+            matched_dict = {}
+            for model_key in model_keys:
+                # Try exact match first
+                if model_key in state_dict:
+                    matched_dict[model_key] = state_dict[model_key]
+                else:
+                    # Try removing/adding common prefixes
+                    for ckpt_key in ckpt_keys:
+                        # Check if keys match after removing prefixes
+                        model_suffix = model_key.split('.')[-3:]  # last 3 parts
+                        ckpt_suffix = ckpt_key.split('.')[-3:]
+
+                        if model_suffix == ckpt_suffix:
+                            matched_dict[model_key] = state_dict[ckpt_key]
+                            break
+
+            # Load matched weights
+            missing, unexpected = model.load_state_dict(matched_dict, strict=False)
+            print(f"  ✓ Loaded {len(matched_dict)}/{len(model_keys)} weights")
+            if missing:
+                print(f"  ⚠️  Missing keys: {len(missing)}")
+            if unexpected:
+                print(f"  ⚠️  Unexpected keys: {len(unexpected)}")
+
+        model = model.to(args.device)
+        print(f"  ✓ Loaded pre-trained VitalDB SSL model")
+
+    else:
+        # Train from scratch (initialize with IBM TTM weights)
+        model = TTMAdapter(
+            num_channels=args.num_channels,
+            context_length=args.context_length,
+            patch_length=16,  # TTM will auto-adjust
+            num_layers=4,
+            d_model=64,
+            use_positional_encoding=True,
+            dropout=0.1
+        ).to(args.device)
+
+        print(f"  ✓ Created model from scratch (with IBM TTM base weights)")
 
     # Get actual patch size after TTM adaptation
     if hasattr(model.backbone, 'config'):
@@ -390,7 +492,6 @@ def main():
     else:
         patch_size = 16  # fallback
 
-    print(f"✓ Model created")
     print(f"  Patch size: {patch_size}")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
     print()
@@ -507,19 +608,48 @@ def main():
         json.dump(history, f, indent=2)
 
     print("\n" + "=" * 80)
-    print("TRAINING COMPLETE!")
+    print("SSL DOMAIN ADAPTATION COMPLETE!")
     print("=" * 80)
     print(f"Best validation loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to: {output_dir}")
-    print(f"  - best_model_butppg.pt")
+    print(f"  - best_model_butppg.pt (use this for fine-tuning)")
     print(f"  - last_checkpoint.pt")
     print(f"  - history.json")
-    print("\nNext steps:")
-    print("  1. Use best_model_butppg.pt for downstream tasks")
-    print("  2. Or fine-tune on specific BUT-PPG tasks:")
-    print(f"     python scripts/finetune_butppg.py \\")
-    print(f"       --pretrained {output_dir}/best_model_butppg.pt \\")
-    print(f"       --data-dir {args.data_dir}")
+    print()
+    print("=" * 80)
+    print("TRANSFER LEARNING PROGRESS")
+    print("=" * 80)
+    if args.pretrained:
+        print("  ✅ Stage 1: IBM TTM pre-trained")
+        print("  ✅ Stage 2: VitalDB SSL pre-training")
+        print("  ✅ Stage 3: BUT-PPG SSL adaptation (DONE)")
+        print("  ⏭️  Stage 4: BUT-PPG supervised fine-tuning (NEXT)")
+        print("  ⏭️  Stage 5: Downstream evaluation")
+    else:
+        print("  ✅ BUT-PPG SSL training from scratch (DONE)")
+        print("  ⏭️  BUT-PPG supervised fine-tuning (NEXT)")
+        print("  ⏭️  Downstream evaluation")
+    print()
+    print("=" * 80)
+    print("NEXT STEP: SUPERVISED FINE-TUNING")
+    print("=" * 80)
+    print("Run supervised fine-tuning on BUT-PPG quality classification:")
+    print()
+    print(f"  python scripts/finetune_butppg.py \\")
+    print(f"    --pretrained {output_dir}/best_model_butppg.pt \\")
+    print(f"    --data-dir {args.data_dir} \\")
+    print(f"    --epochs 20 \\")
+    print(f"    --batch-size 64 \\")
+    print(f"    --lr 2e-5 \\")
+    print(f"    --output-dir artifacts/butppg_finetuned")
+    print()
+    print("This will:")
+    print("  • Add classification head for quality prediction")
+    print("  • Fine-tune on BUT-PPG train set (with labels)")
+    print("  • Validate on BUT-PPG val set")
+    print("  • Save best model for evaluation on test set")
+    print()
+    print("=" * 80)
     print()
 
 

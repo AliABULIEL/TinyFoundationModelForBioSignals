@@ -740,9 +740,21 @@ def main():
     elif 'encoder_state_dict' in checkpoint:
         state_dict = checkpoint['encoder_state_dict']
         print("  ✓ Found 'encoder_state_dict' (SSL checkpoint)")
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+        print("  ✓ Found 'state_dict' (generic checkpoint)")
+    elif 'encoder' in checkpoint and isinstance(checkpoint['encoder'], dict):
+        state_dict = checkpoint['encoder']
+        print("  ✓ Found 'encoder' (encoder weights)")
     else:
-        state_dict = checkpoint
-        print("  ⚠ Using raw checkpoint (assuming state dict)")
+        # Check if checkpoint IS the state dict (all keys are parameter names)
+        all_keys = list(checkpoint.keys())
+        param_prefixes = ['encoder.', 'backbone.', 'decoder.', 'head.']
+        if all(any(k.startswith(p) for p in param_prefixes) for k in all_keys[:10]):
+            state_dict = checkpoint
+            print("  ✓ Using raw checkpoint (is state dict)")
+        else:
+            raise ValueError(f"Cannot find state dict in checkpoint. Keys: {list(checkpoint.keys())[:10]}")
 
     # CRITICAL: Detect actual architecture from checkpoint weights
     # The saved config may be incorrect - we must use the actual weight shapes
