@@ -252,19 +252,15 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
     # IMPORTANT: Use patch_size that divides BUT-PPG context_length evenly
     # BUT-PPG: 1024 samples, so use patch_size=64 (16 patches) or 128 (8 patches)
     # VitalDB used patch_size=64 after adaptation, so we use the same
-    #
-    # CRITICAL: Set use_real_ttm=False to prevent loading IBM pretrained
-    # (which has patch_size=125 and won't work with context_length=1024)
-    # We'll load VitalDB weights instead!
     encoder = TTMAdapter(
         num_channels=2,
         context_length=1024,  # BUT-PPG window size (NOT VitalDB's 1250!)
-        patch_size=64,  # ← FIXED: parameter is patch_SIZE not patch_LENGTH!
+        patch_size=64,
         d_model=d_model,
         num_layers=4,
         dropout=0.1,
         use_positional_encoding=True,
-        use_real_ttm=False,  # Don't load IBM pretrained (incompatible dimensions)
+        # use_real_ttm=True by default - will use IBM TTM from tsfm_public
         task='ssl'  # No head, encoder only
     )
 
@@ -378,16 +374,13 @@ def main():
         print(f"  ✓ Loaded pre-trained VitalDB SSL encoder")
     else:
         # Train from scratch
-        # Use patch_size=64 for BUT-PPG (1024 samples = 16 patches of 64)
+        # Use patch_size=128 for BUT-PPG to match TTM-Enhanced (1024 samples = 8 patches)
         encoder = TTMAdapter(
-            num_channels=args.num_channels,
+            input_channels=args.num_channels,  # ← FIXED: parameter is input_channels, not num_channels!
             context_length=args.context_length,  # 1024 for BUT-PPG
-            patch_size=64,  # ← FIXED: parameter is patch_SIZE not patch_LENGTH!
-            d_model=192,
-            num_layers=4,
-            dropout=0.1,
-            use_positional_encoding=True,
-            use_real_ttm=False,  # Don't use IBM pretrained (incompatible dimensions)
+            patch_size=128,  # ← Matches TTM-Enhanced pretrained variant!
+            d_model=None,  # Let TTM-Enhanced determine d_model from pretrained weights
+            # use_real_ttm=True by default - will load TTM-Enhanced pretrained weights
             task='ssl'
         ).to(args.device)
 
@@ -404,8 +397,7 @@ def main():
     decoder = ReconstructionHead1D(
         d_model=192,  # Must match encoder d_model
         patch_size=patch_size,
-        n_channels=args.num_channels,
-        context_length=args.context_length
+        n_channels=args.num_channels
     ).to(args.device)
 
     print(f"  Patch size: {patch_size}")
