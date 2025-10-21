@@ -892,58 +892,69 @@ def main():
 
     # Filter state_dict to only include backbone encoder weights
     # IMPORTANT:
-    # 1. Skip SSL decoder (decoder_dim=128) which won't match fine-tuning decoder
-    # 2. Strip 'encoder.' prefix from SSL checkpoint keys (encoder.backbone → backbone)
-    # Include: encoder.backbone.* → backbone.*
-    # Exclude: encoder.decoder.* (SSL reconstruction decoder), encoder.head.* (SSL head)
+    # 1. Skip SSL decoder (different architecture from fine-tuning decoder)
+    # 2. Keep encoder.backbone.* keys as-is (fine-tuning model expects this format)
+    # 3. SSL checkpoint has duplicate keys (encoder.backbone.* AND backbone.*) - use encoder.backbone.*
     backbone_state_dict = {}
     skipped_decoder = 0
     skipped_head = 0
+    skipped_duplicate = 0
 
     for key, value in state_dict.items():
         # Skip decoder weights (SSL-specific, different dimensions)
-        if 'encoder.decoder' in key:
+        if 'encoder.decoder' in key or 'decoder_state' in key:
             skipped_decoder += 1
             continue
-        # Skip SSL head (base_forecast_block)
-        elif 'encoder.head' in key:
+        # Skip SSL head (task-specific)
+        elif 'encoder.head' in key or 'head.' in key:
             skipped_head += 1
             continue
-        # Include backbone weights (the actual TTM encoder)
+        # Include encoder.backbone weights (keep prefix as-is!)
         elif 'encoder.backbone' in key:
-            # Strip 'encoder.' prefix: encoder.backbone.X → backbone.X
-            new_key = key.replace('encoder.backbone', 'backbone')
-            backbone_state_dict[new_key] = value
-        elif key.startswith('backbone.') and 'decoder' not in key:
-            # Already has correct prefix
+            # Keep key exactly as-is: encoder.backbone.* (fine-tuning model expects this)
             backbone_state_dict[key] = value
+        # Skip duplicate backbone.* keys (same weights, different prefix)
+        elif key.startswith('backbone.') and 'decoder' not in key:
+            skipped_duplicate += 1
+            continue
 
-    print(f"  Backbone weights: {len(backbone_state_dict)} keys")
+    print(f"  Loaded backbone weights: {len(backbone_state_dict)} keys")
     print(f"  Skipped SSL decoder: {skipped_decoder} keys (different architecture)")
     print(f"  Skipped SSL head: {skipped_head} keys (task-specific)")
+    print(f"  Skipped duplicate backbone: {skipped_duplicate} keys (same weights, different prefix)")
 
     # Try loading backbone weights
     missing_keys, unexpected_keys = model.load_state_dict(backbone_state_dict, strict=False)
 
-    print("✓ Loaded SSL encoder weights")
+    # Verify loading success
+    if len(backbone_state_dict) == 98 and len(missing_keys) == 0:
+        print("\n✅ SSL encoder weights loaded successfully!")
+        print("  ✓ All 98 backbone parameters matched")
+    else:
+        print(f"\n⚠️ SSL encoder loading status:")
+        print(f"  Attempted to load: {len(backbone_state_dict)} keys")
+        print(f"  Missing: {len([k for k in missing_keys if 'backbone' in k])} backbone keys")
+
     print("✓ Initialized new classification head (2 classes)")
 
     # Show what was not loaded (expected - head is new)
     if missing_keys:
         head_keys = [k for k in missing_keys if 'head' in k or 'classifier' in k or 'decoder' in k]
-        other_keys = [k for k in missing_keys if k not in head_keys]
+        backbone_keys = [k for k in missing_keys if 'backbone' in k]
 
         if head_keys:
             print(f"  New head parameters: {len(head_keys)} keys (expected)")
-        if other_keys and len(other_keys) < 20:
-            print(f"  Other missing keys: {other_keys[:5]}")
-        elif other_keys:
-            print(f"  ⚠ Missing {len(other_keys)} encoder keys (unexpected!)")
+        if backbone_keys:
+            print(f"  ⚠️ Missing backbone keys: {len(backbone_keys)} (unexpected!)")
+            if len(backbone_keys) < 10:
+                for k in backbone_keys[:5]:
+                    print(f"     {k}")
 
-    if unexpected_keys and len(unexpected_keys) < 20:
-        print(f"  Unexpected keys: {unexpected_keys[:5]}")
-    elif unexpected_keys:
-        print(f"  ⚠ {len(unexpected_keys)} unexpected keys")
+    if unexpected_keys:
+        print(f"  ⚠️ Unexpected keys in checkpoint: {len(unexpected_keys)}")
+        if len(unexpected_keys) < 10:
+            for k in unexpected_keys[:5]:
+                print(f"     {k}")
 
     model = model.to(args.device)
 
