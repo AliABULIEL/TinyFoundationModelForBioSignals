@@ -871,18 +871,37 @@ def main():
             print(f"  ⚠️  Warning: Expected ~{expected_params:,} params (SSL checkpoint)")
             print(f"     Got {total_params:,} - architecture might not match!")
 
-    # Verify actual patch_size after model creation
+    # CRITICAL: Trigger auto-adaptation BEFORE loading SSL weights
+    # IBM TTM auto-adapts patch_size during first forward pass
+    # We need this to happen BEFORE loading SSL weights so architectures match
+    print(f"\n🔧 Triggering TTM auto-adaptation...")
+    print(f"  Current model patch_size: {model.patch_size}")
+
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 2, context_length).to(args.device)
+        try:
+            _ = model.get_encoder_output(dummy_input)
+            print(f"  ✓ Auto-adaptation complete")
+            print(f"  Updated model patch_size: {model.patch_size}")
+            del dummy_input, _
+            torch.cuda.empty_cache() if args.device == 'cuda' else None
+        except Exception as e:
+            print(f"  ⚠️  Auto-adaptation failed: {e}")
+            print(f"     Proceeding with current patch_size={model.patch_size}")
+
+    # Verify patch_size matches SSL checkpoint
     print(f"\nVerifying model configuration:")
     print(f"  Model context_length: {model.context_length}")
     print(f"  Model patch_size: {model.patch_size}")
     print(f"  Model num_patches: {model.num_patches}")
+    print(f"  SSL checkpoint patch_size: {patch_size}")
 
-    if model.patch_size != patch_size and not ssl_used_ibm_pretrained:
-        print(f"  ⚠️  WARNING: Model patch_size ({model.patch_size}) != SSL checkpoint ({patch_size})")
-        print(f"     Weight loading may have dimension mismatches!")
-    elif model.patch_size != patch_size:
-        print(f"  ℹ️  Note: Config patch_size ({model.patch_size}) differs from actual ({patch_size})")
-        print(f"     This is expected - IBM TTM auto-adapts after loading SSL weights")
+    if model.patch_size != patch_size:
+        print(f"  ⚠️  CRITICAL: Model patch_size ({model.patch_size}) != SSL checkpoint ({patch_size})")
+        print(f"     Weight loading will fail!")
+        print(f"     This indicates the auto-adaptation didn't work correctly.")
+    else:
+        print(f"  ✅ Patch sizes match - ready to load SSL weights")
 
     # Load encoder weights from SSL checkpoint
     # Note: state_dict was already loaded earlier for architecture detection
