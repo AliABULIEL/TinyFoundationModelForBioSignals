@@ -249,10 +249,13 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
         print(f"    patch_size: {patch_size}")
 
     # Create encoder with matching architecture
+    # IMPORTANT: Use patch_length that divides BUT-PPG context_length evenly
+    # BUT-PPG: 1024 samples, so use patch_length=64 (16 patches) or 128 (8 patches)
+    # VitalDB used patch_size=64 after adaptation, so we use the same
     encoder = TTMAdapter(
         num_channels=2,
-        context_length=1024,  # BUT-PPG window size
-        patch_length=128,  # IBM pretrained loads with this, auto-adjusts to 64
+        context_length=1024,  # BUT-PPG window size (NOT VitalDB's 1250!)
+        patch_length=64,  # Match VitalDB's adapted patch_size
         d_model=d_model,
         num_layers=4,
         dropout=0.1,
@@ -370,10 +373,11 @@ def main():
         print(f"  ✓ Loaded pre-trained VitalDB SSL encoder")
     else:
         # Train from scratch
+        # Use patch_length=64 for BUT-PPG (1024 samples = 16 patches of 64)
         encoder = TTMAdapter(
             num_channels=args.num_channels,
-            context_length=args.context_length,
-            patch_length=128,  # IBM pretrained loads with this
+            context_length=args.context_length,  # 1024 for BUT-PPG
+            patch_length=64,  # Matches BUT-PPG window size
             d_model=192,
             num_layers=4,
             dropout=0.1,
@@ -388,6 +392,7 @@ def main():
             patch_size = 64
 
         print(f"  ✓ Created encoder from scratch (with IBM TTM base)")
+        print(f"  Note: Using patch_length={patch_size} for BUT-PPG (1024/{patch_size}={1024//patch_size} patches)")
 
     # Create decoder for reconstruction
     decoder = ReconstructionHead1D(
