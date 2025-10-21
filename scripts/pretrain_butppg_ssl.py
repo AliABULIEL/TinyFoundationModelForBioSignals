@@ -252,6 +252,10 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
     # IMPORTANT: Use patch_length that divides BUT-PPG context_length evenly
     # BUT-PPG: 1024 samples, so use patch_length=64 (16 patches) or 128 (8 patches)
     # VitalDB used patch_size=64 after adaptation, so we use the same
+    #
+    # CRITICAL: Set use_real_ttm=False to prevent loading IBM pretrained
+    # (which has patch_size=125 and won't work with context_length=1024)
+    # We'll load VitalDB weights instead!
     encoder = TTMAdapter(
         num_channels=2,
         context_length=1024,  # BUT-PPG window size (NOT VitalDB's 1250!)
@@ -260,6 +264,7 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
         num_layers=4,
         dropout=0.1,
         use_positional_encoding=True,
+        use_real_ttm=False,  # Don't load IBM pretrained (incompatible dimensions)
         task='ssl'  # No head, encoder only
     )
 
@@ -382,6 +387,7 @@ def main():
             num_layers=4,
             dropout=0.1,
             use_positional_encoding=True,
+            use_real_ttm=False,  # Don't use IBM pretrained (incompatible dimensions)
             task='ssl'
         ).to(args.device)
 
@@ -391,7 +397,7 @@ def main():
         else:
             patch_size = 64
 
-        print(f"  ✓ Created encoder from scratch (with IBM TTM base)")
+        print(f"  ✓ Created encoder from scratch (simple CNN fallback)")
         print(f"  Note: Using patch_length={patch_size} for BUT-PPG (1024/{patch_size}={1024//patch_size} patches)")
 
     # Create decoder for reconstruction
