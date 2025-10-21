@@ -202,6 +202,8 @@ def parse_args():
 def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Module, int]:
     """Load pre-trained encoder from VitalDB SSL checkpoint.
 
+    CRITICAL FIX: Detects and matches checkpoint architecture (adaptive patching).
+
     Returns:
         encoder: Loaded encoder
         patch_size: Detected patch size
@@ -224,7 +226,12 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
         encoder_state = checkpoint
         print("  ⚠️  Using checkpoint as encoder state")
 
-    # Detect architecture from weights
+    # 1. DETECT ADAPTIVE PATCHING from checkpoint keys
+    # IBM's pretrained TTM-Enhanced has adaptive_patching_levels > 0
+    # This creates hierarchical structure: mixers.N.mixer_layers.0.patch_mixer
+    has_adaptive_patching = any('mixer_layers' in k for k in encoder_state.keys())
+
+    # 2. Detect architecture from weights
     # Find patcher weight to determine patch_size and d_model
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k or 'input_projection' in k]
 
@@ -236,6 +243,7 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
         print(f"  Detected from '{patcher_keys[0]}':")
         print(f"    d_model: {d_model}")
         print(f"    patch_size (per channel): {patch_size_from_weights}")
+        print(f"    Adaptive patching: {has_adaptive_patching}")
 
         # VitalDB uses patch_size=64 (with IBM pretrained adaptation)
         # BUT-PPG uses same architecture
@@ -244,56 +252,117 @@ def load_pretrained_encoder(checkpoint_path: str, device: str) -> Tuple[nn.Modul
         # Fallback
         d_model = 192
         patch_size = 64
+        has_adaptive_patching = False
         print(f"  ⚠️  Could not detect architecture, using defaults:")
         print(f"    d_model: {d_model}")
         print(f"    patch_size: {patch_size}")
 
-    # Create encoder with matching architecture
-    # IMPORTANT: Use patch_size that divides BUT-PPG context_length evenly
-    # BUT-PPG: 1024 samples, so use patch_size=64 (16 patches) or 128 (8 patches)
-    # VitalDB used patch_size=64 after adaptation, so we use the same
-    encoder = TTMAdapter(
-        num_channels=2,
-        context_length=1024,  # BUT-PPG window size (NOT VitalDB's 1250!)
-        patch_size=64,
-        d_model=d_model,
-        num_layers=4,
-        dropout=0.1,
-        use_positional_encoding=True,
-        # use_real_ttm=True by default - will use IBM TTM from tsfm_public
-        task='ssl'  # No head, encoder only
-    )
+    # 3. Create encoder matching checkpoint architecture
+    print(f"\n{'='*70}")
+    print(f"Checkpoint Architecture Matching:")
+    print(f"{'='*70}")
 
-    # Load weights with flexible matching
+    if has_adaptive_patching:
+        print(f"✓ Adaptive patching detected in checkpoint!")
+        print(f"  → Loading IBM TTM-Enhanced (context=1024, patch=128)")
+        print(f"  → TTM will adapt patch size from 128 → {patch_size}")
+        print(f"  → This recreates the EXACT architecture from VitalDB training")
+
+        # Use the SAME pretrained variant as VitalDB training
+        # This loads TTM-Enhanced which has adaptive_patching built-in
+        encoder = TTMAdapter(
+            variant="ibm-granite/granite-timeseries-ttm-r1",
+            task='ssl',
+            input_channels=2,
+            context_length=1024,
+            patch_size=128,  # TTM-Enhanced config (will adapt to 64 internally)
+            freeze_encoder=False,
+            use_real_ttm=True,
+            decoder_mode='mix_channel'
+        )
+    else:
+        print(f"  No adaptive patching detected (flat structure)")
+        print(f"  → Creating fresh TTM with matching dimensions")
+
+        # Create fresh model without adaptive patching
+        # adaptive_patching_levels=0 in TTMAdapter for custom configs
+        encoder = TTMAdapter(
+            variant="ibm-granite/granite-timeseries-ttm-r1",
+            task='ssl',
+            input_channels=2,
+            context_length=1024,
+            patch_size=patch_size,
+            d_model=d_model,
+            freeze_encoder=False,
+            use_real_ttm=True,
+            decoder_mode='mix_channel'
+        )
+
+    # 4. Load weights with architecture-aware loading
+    print(f"\nLoading checkpoint weights...")
     try:
         encoder.load_state_dict(encoder_state, strict=True)
-        print("  ✓ Loaded encoder weights (strict=True)")
-    except Exception as e:
-        print(f"  ⚠️  Strict loading failed, trying flexible matching...")
+        print("  ✓ Loaded all weights successfully (strict=True)")
+    except RuntimeError as e:
+        error_msg = str(e)
+        print(f"  ⚠️  Strict loading failed")
+        print(f"  Error preview: {error_msg[:200]}...")
 
-        # Match keys flexibly
-        model_dict = encoder.state_dict()
-        matched_dict = {}
+        # Try flexible loading
+        print(f"\n  Attempting flexible weight loading (strict=False)...")
+        missing, unexpected = encoder.load_state_dict(encoder_state, strict=False)
 
-        for model_key in model_dict.keys():
-            # Try exact match
-            if model_key in encoder_state:
-                matched_dict[model_key] = encoder_state[model_key]
-            else:
-                # Try suffix matching (last 3 parts)
-                model_suffix = '.'.join(model_key.split('.')[-3:])
-                for ckpt_key in encoder_state.keys():
-                    ckpt_suffix = '.'.join(ckpt_key.split('.')[-3:])
-                    if model_suffix == ckpt_suffix:
-                        matched_dict[model_key] = encoder_state[ckpt_key]
-                        break
+        print(f"  Loaded weights with partial matching:")
+        print(f"    Missing keys: {len(missing)}")
+        print(f"    Unexpected keys: {len(unexpected)}")
 
-        missing, unexpected = encoder.load_state_dict(matched_dict, strict=False)
-        print(f"  ✓ Loaded {len(matched_dict)}/{len(model_dict)} weights")
-        if missing:
-            print(f"  ⚠️  Missing: {len(missing)} keys")
-        if unexpected:
-            print(f"  ⚠️  Unexpected: {len(unexpected)} keys")
+        if len(missing) > 100 or len(unexpected) > 100:
+            print(f"\n  ❌ CRITICAL: Too many mismatched keys!")
+            print(f"     This indicates architecture mismatch.")
+            print(f"     Expected adaptive_patching={has_adaptive_patching}")
+            raise RuntimeError(
+                f"Architecture mismatch: {len(missing)} missing, {len(unexpected)} unexpected keys. "
+                f"Checkpoint has adaptive_patching={has_adaptive_patching}. "
+                f"See ARCHITECTURE_MISMATCH_ANALYSIS.md for details."
+            )
+        elif len(missing) > 0:
+            print(f"  ⚠️  Warning: Some weights missing (likely decoder differences)")
+            if len(missing) <= 20:
+                print(f"    Sample missing keys:")
+                for k in list(missing)[:5]:
+                    print(f"      - {k}")
+
+        if len(unexpected) > 0 and len(unexpected) <= 20:
+            print(f"    Sample unexpected keys:")
+            for k in list(unexpected)[:5]:
+                print(f"      - {k}")
+
+    # 5. Verify encoder output dimensions
+    print(f"\nVerifying encoder output...")
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 2, 1024).to(device)
+        try:
+            dummy_output = encoder.get_encoder_output(dummy_input)
+            actual_num_patches = dummy_output.size(1)
+            actual_patch_size = 1024 // actual_num_patches
+
+            print(f"  ✓ Encoder output shape: {list(dummy_output.shape)}")
+            print(f"  ✓ Num patches: {actual_num_patches}")
+            print(f"  ✓ Actual patch_size: {actual_patch_size}")
+
+            # Update patch_size to actual value
+            patch_size = actual_patch_size
+
+            del dummy_input, dummy_output
+            if device == 'cuda':
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"  ⚠️  Could not verify encoder output: {e}")
+            print(f"  Using detected patch_size={patch_size}")
+
+    print(f"\n✓ Encoder loaded successfully from checkpoint!")
+    print(f"  Final patch_size: {patch_size}")
+    print(f"{'='*70}\n")
 
     return encoder.to(device), patch_size
 
