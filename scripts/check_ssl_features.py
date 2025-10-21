@@ -70,10 +70,25 @@ for k, v in ssl_state.items():
         backbone_dict[k] = v
         backbone_dict[k.replace('encoder.', '', 1)] = v
 
-model.load_state_dict(backbone_dict, strict=False)
+missing, unexpected = model.load_state_dict(backbone_dict, strict=False)
 model.eval()
 
-print(f"   Loaded SSL weights")
+# Sanity check: Verify SSL weights actually loaded
+backbone_missing = [k for k in missing if 'backbone' in k and 'encoder' in k]
+if len(backbone_missing) == 0:
+    print(f"   ✅ SSL weights loaded successfully (196 keys)")
+    print(f"   → Model is using VitalDB-trained weights, NOT IBM pretrained!")
+else:
+    print(f"   ❌ WARNING: {len(backbone_missing)} backbone keys didn't load!")
+    print(f"   → Model might still be using IBM pretrained weights!")
+
+# Extra verification: Compare a weight to SSL checkpoint
+ssl_patcher_weight = ssl_state['encoder.backbone.encoder.patcher.weight']
+model_patcher_weight = model.state_dict()['encoder.backbone.encoder.patcher.weight']
+if torch.equal(ssl_patcher_weight, model_patcher_weight):
+    print(f"   ✅ Verified: Weights match SSL checkpoint (not IBM pretrained)")
+else:
+    print(f"   ❌ ERROR: Weights DON'T match SSL checkpoint!")
 
 # Extract features
 print("\n3. Extracting SSL features...")
