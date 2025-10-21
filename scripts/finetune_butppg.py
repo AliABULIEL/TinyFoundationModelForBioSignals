@@ -871,6 +871,9 @@ def main():
             print(f"  ⚠️  Warning: Expected ~{expected_params:,} params (SSL checkpoint)")
             print(f"     Got {total_params:,} - architecture might not match!")
 
+    # Move model to device BEFORE auto-adaptation
+    model = model.to(args.device)
+
     # CRITICAL: Trigger auto-adaptation BEFORE loading SSL weights
     # IBM TTM auto-adapts patch_size during first forward pass
     # We need this to happen BEFORE loading SSL weights so architectures match
@@ -975,7 +978,7 @@ def main():
             for k in unexpected_keys[:5]:
                 print(f"     {k}")
 
-    model = model.to(args.device)
+    # Model already on device (moved before auto-adaptation)
 
     # Create dataloaders with target_length matching SSL model
     print(f"\n📊 Creating dataloaders (resizing windows to {context_length} samples if needed)...")
