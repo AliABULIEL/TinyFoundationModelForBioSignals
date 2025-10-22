@@ -504,11 +504,12 @@ def main():
     context_length = checkpoint_info['config'].get('context_length', 1024)
     num_channels = checkpoint_info['config'].get('num_channels', 2)
     d_model = checkpoint_info['config'].get('d_model', 64)
+    patch_length = checkpoint_info['config'].get('patch_length', 128)
 
     decoder = ReconstructionHead1D(
         d_model=d_model,
-        output_length=context_length,
-        num_channels=num_channels
+        patch_size=patch_length,  # FIXED: Use patch_size (not output_length)
+        n_channels=num_channels    # FIXED: Use n_channels (not num_channels)
     ).to(device)
 
     print(f"\n✓ Model initialized:")
