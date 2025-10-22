@@ -284,7 +284,9 @@ def train_epoch(
         batch_size = signals.shape[0]
 
         # Forward pass through encoder
-        features = encoder(signals)  # [B, P, D]
+        # CRITICAL: Use get_encoder_output() for SSL tasks to get patch-level features [B, P, D]
+        # The default forward() returns pooled features [B, D] for classification tasks
+        features = encoder.get_encoder_output(signals)  # [B, P, D]
 
         # Pool features for contrastive learning
         # Use mean pooling across patches
@@ -292,7 +294,7 @@ def train_epoch(
 
         # Optional: Masked reconstruction
         masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
-        masked_features = encoder(masked_signals)
+        masked_features = encoder.get_encoder_output(masked_signals)  # [B, P, D]
         reconstructed = decoder(masked_features)  # [B, C, T]
 
         # Compute hybrid loss
@@ -373,13 +375,14 @@ def validate_epoch(
         quality_scores = batch['quality_score'].to(device)
 
         # Forward pass
-        features = encoder(signals)
-        features_pooled = features.mean(dim=1)
+        # CRITICAL: Use get_encoder_output() to get patch-level features [B, P, D]
+        features = encoder.get_encoder_output(signals)  # [B, P, D]
+        features_pooled = features.mean(dim=1)  # [B, D]
 
         # Reconstruction
         masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
-        masked_features = encoder(masked_signals)
-        reconstructed = decoder(masked_features)
+        masked_features = encoder.get_encoder_output(masked_signals)  # [B, P, D]
+        reconstructed = decoder(masked_features)  # [B, C, T]
 
         # Loss
         loss, components = loss_fn(
