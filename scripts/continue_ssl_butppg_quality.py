@@ -126,6 +126,82 @@ def load_vitaldb_checkpoint(
     return encoder, checkpoint_info
 
 
+def init_ibm_pretrained(
+    variant: str = 'ibm-granite/granite-timeseries-ttm-r1',
+    context_length: int = 1024,
+    patch_size: int = 128,
+    num_channels: int = 2,
+    device: str = 'cuda'
+) -> Tuple[TTMAdapter, dict]:
+    """Initialize encoder from IBM pretrained TTM.
+
+    Args:
+        variant: IBM TTM variant to use
+        context_length: Context length (512, 1024, or 1536)
+        patch_size: Patch size (64 or 128)
+        num_channels: Number of input channels
+        device: Device to load model on
+
+    Returns:
+        encoder: TTMAdapter encoder initialized from IBM pretrained
+        checkpoint_info: Dict with config metadata
+    """
+    print(f"\nInitializing from IBM Pretrained TTM:")
+    print(f"  Variant: {variant}")
+    print(f"  Context: {context_length}, Patch: {patch_size}")
+    print(f"  Channels: {num_channels}")
+
+    # Determine expected d_model based on pretrained variant
+    if context_length == 512 and patch_size == 64:
+        d_model = 192  # TTM-Base
+        variant_name = "TTM-Base"
+    elif context_length == 1024 and patch_size == 128:
+        d_model = 192  # TTM-Enhanced
+        variant_name = "TTM-Enhanced"
+    elif context_length == 1536 and patch_size == 128:
+        d_model = 192  # TTM-Advanced
+        variant_name = "TTM-Advanced"
+    else:
+        d_model = 256  # Custom - may not load pretrained weights
+        variant_name = "Custom"
+        print(f"  ⚠️  Warning: Using custom dimensions - may not load pretrained weights")
+
+    print(f"  Pretrained: {variant_name} (d_model={d_model})")
+
+    # Create encoder with IBM pretrained weights
+    encoder = TTMAdapter(
+        variant=variant,
+        task='ssl',  # We'll use for SSL pretraining
+        input_channels=num_channels,
+        context_length=context_length,
+        patch_size=patch_size,
+        d_model=d_model,
+        use_real_ttm=True,  # Use real IBM TTM
+        freeze_encoder=False,  # Allow fine-tuning
+        output_type='features'  # Return patch features
+    ).to(device)
+
+    print("✓ IBM pretrained encoder initialized")
+
+    # Create config dict
+    config = {
+        'context_length': context_length,
+        'num_channels': num_channels,
+        'd_model': encoder.encoder_dim,  # Use actual encoder dim
+        'patch_length': patch_size,
+        'variant': variant,
+        'variant_name': variant_name
+    }
+
+    checkpoint_info = {
+        'epoch': 0,  # Starting fresh
+        'best_loss': float('inf'),
+        'config': config
+    }
+
+    return encoder, checkpoint_info
+
+
 def train_epoch(
     encoder: nn.Module,
     decoder: nn.Module,
@@ -293,12 +369,22 @@ def main():
     )
 
     # Paths
-    parser.add_argument('--vitaldb-checkpoint', type=str, required=True,
-                       help='Path to VitalDB SSL checkpoint (Stage 1)')
+    parser.add_argument('--vitaldb-checkpoint', type=str, default=None,
+                       help='Path to VitalDB SSL checkpoint (Stage 1) - if not provided, uses IBM pretrained')
     parser.add_argument('--data-dir', type=str, required=True,
                        help='Path to BUT-PPG preprocessed data')
     parser.add_argument('--output-dir', type=str, required=True,
                        help='Output directory for checkpoints')
+
+    # IBM Pretrained TTM options
+    parser.add_argument('--use-ibm-pretrained', action='store_true',
+                       help='Use IBM pretrained TTM instead of VitalDB checkpoint')
+    parser.add_argument('--ibm-variant', type=str, default='ibm-granite/granite-timeseries-ttm-r1',
+                       help='IBM TTM variant to use')
+    parser.add_argument('--ibm-context-length', type=int, default=1024,
+                       help='Context length for IBM TTM (512, 1024, or 1536)')
+    parser.add_argument('--ibm-patch-size', type=int, default=128,
+                       help='Patch size for IBM TTM (64 or 128)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50,
@@ -347,7 +433,6 @@ def main():
     print("="*80)
     print("QUALITY-AWARE SSL ON BUT-PPG (STAGE 2)")
     print("="*80)
-    print(f"VitalDB checkpoint: {args.vitaldb_checkpoint}")
     print(f"Data directory: {args.data_dir}")
     print(f"Output directory: {args.output_dir}")
     print(f"Device: {device}")
@@ -359,8 +444,22 @@ def main():
     print(f"Temperature: {args.temperature}")
     print("="*80)
 
-    # Load VitalDB checkpoint
-    encoder, checkpoint_info = load_vitaldb_checkpoint(args.vitaldb_checkpoint, device=str(device))
+    # Initialize encoder - either from VitalDB checkpoint OR IBM pretrained
+    if args.use_ibm_pretrained or args.vitaldb_checkpoint is None:
+        # Use IBM pretrained TTM
+        print("\n[Initialization] Using IBM Pretrained TTM")
+        encoder, checkpoint_info = init_ibm_pretrained(
+            variant=args.ibm_variant,
+            context_length=args.ibm_context_length,
+            patch_size=args.ibm_patch_size,
+            num_channels=2,  # PPG + ECG from BUT-PPG
+            device=str(device)
+        )
+    else:
+        # Load VitalDB SSL checkpoint
+        print("\n[Initialization] Using VitalDB SSL Checkpoint")
+        print(f"  Checkpoint: {args.vitaldb_checkpoint}")
+        encoder, checkpoint_info = load_vitaldb_checkpoint(args.vitaldb_checkpoint, device=str(device))
 
     # Create decoder
     context_length = checkpoint_info['config'].get('context_length', 1024)

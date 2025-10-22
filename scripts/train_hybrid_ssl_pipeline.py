@@ -75,24 +75,32 @@ from src.utils.seed import set_seed
 
 
 def run_stage2_quality_ssl(
-    vitaldb_checkpoint: str,
     data_dir: str,
     output_dir: str,
     epochs: int = 50,
     batch_size: int = 128,
     lr: float = 5e-5,
-    max_samples: Optional[int] = None
+    max_samples: Optional[int] = None,
+    vitaldb_checkpoint: Optional[str] = None,
+    use_ibm_pretrained: bool = False,
+    ibm_variant: str = 'ibm-granite/granite-timeseries-ttm-r1',
+    ibm_context_length: int = 1024,
+    ibm_patch_size: int = 128
 ) -> str:
     """Run Stage 2: Quality-aware SSL on BUT-PPG.
 
     Args:
-        vitaldb_checkpoint: Path to VitalDB SSL checkpoint
         data_dir: Path to BUT-PPG data
         output_dir: Output directory
         epochs: Number of epochs
         batch_size: Batch size
         lr: Learning rate
         max_samples: Max samples for testing
+        vitaldb_checkpoint: Path to VitalDB SSL checkpoint (optional)
+        use_ibm_pretrained: Whether to use IBM pretrained TTM
+        ibm_variant: IBM TTM variant to use
+        ibm_context_length: Context length for IBM TTM
+        ibm_patch_size: Patch size for IBM TTM
 
     Returns:
         checkpoint_path: Path to best Stage 2 checkpoint
@@ -110,7 +118,6 @@ def run_stage2_quality_ssl(
     # Build command
     cmd = [
         'python3', 'scripts/continue_ssl_butppg_quality.py',
-        '--vitaldb-checkpoint', vitaldb_checkpoint,
         '--data-dir', data_dir,
         '--output-dir', str(stage2_dir),
         '--epochs', str(epochs),
@@ -121,6 +128,21 @@ def run_stage2_quality_ssl(
         '--temperature', '0.07',
         '--balanced-sampling'
     ]
+
+    # Add either VitalDB checkpoint or IBM pretrained config
+    if use_ibm_pretrained:
+        print(f"  Initializing from IBM pretrained TTM ({ibm_variant})")
+        cmd.extend([
+            '--use-ibm-pretrained',
+            '--ibm-variant', ibm_variant,
+            '--ibm-context-length', str(ibm_context_length),
+            '--ibm-patch-size', str(ibm_patch_size)
+        ])
+    elif vitaldb_checkpoint:
+        print(f"  Initializing from VitalDB checkpoint: {vitaldb_checkpoint}")
+        cmd.extend(['--vitaldb-checkpoint', vitaldb_checkpoint])
+    else:
+        raise ValueError("Must provide either vitaldb_checkpoint or use_ibm_pretrained=True")
 
     if max_samples:
         cmd.extend(['--max-samples', str(max_samples)])
@@ -374,8 +396,8 @@ def main():
     )
 
     # Paths
-    parser.add_argument('--vitaldb-checkpoint', type=str,
-                       help='Path to VitalDB SSL checkpoint (Stage 1)')
+    parser.add_argument('--vitaldb-checkpoint', type=str, default=None,
+                       help='Path to VitalDB SSL checkpoint (Stage 1) - if not provided, uses IBM pretrained TTM')
     parser.add_argument('--stage2-checkpoint', type=str,
                        help='Path to existing Stage 2 checkpoint (skip Stage 2 if provided)')
     parser.add_argument('--stage3-checkpoint', type=str,
@@ -384,6 +406,16 @@ def main():
                        help='Path to BUT-PPG data')
     parser.add_argument('--output-dir', type=str, default='artifacts/hybrid_pipeline',
                        help='Output directory')
+
+    # IBM Pretrained TTM options
+    parser.add_argument('--use-ibm-pretrained', action='store_true', default=False,
+                       help='Use IBM pretrained TTM instead of VitalDB checkpoint')
+    parser.add_argument('--ibm-variant', type=str, default='ibm-granite/granite-timeseries-ttm-r1',
+                       help='IBM TTM variant to use')
+    parser.add_argument('--ibm-context-length', type=int, default=1024,
+                       help='Context length for IBM TTM (512, 1024, or 1536)')
+    parser.add_argument('--ibm-patch-size', type=int, default=128,
+                       help='Patch size for IBM TTM (64 or 128)')
 
     # Pipeline control
     parser.add_argument('--skip-stage2', action='store_true',
@@ -448,31 +480,81 @@ def main():
 
         return
 
-    # Stage 1: VitalDB SSL (existing checkpoint)
-    print("\n[Stage 1/3] VitalDB SSL Pre-training")
-    print("  Status: ✓ Complete (using existing checkpoint)")
-    print(f"  Checkpoint: {args.vitaldb_checkpoint}")
+    # Stage 1: Initialize encoder (VitalDB SSL checkpoint OR IBM pretrained TTM)
+    print("\n[Stage 1/3] Foundation Model Initialization")
+
+    # Determine whether to use IBM pretrained or VitalDB checkpoint
+    use_ibm = args.use_ibm_pretrained or (args.vitaldb_checkpoint is None)
+
+    if use_ibm:
+        print("  Source: IBM Pretrained TTM")
+        print(f"  Variant: {args.ibm_variant}")
+        print(f"  Context: {args.ibm_context_length}, Patch: {args.ibm_patch_size}")
+
+        # Map to pretrained variant name
+        if args.ibm_context_length == 512 and args.ibm_patch_size == 64:
+            variant_name = "TTM-Base"
+        elif args.ibm_context_length == 1024 and args.ibm_patch_size == 128:
+            variant_name = "TTM-Enhanced"
+        elif args.ibm_context_length == 1536 and args.ibm_patch_size == 128:
+            variant_name = "TTM-Advanced"
+        else:
+            variant_name = "Custom"
+            print(f"  ⚠️  Warning: Using custom dimensions - may not load pretrained weights")
+
+        print(f"  Pretrained: {variant_name}")
+        stage1_checkpoint = None  # Will initialize from scratch in Stage 2
+        stage1_config = {
+            'use_ibm_pretrained': True,
+            'ibm_variant': args.ibm_variant,
+            'context_length': args.ibm_context_length,
+            'patch_size': args.ibm_patch_size,
+            'variant_name': variant_name
+        }
+    else:
+        print("  Source: VitalDB SSL Checkpoint")
+        print(f"  Checkpoint: {args.vitaldb_checkpoint}")
+        stage1_checkpoint = args.vitaldb_checkpoint
+        stage1_config = {
+            'use_ibm_pretrained': False
+        }
 
     # Stage 2: Quality-aware SSL on BUT-PPG
     if args.skip_stage2:
         print("\n[Stage 2/3] BUT-PPG Quality-Aware SSL")
-        print("  Status: ⊘ Skipped (using VitalDB checkpoint directly)")
-        stage2_checkpoint = args.vitaldb_checkpoint
+        print("  Status: ⊘ Skipped (using Stage 1 checkpoint directly)")
+        stage2_checkpoint = stage1_checkpoint
     elif args.stage2_checkpoint:
         print("\n[Stage 2/3] BUT-PPG Quality-Aware SSL")
         print("  Status: ✓ Using existing checkpoint")
         print(f"  Checkpoint: {args.stage2_checkpoint}")
         stage2_checkpoint = args.stage2_checkpoint
     else:
-        stage2_checkpoint = run_stage2_quality_ssl(
-            vitaldb_checkpoint=args.vitaldb_checkpoint,
-            data_dir=args.data_dir,
-            output_dir=args.output_dir,
-            epochs=args.stage2_epochs,
-            batch_size=args.stage2_batch_size,
-            lr=args.stage2_lr,
-            max_samples=args.max_samples
-        )
+        # Pass either checkpoint path or IBM config
+        if use_ibm:
+            stage2_checkpoint = run_stage2_quality_ssl(
+                vitaldb_checkpoint=None,  # No checkpoint
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                epochs=args.stage2_epochs,
+                batch_size=args.stage2_batch_size,
+                lr=args.stage2_lr,
+                max_samples=args.max_samples,
+                use_ibm_pretrained=True,
+                ibm_variant=args.ibm_variant,
+                ibm_context_length=args.ibm_context_length,
+                ibm_patch_size=args.ibm_patch_size
+            )
+        else:
+            stage2_checkpoint = run_stage2_quality_ssl(
+                vitaldb_checkpoint=stage1_checkpoint,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                epochs=args.stage2_epochs,
+                batch_size=args.stage2_batch_size,
+                lr=args.stage2_lr,
+                max_samples=args.max_samples
+            )
 
     # Stage 3: Supervised fine-tuning
     stage3_checkpoint = run_stage3_supervised_finetune(
