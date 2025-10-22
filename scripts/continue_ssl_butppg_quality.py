@@ -248,7 +248,8 @@ def train_epoch(
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: str,
-    mask_ratio: float = 0.4
+    mask_ratio: float = 0.4,
+    patch_size: int = 125
 ) -> Dict[str, float]:
     """Train for one epoch.
 
@@ -260,6 +261,7 @@ def train_epoch(
         optimizer: Optimizer
         device: Device
         mask_ratio: Masking ratio for reconstruction
+        patch_size: Patch size for masking (must match encoder)
 
     Returns:
         metrics: Dict with epoch metrics
@@ -289,7 +291,7 @@ def train_epoch(
         features_pooled = features.mean(dim=1)  # [B, D]
 
         # Optional: Masked reconstruction
-        masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio)
+        masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
         masked_features = encoder(masked_signals)
         reconstructed = decoder(masked_features)  # [B, C, T]
 
@@ -341,7 +343,8 @@ def validate_epoch(
     val_loader: DataLoader,
     loss_fn: nn.Module,
     device: str,
-    mask_ratio: float = 0.4
+    mask_ratio: float = 0.4,
+    patch_size: int = 125
 ) -> Dict[str, float]:
     """Validate for one epoch.
 
@@ -352,6 +355,7 @@ def validate_epoch(
         loss_fn: HybridSSLLoss instance
         device: Device
         mask_ratio: Masking ratio
+        patch_size: Patch size for masking (must match encoder)
 
     Returns:
         metrics: Dict with validation metrics
@@ -373,7 +377,7 @@ def validate_epoch(
         features_pooled = features.mean(dim=1)
 
         # Reconstruction
-        masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio)
+        masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
         masked_features = encoder(masked_signals)
         reconstructed = decoder(masked_features)
 
@@ -504,7 +508,18 @@ def main():
     context_length = checkpoint_info['config'].get('context_length', 1024)
     num_channels = checkpoint_info['config'].get('num_channels', 2)
     d_model = checkpoint_info['config'].get('d_model', 64)
-    patch_length = checkpoint_info['config'].get('patch_length', 128)
+
+    # CRITICAL: Get runtime patch_size from encoder (not from checkpoint config)
+    # TTM auto-adapts patch_size, so we must query the actual runtime value
+    if hasattr(encoder, 'patch_size'):
+        patch_length = encoder.patch_size
+        print(f"  ✓ Using encoder runtime patch_size: {patch_length}")
+    elif hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'config'):
+        patch_length = encoder.backbone.config.patch_length
+        print(f"  ✓ Using encoder config patch_length: {patch_length}")
+    else:
+        patch_length = checkpoint_info['config'].get('patch_length', 128)
+        print(f"  ⚠️  Using checkpoint config patch_length: {patch_length}")
 
     decoder = ReconstructionHead1D(
         d_model=d_model,
@@ -516,6 +531,7 @@ def main():
     print(f"  Context length: {context_length}")
     print(f"  Num channels: {num_channels}")
     print(f"  d_model: {d_model}")
+    print(f"  patch_size: {patch_length}")
 
     # Create datasets
     print(f"\nLoading BUT-PPG data...")
@@ -539,9 +555,25 @@ def main():
 
     # Limit samples for testing
     if args.max_samples:
-        train_dataset.base_dataset.window_files = train_dataset.base_dataset.window_files[:args.max_samples]
-        val_dataset.base_dataset.window_files = val_dataset.base_dataset.window_files[:min(args.max_samples // 4, len(val_dataset))]
-        print(f"\n⚠️  Limited to {args.max_samples} train samples for testing")
+        # Limit train dataset
+        train_limit = min(args.max_samples, len(train_dataset))
+        train_dataset.base_dataset.window_files = train_dataset.base_dataset.window_files[:train_limit]
+        train_dataset.base_dataset.valid_indices = train_dataset.base_dataset.valid_indices[:train_limit]
+        # Also update quality scores to match
+        if train_dataset.quality_scores is not None:
+            train_dataset.quality_scores = train_dataset.quality_scores[:train_limit]
+            train_dataset.quality_bin_indices = train_dataset.quality_bin_indices[:train_limit]
+
+        # Limit val dataset
+        val_limit = min(args.max_samples // 4, len(val_dataset))
+        val_dataset.base_dataset.window_files = val_dataset.base_dataset.window_files[:val_limit]
+        val_dataset.base_dataset.valid_indices = val_dataset.base_dataset.valid_indices[:val_limit]
+        # Also update quality scores to match
+        if val_dataset.quality_scores is not None:
+            val_dataset.quality_scores = val_dataset.quality_scores[:val_limit]
+            val_dataset.quality_bin_indices = val_dataset.quality_bin_indices[:val_limit]
+
+        print(f"\n⚠️  Limited to {train_limit} train / {val_limit} val samples for testing")
 
     # Create data loaders
     if args.balanced_sampling and train_dataset.quality_scores is not None:
@@ -609,12 +641,12 @@ def main():
 
         # Train
         train_metrics = train_epoch(
-            encoder, decoder, train_loader, loss_fn, optimizer, str(device), args.mask_ratio
+            encoder, decoder, train_loader, loss_fn, optimizer, str(device), args.mask_ratio, patch_length
         )
 
         # Validate
         val_metrics = validate_epoch(
-            encoder, decoder, val_loader, loss_fn, str(device), args.mask_ratio
+            encoder, decoder, val_loader, loss_fn, str(device), args.mask_ratio, patch_length
         )
 
         # Log metrics
