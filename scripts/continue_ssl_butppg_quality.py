@@ -136,10 +136,11 @@ def load_vitaldb_checkpoint(
     # Create encoder
     encoder = TTMAdapter(
         context_length=context_length,
-        num_channels=num_channels,
+        input_channels=num_channels,
         d_model=d_model,
-        patch_length=patch_length,
-        output_type='features'  # Return patch features for contrastive learning
+        patch_size=patch_length,  # FIXED: Use patch_size (not patch_length)
+        use_real_ttm=True,
+        task='ssl'
     ).to(device)
 
     # Load weights
