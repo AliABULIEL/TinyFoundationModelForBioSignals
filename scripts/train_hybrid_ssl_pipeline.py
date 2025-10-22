@@ -252,49 +252,62 @@ def evaluate_quality_classification(
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Get config
-    if 'config' in checkpoint:
-        config = checkpoint['config']
+    # Detect architecture from checkpoint weights (not config!)
+    # Config values can be stale after TTM auto-adaptation
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    elif 'encoder_state_dict' in checkpoint:
+        # For SSL checkpoints, combine encoder + head
+        state_dict = {}
+        for k, v in checkpoint['encoder_state_dict'].items():
+            state_dict[f'encoder.{k}'] = v
     else:
-        config = {
-            'context_length': 1024,
-            'num_channels': 2,
-            'd_model': 64,
-            'patch_length': 128
-        }
+        state_dict = checkpoint
 
-    # Create model
+    # Detect d_model and patch_size from patcher weight
+    # TTM patcher: Linear(patch_size, d_model) per channel
+    patcher_key = None
+    for key in state_dict.keys():
+        if 'patcher.weight' in key:
+            patcher_key = key
+            break
+
+    if patcher_key:
+        patcher_weight = state_dict[patcher_key]
+        d_model, patch_size = patcher_weight.shape
+        print(f"  ✓ Detected from weights: d_model={d_model}, patch_size={patch_size}")
+    else:
+        # Fallback to config
+        config = checkpoint.get('config', {})
+        d_model = config.get('d_model', 192)
+        patch_size = config.get('patch_size', 64)
+        print(f"  ⚠️  Using config (no patcher found): d_model={d_model}, patch_size={patch_size}")
+
+    context_length = checkpoint.get('config', {}).get('context_length', 1024)
+
+    # Create model with detected parameters
     encoder = TTMAdapter(
-        context_length=config.get('context_length', 1024),
-        num_channels=config.get('num_channels', 2),
-        d_model=config.get('d_model', 64),
-        patch_length=config.get('patch_length', 128),
-        output_type='features'
-    ).to(device)
-
-    # Classification head
-    num_classes = config.get('num_classes', 3)  # poor/medium/good
-    classifier = MLPClassifier(
-        in_features=config.get('d_model', 64),
-        num_classes=num_classes,
-        hidden_dims=[128],  # Single hidden layer with 128 units
-        dropout=0.1
+        context_length=context_length,
+        input_channels=2,  # ← Correct parameter name
+        d_model=d_model,   # ← From detection
+        patch_size=patch_size,  # ← From detection (not config!)
+        task='classification',
+        num_classes=2,
+        use_real_ttm=True
     ).to(device)
 
     # Load weights
-    if 'encoder_state_dict' in checkpoint:
-        encoder.load_state_dict(checkpoint['encoder_state_dict'])
-        classifier.load_state_dict(checkpoint['classifier_state_dict'])
+    # Checkpoint from finetune_butppg.py has model_state_dict (full model)
+    if 'model_state_dict' in checkpoint:
+        encoder.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        print("  ✓ Loaded model weights from model_state_dict")
+    elif 'state_dict' in checkpoint:
+        encoder.load_state_dict(checkpoint['state_dict'], strict=False)
+        print("  ✓ Loaded model weights from state_dict")
     else:
-        # Try loading full model
-        model_state = checkpoint.get('model_state_dict', checkpoint)
-        encoder_state = {k.replace('encoder.', ''): v for k, v in model_state.items() if k.startswith('encoder.')}
-        classifier_state = {k.replace('classifier.', ''): v for k, v in model_state.items() if k.startswith('classifier.')}
-        encoder.load_state_dict(encoder_state, strict=False)
-        classifier.load_state_dict(classifier_state, strict=False)
+        print("  ⚠️  No model_state_dict found, checkpoint may not load correctly")
 
     encoder.eval()
-    classifier.eval()
 
     # Create test dataset
     test_dataset = BUTPPGDataset(
@@ -328,10 +341,8 @@ def evaluate_quality_classification(
         signals = signals.to(device)
 
         # Forward pass
-        features = encoder(signals)  # [B, P, D]
-        features_pooled = features.mean(dim=1)  # [B, D]
-        logits = classifier(features_pooled)  # [B, num_classes]
-
+        # encoder has task='classification', so it returns logits directly
+        logits = encoder(signals)  # [B, num_classes]
         probs = torch.softmax(logits, dim=1)
 
         all_probs.append(probs.cpu().numpy())
@@ -342,6 +353,7 @@ def evaluate_quality_classification(
 
     # Compute metrics
     predictions = np.argmax(all_probs, axis=1)
+    num_classes = all_probs.shape[1]  # Get from probs shape
 
     # AUROC (one-vs-rest for multi-class)
     if num_classes == 2:
