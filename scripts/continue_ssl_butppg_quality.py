@@ -510,10 +510,11 @@ def main():
     # Create decoder
     context_length = checkpoint_info['config'].get('context_length', 1024)
     num_channels = checkpoint_info['config'].get('num_channels', 2)
-    d_model = checkpoint_info['config'].get('d_model', 64)
 
-    # CRITICAL: Get runtime patch_size from encoder (not from checkpoint config)
-    # TTM auto-adapts patch_size, so we must query the actual runtime value
+    # CRITICAL: Get runtime parameters from encoder (not from checkpoint config)
+    # TTM auto-adapts these values, so we must query the actual runtime values
+
+    # 1. Get patch_size from encoder
     if hasattr(encoder, 'patch_size'):
         patch_length = encoder.patch_size
         print(f"  ✓ Using encoder runtime patch_size: {patch_length}")
@@ -523,6 +524,17 @@ def main():
     else:
         patch_length = checkpoint_info['config'].get('patch_length', 128)
         print(f"  ⚠️  Using checkpoint config patch_length: {patch_length}")
+
+    # 2. Get d_model from encoder
+    if hasattr(encoder, 'encoder_dim'):
+        d_model = encoder.encoder_dim
+        print(f"  ✓ Using encoder runtime d_model: {d_model}")
+    elif hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'config'):
+        d_model = encoder.backbone.config.d_model
+        print(f"  ✓ Using encoder config d_model: {d_model}")
+    else:
+        d_model = checkpoint_info['config'].get('d_model', 192)
+        print(f"  ⚠️  Using checkpoint config d_model: {d_model}")
 
     decoder = ReconstructionHead1D(
         d_model=d_model,
