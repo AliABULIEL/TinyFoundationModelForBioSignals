@@ -23,8 +23,12 @@ import sys
 import warnings
 import ssl
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import gc
+import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
 from functools import partial
+import signal as system_signal
+from contextlib import contextmanager
 
 # Configure SSL for VitalDB access (fix certificate issues)
 try:
@@ -47,6 +51,31 @@ except ImportError:
     print("❌ VitalDB is not available! Install with: pip install vitaldb")
     VITALDB_AVAILABLE = False
     sys.exit(1)
+
+
+@contextmanager
+def timeout_handler(seconds):
+    """Context manager for adding timeout to operations.
+
+    Args:
+        seconds: Timeout in seconds
+
+    Raises:
+        TimeoutError: If operation exceeds timeout
+    """
+    def timeout_signal_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {seconds} seconds")
+
+    # Set the signal handler
+    old_handler = system_signal.signal(system_signal.SIGALRM, timeout_signal_handler)
+    system_signal.alarm(seconds)
+
+    try:
+        yield
+    finally:
+        # Restore the old signal handler
+        system_signal.alarm(0)
+        system_signal.signal(system_signal.SIGALRM, old_handler)
 
 
 def convert_to_python_types(obj):
@@ -73,13 +102,14 @@ def convert_to_python_types(obj):
         return obj
 
 
-def load_signal(case_id, track_names, default_fs):
+def load_signal(case_id, track_names, default_fs, timeout_sec=60):
     """Load a signal from VitalDB, trying multiple track names.
 
     Args:
         case_id: VitalDB case ID
         track_names: List of possible track names to try
         default_fs: Default sampling rate for this signal type
+        timeout_sec: Timeout for loading in seconds
 
     Returns:
         tuple: (signal_array, actual_fs) or (None, None) if failed
@@ -89,7 +119,13 @@ def load_signal(case_id, track_names, default_fs):
 
     for track in track_names:
         try:
-            data = vitaldb.load_case(case_id, [track], interval=interval)
+            # Add timeout to prevent hanging on network issues
+            try:
+                with timeout_handler(timeout_sec):
+                    data = vitaldb.load_case(case_id, [track], interval=interval)
+            except (TimeoutError, OSError, ConnectionError) as e:
+                # Network or timeout error, try next track
+                continue
 
             if data is not None and len(data) > 0:
                 # Extract signal from DataFrame
@@ -102,10 +138,14 @@ def load_signal(case_id, track_names, default_fs):
                     signal = np.array(data)
 
                 # Check if signal is valid
-                if len(signal) > 0:
+                if len(signal) > 0 and not np.all(np.isnan(signal)):
                     return signal, default_fs
 
+        except (KeyboardInterrupt, SystemExit):
+            # Don't catch these
+            raise
         except Exception as e:
+            # Log but continue to next track
             continue
 
     return None, None
@@ -230,38 +270,67 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
         skip_existing: Skip if case already successfully processed
 
     Returns:
-        int or None: Number of windows created, or None if failed
+        tuple: (num_windows, error_message) where num_windows is int or None,
+               error_message is str or None
     """
+    error_msg = None
+
     try:
         # Check if already processed
         if skip_existing and is_case_already_processed(case_id, output_dir):
             if verbose:
                 print(f"\n  Case {case_id} already processed, skipping...")
             # Load existing file to return window count
-            output_file = output_dir / f'case_{case_id:05d}_windows.npz'
-            data = np.load(output_file)
-            return data['num_windows']
+            try:
+                output_file = output_dir / f'case_{case_id:05d}_windows.npz'
+                data = np.load(output_file)
+                num_windows = int(data['num_windows'])
+                data.close()
+                return (num_windows, None)
+            except Exception as e:
+                error_msg = f"Error loading existing file: {e}"
+                return (None, error_msg)
 
         if verbose:
             print(f"\n  Processing case {case_id}...")
 
-        # Load PPG (PLETH)
+        # Load PPG (PLETH) with timeout
         ppg_tracks = ['SNUADC/PLETH', 'Solar8000/PLETH', 'Intellivue/PLETH']
-        ppg_signal, ppg_fs = load_signal(case_id, ppg_tracks, default_fs=100.0)
+        try:
+            ppg_signal, ppg_fs = load_signal(case_id, ppg_tracks, default_fs=100.0, timeout_sec=60)
+        except (TimeoutError, MemoryError) as e:
+            error_msg = f"PPG load timeout/memory: {type(e).__name__}"
+            if verbose:
+                print(f"    ⚠️  {error_msg}")
+            return (None, error_msg)
 
         if ppg_signal is None:
+            error_msg = "Could not load PPG signal"
             if verbose:
-                print(f"    ⚠️  Could not load PPG for case {case_id}")
-            return None
+                print(f"    ⚠️  {error_msg}")
+            return (None, error_msg)
 
-        # Load ECG
+        # Load ECG with timeout
         ecg_tracks = ['SNUADC/ECG_II', 'Solar8000/ECG_II', 'SNUADC/ECG_V5']
-        ecg_signal, ecg_fs = load_signal(case_id, ecg_tracks, default_fs=500.0)
+        try:
+            ecg_signal, ecg_fs = load_signal(case_id, ecg_tracks, default_fs=500.0, timeout_sec=60)
+        except (TimeoutError, MemoryError) as e:
+            error_msg = f"ECG load timeout/memory: {type(e).__name__}"
+            if verbose:
+                print(f"    ⚠️  {error_msg}")
+            # Clean up PPG signal
+            del ppg_signal
+            gc.collect()
+            return (None, error_msg)
 
         if ecg_signal is None:
+            error_msg = "Could not load ECG signal"
             if verbose:
-                print(f"    ⚠️  Could not load ECG for case {case_id}")
-            return None
+                print(f"    ⚠️  {error_msg}")
+            # Clean up PPG signal
+            del ppg_signal
+            gc.collect()
+            return (None, error_msg)
 
         if verbose:
             print(f"    Loaded: PPG {len(ppg_signal)} samples @ {ppg_fs}Hz, "
@@ -274,24 +343,45 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
             min_case_duration = min(ppg_duration_min, ecg_duration_min)
 
             if min_case_duration < min_duration_min:
+                error_msg = f"Too short: {min_case_duration:.1f} min < {min_duration_min} min"
                 if verbose:
-                    print(f"    ⚠️  Case {case_id} too short: {min_case_duration:.1f} min "
-                          f"(need >{min_duration_min} min), skipping")
-                return None
+                    print(f"    ⚠️  {error_msg}")
+                # Clean up
+                del ppg_signal, ecg_signal
+                gc.collect()
+                return (None, error_msg)
 
         # Resample both to target fs
-        ppg_resampled = resample_signal(ppg_signal, ppg_fs, fs)
-        ecg_resampled = resample_signal(ecg_signal, ecg_fs, fs)
+        try:
+            ppg_resampled = resample_signal(ppg_signal, ppg_fs, fs)
+            ecg_resampled = resample_signal(ecg_signal, ecg_fs, fs)
+        except (MemoryError, ValueError) as e:
+            error_msg = f"Resampling failed: {type(e).__name__}"
+            if verbose:
+                print(f"    ⚠️  {error_msg}")
+            # Clean up
+            del ppg_signal, ecg_signal
+            gc.collect()
+            return (None, error_msg)
+
+        # Clean up original signals
+        del ppg_signal, ecg_signal
+        gc.collect()
 
         if ppg_resampled is None or ecg_resampled is None:
+            error_msg = "Resampling returned None"
             if verbose:
-                print(f"    ⚠️  Resampling failed for case {case_id}")
-            return None
+                print(f"    ⚠️  {error_msg}")
+            return (None, error_msg)
 
         # Synchronize to same length
         min_len = min(len(ppg_resampled), len(ecg_resampled))
         ppg_sync = ppg_resampled[:min_len]
         ecg_sync = ecg_resampled[:min_len]
+
+        # Clean up resampled arrays
+        del ppg_resampled, ecg_resampled
+        gc.collect()
 
         if verbose:
             print(f"    Synchronized: {min_len} samples @ {fs}Hz "
@@ -300,6 +390,10 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
         # Z-score normalize entire signals
         ppg_norm = (ppg_sync - np.mean(ppg_sync)) / (np.std(ppg_sync) + 1e-8)
         ecg_norm = (ecg_sync - np.mean(ecg_sync)) / (np.std(ecg_sync) + 1e-8)
+
+        # Clean up sync arrays
+        del ppg_sync, ecg_sync
+        gc.collect()
 
         # Create non-overlapping windows
         paired_windows = []
@@ -321,10 +415,15 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
                 paired = np.stack([ppg_win, ecg_win], axis=0)
                 paired_windows.append(paired)
 
+        # Clean up normalized signals
+        del ppg_norm, ecg_norm
+        gc.collect()
+
         if len(paired_windows) == 0:
+            error_msg = "No windows passed quality checks"
             if verbose:
-                print(f"    ⚠️  No windows passed quality checks for case {case_id}")
-            return None
+                print(f"    ⚠️  {error_msg}")
+            return (None, error_msg)
 
         # Convert to numpy array [N, 2, window_size]
         windows_array = np.stack(paired_windows, axis=0).astype(np.float32)
@@ -344,12 +443,30 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
             num_windows=len(paired_windows)
         )
 
-        return len(paired_windows)
+        num_windows = len(paired_windows)
 
-    except Exception as e:
+        # Clean up
+        del paired_windows, windows_array
+        gc.collect()
+
+        return (num_windows, None)
+
+    except KeyboardInterrupt:
+        # Don't catch keyboard interrupt
+        raise
+    except MemoryError as e:
+        error_msg = f"MemoryError: {str(e)[:100]}"
         if verbose:
-            print(f"    ❌ Error processing case {case_id}: {e}")
-        return None
+            print(f"    ❌ {error_msg}")
+        gc.collect()
+        return (None, error_msg)
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+        if verbose:
+            print(f"    ❌ Error: {error_msg}")
+            traceback.print_exc()
+        gc.collect()
+        return (None, error_msg)
 
 
 def main():
@@ -509,6 +626,7 @@ def main():
         total_windows = 0
         successful_cases = 0
         split_failed = []
+        error_summary = {}  # Track error types
 
         # Multiprocessing or sequential processing
         if args.num_workers > 1:
@@ -540,22 +658,47 @@ def main():
                                  desc=f"  {split_name}"):
                     case_id = future_to_case[future]
                     try:
-                        num_windows = future.result()
+                        # Get result with timeout (5 minutes per case max)
+                        result = future.result(timeout=300)
+
+                        if isinstance(result, tuple):
+                            num_windows, error_msg = result
+                        else:
+                            # Backwards compatibility
+                            num_windows = result
+                            error_msg = None
+
                         if num_windows is not None and num_windows > 0:
                             total_windows += num_windows
                             successful_cases += 1
                         else:
                             split_failed.append(case_id)
-                            failed_cases.append((split_name, case_id))
-                    except Exception as e:
-                        print(f"\n    ⚠️  Exception processing case {case_id}: {e}")
+                            failed_cases.append((split_name, case_id, error_msg or "Unknown error"))
+                            # Track error types
+                            err_type = (error_msg or "Unknown").split(':')[0]
+                            error_summary[err_type] = error_summary.get(err_type, 0) + 1
+
+                    except FutureTimeoutError:
+                        error_msg = "Worker timeout (>5min)"
+                        print(f"\n    ⚠️  Case {case_id}: {error_msg}")
                         split_failed.append(case_id)
-                        failed_cases.append((split_name, case_id))
+                        failed_cases.append((split_name, case_id, error_msg))
+                        error_summary['Timeout'] = error_summary.get('Timeout', 0) + 1
+                    except KeyboardInterrupt:
+                        print("\n\n⚠️  Interrupted by user, shutting down workers...")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise
+                    except Exception as e:
+                        error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+                        print(f"\n    ⚠️  Exception processing case {case_id}: {error_msg}")
+                        split_failed.append(case_id)
+                        failed_cases.append((split_name, case_id, error_msg))
+                        error_summary[type(e).__name__] = error_summary.get(type(e).__name__, 0) + 1
 
         else:
             # SEQUENTIAL MODE: Original loop
             for case_id in tqdm(case_ids, desc=f"  {split_name}"):
-                num_windows = process_case(
+                result = process_case(
                     case_id,
                     output_path / split_name,
                     args.fs,
@@ -565,22 +708,38 @@ def main():
                     skip_existing=True  # Skip already processed cases
                 )
 
+                if isinstance(result, tuple):
+                    num_windows, error_msg = result
+                else:
+                    num_windows = result
+                    error_msg = None
+
                 if num_windows is not None and num_windows > 0:
                     total_windows += num_windows
                     successful_cases += 1
                 else:
                     split_failed.append(case_id)
-                    failed_cases.append((split_name, case_id))
+                    failed_cases.append((split_name, case_id, error_msg or "Unknown error"))
+                    # Track error types
+                    err_type = (error_msg or "Unknown").split(':')[0]
+                    error_summary[err_type] = error_summary.get(err_type, 0) + 1
 
         summary[split_name] = {
             'cases_attempted': len(case_ids),
             'cases_successful': successful_cases,
             'cases_failed': len(split_failed),
-            'windows': total_windows
+            'windows': total_windows,
+            'error_summary': error_summary
         }
 
         print(f"  ✓ {split_name}: {successful_cases}/{len(case_ids)} cases, "
               f"{total_windows:,} windows")
+
+        # Print error summary if there were failures
+        if error_summary:
+            print(f"\n  📊 Error Summary for {split_name}:")
+            for err_type, count in sorted(error_summary.items(), key=lambda x: -x[1]):
+                print(f"    • {err_type}: {count} cases")
 
         if len(split_failed) > 0 and len(split_failed) <= 10:
             print(f"    Failed cases: {split_failed}")
