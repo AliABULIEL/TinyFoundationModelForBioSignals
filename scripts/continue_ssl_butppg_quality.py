@@ -283,6 +283,23 @@ def train_epoch(
 
         batch_size = signals.shape[0]
 
+        # Preprocess signals to match encoder expectations
+        # 1. Extract first 2 channels (PPG + ECG)
+        # 2. Crop/pad to encoder's context_length
+        signals = signals[:, :2, :]  # [B, 5, T] → [B, 2, T]
+
+        # Get encoder's expected context length
+        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
+        current_length = signals.shape[2]
+
+        if current_length > expected_length:
+            # Crop to expected length
+            signals = signals[:, :, :expected_length]
+        elif current_length < expected_length:
+            # Pad to expected length
+            pad_length = expected_length - current_length
+            signals = torch.nn.functional.pad(signals, (0, pad_length), mode='constant', value=0)
+
         # Forward pass through encoder
         # CRITICAL: Use get_encoder_output() for SSL tasks to get patch-level features [B, P, D]
         # The default forward() returns pooled features [B, D] for classification tasks
@@ -373,6 +390,23 @@ def validate_epoch(
     for batch in val_loader:
         signals = batch['signal'].to(device)
         quality_scores = batch['quality_score'].to(device)
+
+        # Preprocess signals to match encoder expectations
+        # 1. Extract first 2 channels (PPG + ECG)
+        # 2. Crop/pad to encoder's context_length
+        signals = signals[:, :2, :]  # [B, 5, T] → [B, 2, T]
+
+        # Get encoder's expected context length
+        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
+        current_length = signals.shape[2]
+
+        if current_length > expected_length:
+            # Crop to expected length
+            signals = signals[:, :, :expected_length]
+        elif current_length < expected_length:
+            # Pad to expected length
+            pad_length = expected_length - current_length
+            signals = torch.nn.functional.pad(signals, (0, pad_length), mode='constant', value=0)
 
         # Forward pass
         # CRITICAL: Use get_encoder_output() to get patch-level features [B, P, D]
