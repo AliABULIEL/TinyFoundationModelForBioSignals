@@ -346,8 +346,9 @@ def evaluate_quality_classification(
     all_labels = []
 
     for batch in test_loader:
-        if isinstance(batch, tuple):
-            signals, labels = batch
+        # Handle different batch formats (tuple, list, or dict)
+        if isinstance(batch, (tuple, list)):
+            signals, labels = batch[0], batch[1]
         else:
             signals = batch['signal']
             labels = batch['label']
