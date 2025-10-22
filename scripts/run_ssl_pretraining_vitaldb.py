@@ -44,7 +44,7 @@ def check_vitaldb_data():
     print("\n[Step 1/4] Checking VitalDB data availability...")
 
     possible_paths = [
-        Path('data/processed/vitaldb/windows'),
+        Path('data/processed/vitaldb/windows_with_labels/paired'),
         Path('artifacts/raw_windows'),
         Path('data/vitaldb_windows')
     ]
