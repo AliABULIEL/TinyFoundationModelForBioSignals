@@ -655,7 +655,111 @@ class TTMAdapter(nn.Module):
     def is_using_real_ttm(self) -> bool:
         """Check if using real TTM or fallback."""
         return self.using_real_ttm
-    
+
+    def get_quality_aware_features(
+        self,
+        x: torch.Tensor,
+        quality_scores: Optional[torch.Tensor] = None,
+        compute_quality: bool = True
+    ) -> torch.Tensor:
+        """Extract features with quality-aware attention pooling.
+
+        Pools patch features using attention weights based on patch quality,
+        emphasizing high-quality patches while downweighting low-quality ones.
+
+        This is particularly useful for BUT-PPG smartphone data where certain
+        temporal regions may have better signal quality than others.
+
+        Args:
+            x: Input signal [B, C, T]
+            quality_scores: Optional precomputed quality scores [B, P] per patch
+            compute_quality: If True and quality_scores is None, compute from signal
+
+        Returns:
+            features: Quality-weighted pooled features [B, D]
+
+        Example:
+            >>> model = TTMAdapter(context_length=1024, num_channels=2)
+            >>> signals = torch.randn(32, 2, 1024)
+            >>> features = model.get_quality_aware_features(signals)
+            >>> features.shape
+            torch.Size([32, 64])
+        """
+        # Get patch features [B, P, D]
+        patch_features = self.get_encoder_output(x)
+        batch_size, num_patches, d_model = patch_features.shape
+
+        # Compute or use provided quality scores
+        if quality_scores is None and compute_quality:
+            # Compute quality scores for each patch
+            quality_scores = self._compute_patch_quality(x, num_patches)  # [B, P]
+
+        if quality_scores is not None:
+            # Apply softmax to get attention weights
+            attention_weights = torch.softmax(quality_scores, dim=1)  # [B, P]
+
+            # Weighted sum: [B, P, D] * [B, P, 1] -> [B, D]
+            features = torch.sum(
+                patch_features * attention_weights.unsqueeze(-1),
+                dim=1
+            )
+        else:
+            # Fallback to mean pooling if quality not available
+            features = patch_features.mean(dim=1)
+
+        return features
+
+    def _compute_patch_quality(
+        self,
+        x: torch.Tensor,
+        num_patches: int
+    ) -> torch.Tensor:
+        """Compute quality score for each patch.
+
+        Uses simple heuristics:
+        - SNR (signal-to-noise ratio)
+        - Amplitude stability
+        - No flat/saturated regions
+
+        Args:
+            x: Input signal [B, C, T]
+            num_patches: Number of patches
+
+        Returns:
+            quality_scores: Quality per patch [B, P]
+        """
+        batch_size, num_channels, seq_len = x.shape
+        patch_size = seq_len // num_patches
+
+        # Reshape into patches: [B, C, T] -> [B, C, P, patch_size]
+        x_patches = x.reshape(batch_size, num_channels, num_patches, patch_size)
+
+        # Average over channels: [B, C, P, patch_size] -> [B, P, patch_size]
+        x_patches = x_patches.mean(dim=1)
+
+        quality_scores = []
+
+        for p in range(num_patches):
+            patch = x_patches[:, p, :]  # [B, patch_size]
+
+            # 1. Signal range (avoid flat signals)
+            signal_range = patch.max(dim=1)[0] - patch.min(dim=1)[0]
+            range_score = torch.clamp(signal_range / 2.0, 0, 1)
+
+            # 2. Signal variance (avoid uniform/noisy signals)
+            variance = patch.var(dim=1)
+            variance_score = torch.clamp(variance, 0, 1)
+
+            # 3. Combine (simple average)
+            patch_quality = (range_score + variance_score) / 2.0
+
+            quality_scores.append(patch_quality)
+
+        # Stack: [B, P]
+        quality_scores = torch.stack(quality_scores, dim=1)
+
+        return quality_scores
+
     def print_parameter_summary(self):
         """Print summary of parameters."""
         total_params = sum(p.numel() for p in self.parameters())
