@@ -208,7 +208,7 @@ def main():
 
             for detail in results['file_details']:
                 if detail['status'] != 'valid':
-                    file_path = split_dir / detail['file']:
+                    file_path = split_dir / detail['file']
                     try:
                         file_path.unlink()
                         deleted_count += 1
