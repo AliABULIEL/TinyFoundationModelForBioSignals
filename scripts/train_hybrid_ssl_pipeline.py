@@ -250,7 +250,7 @@ def evaluate_quality_classification(
 
     # Load checkpoint
     print(f"Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Get config
     if 'config' in checkpoint:
