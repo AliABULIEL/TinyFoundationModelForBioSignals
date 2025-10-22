@@ -775,6 +775,27 @@ def main():
     print(f"  patch_size: {patch_size}")
     print(f"  context_length: {context_length}")
 
+    # CRITICAL: Determine if SSL used IBM pretrained
+    # SSL with patch_size=64, context=1024, d_model=192 used IBM pretrained
+    # (IBM pretrained is loaded with patch=128 config, but auto-adapts to patch=64)
+    ssl_used_ibm_pretrained = (
+        context_length == 1024 and
+        d_model == 192 and
+        patch_size == 64
+    )
+
+    if ssl_used_ibm_pretrained:
+        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced (946K params)")
+        print(f"     Detected: context={context_length}, d_model={d_model}, patch={patch_size}")
+        print(f"     Will load IBM pretrained (patch=128 config), which auto-adapts to patch={patch_size}")
+        # CRITICAL: Use patch_size=128 to load IBM pretrained (same as SSL training)
+        # IBM's TTM will auto-adapt from 8 patches (128) to 16 patches (64)
+        model_patch_size = 128
+    else:
+        print(f"\n  ⚠️  SSL checkpoint used custom architecture (not IBM pretrained)")
+        print(f"     Will create fresh TTM with patch={patch_size}")
+        model_patch_size = patch_size
+
     # Create SSL encoder
     print(f"\nCreating SSL encoder...")
     encoder = TTMAdapter(
@@ -782,12 +803,47 @@ def main():
         task='ssl',
         input_channels=2,
         context_length=context_length,
+        patch_size=model_patch_size,  # CRITICAL: Use model_patch_size, not hardcoded!
+        d_model=d_model,
         use_real_ttm=True
     )
 
+    # Move model to device BEFORE auto-adaptation
+    encoder = encoder.to(args.device)
+
+    # CRITICAL: Trigger auto-adaptation BEFORE loading SSL weights
+    # IBM TTM auto-adapts patch_size during first forward pass
+    # We need this to happen BEFORE loading SSL weights so architectures match
+    if ssl_used_ibm_pretrained:
+        print(f"\n🔧 Triggering TTM auto-adaptation...")
+        print(f"  Current model patch_size: {encoder.patch_size}")
+
+        with torch.no_grad():
+            dummy_input = torch.randn(1, 2, context_length).to(args.device)
+            try:
+                _ = encoder.get_encoder_output(dummy_input)
+                print(f"  ✓ Auto-adaptation complete")
+                print(f"  Updated model patch_size: {encoder.patch_size}")
+                del dummy_input, _
+                if args.device == 'cuda':
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"  ⚠️  Auto-adaptation failed: {e}")
+                print(f"     Proceeding with current patch_size={encoder.patch_size}")
+
+        # Verify patch_size matches SSL checkpoint
+        print(f"\nVerifying model configuration:")
+        print(f"  Model patch_size: {encoder.patch_size}")
+        print(f"  SSL checkpoint patch_size: {patch_size}")
+
+        if encoder.patch_size != patch_size:
+            print(f"  ⚠️  CRITICAL: Model patch_size ({encoder.patch_size}) != SSL checkpoint ({patch_size})")
+            print(f"     Weight loading may fail!")
+        else:
+            print(f"  ✅ Patch sizes match - ready to load SSL weights")
+
     # Load SSL weights
     encoder.load_state_dict(encoder_state, strict=False)
-    encoder = encoder.to(args.device)
     encoder.eval()
     for param in encoder.parameters():
         param.requires_grad = False
