@@ -478,7 +478,6 @@ class BUTPPGDataset(Dataset):
         for mod in self.modalities:
             if mod == 'acc':
                 # Accelerometer not available in BUT-PPG dataset
-                print(f"Warning: Accelerometer data not available in BUT-PPG dataset")
                 continue
             if mod in channel_map:
                 selected_channels.extend(channel_map[mod])
