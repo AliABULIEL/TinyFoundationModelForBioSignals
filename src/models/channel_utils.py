@@ -458,11 +458,15 @@ def unfreeze_last_n_blocks(
         raise ValueError("Model doesn't have 'backbone' or 'encoder' attribute")
     
     # Find transformer blocks
-    # Common patterns: "layer", "block", "transformer_layer"
+    # Support both standard transformers and TTM MLP-Mixer architecture
     blocks = []
     for name, module in backbone.named_modules():
-        # Check if this looks like a transformer block
-        if any(keyword in name.lower() for keyword in ['layer', 'block']):
+        # TTM MLP-Mixer pattern: encoder.mlp_mixer_encoder.mixers.{digit}
+        if 'mixers.' in name and len(name.split('.')) > 0 and name.split('.')[-1].isdigit():
+            # This is a TTM mixer block (e.g., "encoder.mlp_mixer_encoder.mixers.0")
+            blocks.append((name, module))
+        # Standard transformer pattern: "layer", "block", "transformer_layer"
+        elif any(keyword in name.lower() for keyword in ['layer', 'block']):
             # Make sure it's a direct child (not nested)
             if '.' not in name or name.count('.') == 1:
                 blocks.append((name, module))
