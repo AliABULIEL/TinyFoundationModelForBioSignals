@@ -69,7 +69,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_recall_fscore_support
 
 from src.models.ttm_adapter import TTMAdapter
-from src.models.heads import ClassificationHead
+from src.models.heads import MLPClassifier
 from src.data.butppg_dataset import BUTPPGDataset
 from src.utils.seed import set_seed
 
@@ -247,10 +247,10 @@ def evaluate_quality_classification(
 
     # Classification head
     num_classes = config.get('num_classes', 3)  # poor/medium/good
-    classifier = ClassificationHead(
-        input_dim=config.get('d_model', 64),
+    classifier = MLPClassifier(
+        in_features=config.get('d_model', 64),
         num_classes=num_classes,
-        hidden_dim=128,
+        hidden_dims=[128],  # Single hidden layer with 128 units
         dropout=0.1
     ).to(device)
 
