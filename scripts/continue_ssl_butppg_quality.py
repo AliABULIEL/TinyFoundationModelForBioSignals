@@ -104,12 +104,41 @@ def load_vitaldb_checkpoint(
             'patch_length': 128
         }
 
+    # Extract config values
+    context_length = config.get('context_length', 1024)
+    num_channels = config.get('num_channels', 2)
+    d_model = config.get('d_model', 64)
+    patch_length = config.get('patch_length', 128)
+
+    # CRITICAL FIX: Check if patch_length is divisible by context_length
+    # TTM's adaptive patching may have changed the actual patch_size at runtime
+    if context_length % patch_length != 0:
+        # Calculate what TTM would actually use
+        # For context=1024, TTM typically uses patch_size=64 (16 patches)
+        if context_length == 1024:
+            actual_patch_length = 64
+        elif context_length == 512:
+            actual_patch_length = 64
+        elif context_length == 1536:
+            actual_patch_length = 128
+        else:
+            # Find largest divisor
+            for p in [128, 64, 32, 16]:
+                if context_length % p == 0:
+                    actual_patch_length = p
+                    break
+            else:
+                actual_patch_length = patch_length  # Fallback
+
+        print(f"  Detected patch_length mismatch: config={patch_length}, using={actual_patch_length}")
+        patch_length = actual_patch_length
+
     # Create encoder
     encoder = TTMAdapter(
-        context_length=config.get('context_length', 1024),
-        num_channels=config.get('num_channels', 2),
-        d_model=config.get('d_model', 64),
-        patch_length=config.get('patch_length', 128),
+        context_length=context_length,
+        num_channels=num_channels,
+        d_model=d_model,
+        patch_length=patch_length,
         output_type='features'  # Return patch features for contrastive learning
     ).to(device)
 
@@ -120,6 +149,12 @@ def load_vitaldb_checkpoint(
     except Exception as e:
         print(f"⚠️  Partial weight loading: {e}")
         encoder.load_state_dict(encoder_state, strict=False)
+
+    # Update config with corrected patch_length
+    config['patch_length'] = patch_length
+    config['context_length'] = context_length
+    config['num_channels'] = num_channels
+    config['d_model'] = d_model
 
     checkpoint_info = {
         'epoch': checkpoint.get('epoch', 0),
