@@ -312,7 +312,17 @@ def train_epoch(
         # Optional: Masked reconstruction
         masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
         masked_features = encoder.get_encoder_output(masked_signals)  # [B, P, D]
-        reconstructed = decoder(masked_features)  # [B, C, T]
+        reconstructed = decoder(masked_features)  # [B, C, T']
+
+        # CRITICAL: Crop reconstructed to match target length
+        # TTM may output more patches than expected due to adaptive patching
+        target_length = signals.shape[2]
+        if reconstructed.shape[2] > target_length:
+            reconstructed = reconstructed[:, :, :target_length]
+        elif reconstructed.shape[2] < target_length:
+            # Pad if needed (unlikely)
+            pad_length = target_length - reconstructed.shape[2]
+            reconstructed = torch.nn.functional.pad(reconstructed, (0, pad_length), mode='constant', value=0)
 
         # Compute hybrid loss
         loss, components = loss_fn(
@@ -416,7 +426,17 @@ def validate_epoch(
         # Reconstruction
         masked_signals, mask = random_masking(signals, mask_ratio=mask_ratio, patch_size=patch_size)
         masked_features = encoder.get_encoder_output(masked_signals)  # [B, P, D]
-        reconstructed = decoder(masked_features)  # [B, C, T]
+        reconstructed = decoder(masked_features)  # [B, C, T']
+
+        # CRITICAL: Crop reconstructed to match target length
+        # TTM may output more patches than expected due to adaptive patching
+        target_length = signals.shape[2]
+        if reconstructed.shape[2] > target_length:
+            reconstructed = reconstructed[:, :, :target_length]
+        elif reconstructed.shape[2] < target_length:
+            # Pad if needed (unlikely)
+            pad_length = target_length - reconstructed.shape[2]
+            reconstructed = torch.nn.functional.pad(reconstructed, (0, pad_length), mode='constant', value=0)
 
         # Loss
         loss, components = loss_fn(
