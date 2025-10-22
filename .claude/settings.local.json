@@ -10,7 +10,9 @@
       "Bash(python:*)",
       "Bash(tree -L 3 -d /Users/aliab/Desktop/TinyFoundationModelForBioSignals)",
       "Bash(find:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(xargs:*)"
     ],
     "deny": [],
     "ask": []
