@@ -202,16 +202,17 @@ def run_stage3_supervised_finetune(
         '--pretrained', init_checkpoint,
         '--data-dir', data_dir,
         '--output-dir', str(stage3_dir),
-        '--task', 'quality',
         '--epochs', str(epochs),
         '--batch-size', str(batch_size),
         '--lr', str(lr),
-        '--freeze-encoder',  # Initially freeze encoder
-        '--unfreeze-after', '5'  # Unfreeze after 5 epochs
+        '--head-only-epochs', '3',  # Stage 1: head-only warmup
+        '--unfreeze-last-n', '2',   # Stage 2: progressive unfreezing
+        '--full-finetune',          # Stage 3: full fine-tuning enabled
+        '--full-finetune-epochs', str(max(5, epochs - 3))  # Remaining epochs for full FT
     ]
 
-    if max_samples:
-        cmd.extend(['--max-samples', str(max_samples)])
+    # Note: max_samples not supported by finetune_butppg.py
+    # Dataset will use all available data
 
     # Run
     print(f"Running command: {' '.join(cmd)}\n")
