@@ -355,6 +355,10 @@ def evaluate_quality_classification(
 
         signals = signals.to(device)
 
+        # Ensure labels are 1D
+        if labels.dim() > 1:
+            labels = labels.squeeze()
+
         # Forward pass
         # encoder has task='classification', so it returns logits directly
         logits = encoder(signals)  # [B, num_classes]
