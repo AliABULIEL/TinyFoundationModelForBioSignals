@@ -285,22 +285,36 @@ def evaluate_quality_classification(
 
     context_length = checkpoint.get('config', {}).get('context_length', 1024)
 
-    # Create model with detected parameters
+    # Create model with IBM pretrained config (patch_size=128)
+    # Then trigger auto-adaptation to match checkpoint's adapted patch_size
+    print(f"  Creating model with patch_size=128, will auto-adapt to {patch_size}")
     encoder = TTMAdapter(
         context_length=context_length,
-        input_channels=2,  # ← Correct parameter name
-        d_model=d_model,   # ← From detection
-        patch_size=patch_size,  # ← From detection (not config!)
+        input_channels=2,
+        d_model=d_model,
+        patch_size=128,  # ← IBM pretrained config (will auto-adapt)
         task='classification',
         num_classes=2,
         use_real_ttm=True
     ).to(device)
 
+    # Trigger auto-adaptation to match checkpoint
+    if patch_size != 128:
+        print(f"  Triggering auto-adaptation: 128 → {patch_size}")
+        dummy_input = torch.randn(1, 2, context_length).to(device)
+        _ = encoder(dummy_input)
+        print(f"  ✓ Auto-adapted to patch_size={encoder.patch_size}")
+
     # Load weights
     # Checkpoint from finetune_butppg.py has model_state_dict (full model)
     if 'model_state_dict' in checkpoint:
-        encoder.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        print("  ✓ Loaded model weights from model_state_dict")
+        # Only load encoder.backbone weights (skip decoder/head mismatches)
+        state_dict = checkpoint['model_state_dict']
+        encoder_weights = {k: v for k, v in state_dict.items() if k.startswith('encoder.backbone') or k.startswith('head')}
+        missing, unexpected = encoder.load_state_dict(encoder_weights, strict=False)
+        print(f"  ✓ Loaded {len(encoder_weights)} encoder weights")
+        if len(unexpected) > 0:
+            print(f"    Skipped {len(unexpected)} decoder weights (expected)")
     elif 'state_dict' in checkpoint:
         encoder.load_state_dict(checkpoint['state_dict'], strict=False)
         print("  ✓ Loaded model weights from state_dict")
