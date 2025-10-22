@@ -251,6 +251,7 @@ class DataPreparationPipeline:
             logger.info(f"    context_length={self.context_length}")
             logger.info(f"    patch_size={self.patch_size}")
             logger.info(f"    expected_samples={self.expected_samples} ({self.window_sec}s @ {self.sampling_rate}Hz)")
+            logger.info(f"    num_workers={self.num_workers} {'(PARALLEL MODE 🚀)' if self.num_workers > 1 else '(sequential)'}")
         else:
             logger.warning(f"Config not found: {model_config_path}")
             self.context_length = 1024
@@ -494,7 +495,8 @@ class DataPreparationPipeline:
             '--fs', str(self.sampling_rate),  # 125 Hz
             '--splits-file', splits_file,
             '--train-ratio', '0.7' if self.mode == 'fasttrack' else '0.7',
-            '--val-ratio', '0.15' if self.mode == 'fasttrack' else '0.15'
+            '--val-ratio', '0.15' if self.mode == 'fasttrack' else '0.15',
+            '--num-workers', str(self.num_workers)  # Pass multiprocessing workers
         ]
 
         if max_cases:

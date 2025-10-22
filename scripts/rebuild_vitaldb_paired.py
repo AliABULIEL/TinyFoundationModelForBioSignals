@@ -23,6 +23,8 @@ import sys
 import warnings
 import ssl
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 # Configure SSL for VitalDB access (fix certificate issues)
 try:
@@ -311,6 +313,8 @@ def main():
                        help='Print detailed progress for each case')
     parser.add_argument('--splits-file', default='configs/splits/splits_full.json',
                        help='Path to existing splits file (optional)')
+    parser.add_argument('--num-workers', type=int, default=1,
+                       help='Number of parallel workers (default: 1, use 8-16 for faster processing)')
 
     args = parser.parse_args()
 
@@ -322,6 +326,7 @@ def main():
     print(f"Sampling rate: {args.fs} Hz")
     print(f"Minimum duration: {args.min_duration} minutes")
     print(f"Starting case ID: {args.start_case}")
+    print(f"Parallel workers: {args.num_workers} {'(PARALLEL MODE 🚀)' if args.num_workers > 1 else '(sequential)'}")
     print(f"Train/Val/Test: {args.train_ratio:.0%}/{args.val_ratio:.0%}/"
           f"{1-args.train_ratio-args.val_ratio:.0%}")
     if args.max_cases:
@@ -432,22 +437,65 @@ def main():
         successful_cases = 0
         split_failed = []
 
-        for case_id in tqdm(case_ids, desc=f"  {split_name}"):
-            num_windows = process_case(
-                case_id,
-                output_path / split_name,
-                args.fs,
-                args.window_size,
-                args.min_duration,  # Add minimum duration filter
-                args.verbose
+        # Multiprocessing or sequential processing
+        if args.num_workers > 1:
+            # PARALLEL MODE: Use ProcessPoolExecutor
+            print(f"  🚀 Using {args.num_workers} parallel workers...")
+
+            # Create partial function with fixed arguments
+            process_func = partial(
+                process_case,
+                output_dir=output_path / split_name,
+                fs=args.fs,
+                window_size=args.window_size,
+                min_duration_min=args.min_duration,
+                verbose=args.verbose
             )
 
-            if num_windows is not None and num_windows > 0:
-                total_windows += num_windows
-                successful_cases += 1
-            else:
-                split_failed.append(case_id)
-                failed_cases.append((split_name, case_id))
+            # Process in parallel with progress bar
+            with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+                # Submit all tasks
+                future_to_case = {
+                    executor.submit(process_func, case_id): case_id
+                    for case_id in case_ids
+                }
+
+                # Collect results with progress bar
+                for future in tqdm(as_completed(future_to_case),
+                                 total=len(case_ids),
+                                 desc=f"  {split_name}"):
+                    case_id = future_to_case[future]
+                    try:
+                        num_windows = future.result()
+                        if num_windows is not None and num_windows > 0:
+                            total_windows += num_windows
+                            successful_cases += 1
+                        else:
+                            split_failed.append(case_id)
+                            failed_cases.append((split_name, case_id))
+                    except Exception as e:
+                        print(f"\n    ⚠️  Exception processing case {case_id}: {e}")
+                        split_failed.append(case_id)
+                        failed_cases.append((split_name, case_id))
+
+        else:
+            # SEQUENTIAL MODE: Original loop
+            for case_id in tqdm(case_ids, desc=f"  {split_name}"):
+                num_windows = process_case(
+                    case_id,
+                    output_path / split_name,
+                    args.fs,
+                    args.window_size,
+                    args.min_duration,  # Add minimum duration filter
+                    args.verbose
+                )
+
+                if num_windows is not None and num_windows > 0:
+                    total_windows += num_windows
+                    successful_cases += 1
+                else:
+                    split_failed.append(case_id)
+                    failed_cases.append((split_name, case_id))
 
         summary[split_name] = {
             'cases_attempted': len(case_ids),
