@@ -162,8 +162,38 @@ def check_quality(ppg_window, ecg_window, fs=125, min_hr=30, max_hr=220, min_var
     return True
 
 
+def is_case_already_processed(case_id, output_dir):
+    """Check if a case has already been successfully processed.
+
+    Args:
+        case_id: VitalDB case ID
+        output_dir: Directory where output would be saved
+
+    Returns:
+        bool: True if case file exists and is valid
+    """
+    output_file = output_dir / f'case_{case_id:05d}_windows.npz'
+
+    if not output_file.exists():
+        return False
+
+    # Check if file is valid (not corrupted/empty)
+    try:
+        if output_file.stat().st_size < 1000:  # Less than 1KB is suspicious
+            return False
+
+        # Try to load to verify it's valid
+        data = np.load(output_file)
+        if 'data' not in data or data['data'].shape[0] == 0:
+            return False
+
+        return True
+    except:
+        return False
+
+
 def process_case(case_id, output_dir, fs=125, window_size=1024,
-                min_duration_min=None, verbose=False):
+                min_duration_min=None, verbose=False, skip_existing=True):
     """Process one VitalDB case and create paired PPG-ECG windows.
 
     Args:
@@ -173,11 +203,21 @@ def process_case(case_id, output_dir, fs=125, window_size=1024,
         window_size: Window size in samples
         min_duration_min: Minimum duration in minutes (None = no check)
         verbose: Print detailed progress
+        skip_existing: Skip if case already successfully processed
 
     Returns:
         int or None: Number of windows created, or None if failed
     """
     try:
+        # Check if already processed
+        if skip_existing and is_case_already_processed(case_id, output_dir):
+            if verbose:
+                print(f"\n  Case {case_id} already processed, skipping...")
+            # Load existing file to return window count
+            output_file = output_dir / f'case_{case_id:05d}_windows.npz'
+            data = np.load(output_file)
+            return data['num_windows']
+
         if verbose:
             print(f"\n  Processing case {case_id}...")
 
@@ -313,10 +353,19 @@ def main():
                        help='Print detailed progress for each case')
     parser.add_argument('--splits-file', default='configs/splits/splits_full.json',
                        help='Path to existing splits file (optional)')
-    parser.add_argument('--num-workers', type=int, default=1,
-                       help='Number of parallel workers (default: 1, use 8-16 for faster processing)')
+    parser.add_argument('--num-workers', type=int, default=4,
+                       help='Number of parallel workers (default: 4, MAX 4-6 recommended for VitalDB API)')
 
     args = parser.parse_args()
+
+    # Safety cap on workers to prevent OOM
+    MAX_SAFE_WORKERS = 6
+    if args.num_workers > MAX_SAFE_WORKERS:
+        print(f"\n⚠️  WARNING: {args.num_workers} workers may cause memory exhaustion!")
+        print(f"   VitalDB downloads can use several GB per worker.")
+        print(f"   Capping to MAX_SAFE_WORKERS={MAX_SAFE_WORKERS}")
+        print(f"   (Override in code if you have >64GB RAM)\n")
+        args.num_workers = MAX_SAFE_WORKERS
 
     print("="*80)
     print("🔧 VitalDB Paired Dataset Builder")
@@ -449,7 +498,8 @@ def main():
                 fs=args.fs,
                 window_size=args.window_size,
                 min_duration_min=args.min_duration,
-                verbose=args.verbose
+                verbose=args.verbose,
+                skip_existing=True  # Skip already processed cases (resume support)
             )
 
             # Process in parallel with progress bar
@@ -487,7 +537,8 @@ def main():
                     args.fs,
                     args.window_size,
                     args.min_duration,  # Add minimum duration filter
-                    args.verbose
+                    args.verbose,
+                    skip_existing=True  # Skip already processed cases
                 )
 
                 if num_windows is not None and num_windows > 0:

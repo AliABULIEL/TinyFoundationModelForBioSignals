@@ -28,8 +28,8 @@ Usage:
     # Only BUT-PPG (will download if needed)
     python scripts/prepare_all_data.py --dataset butppg --download-butppg
     
-    # With multiprocessing
-    python scripts/prepare_all_data.py --multiprocess --num-workers 8
+    # With multiprocessing (4-6 workers recommended)
+    python scripts/prepare_all_data.py --num-workers 4
 
 Author: Senior ML & SW Engineer
 Date: October 2025
@@ -180,7 +180,12 @@ class DataPreparationPipeline:
         """
         self.mode = mode
         self.output_dir = Path(output_dir)
-        self.num_workers = num_workers or min(os.cpu_count() - 1, 8)
+        # Cap workers to prevent OOM - VitalDB downloads use several GB per worker
+        self.num_workers = num_workers or min(os.cpu_count() - 1, 4)
+        if self.num_workers > 6:
+            print(f"⚠️  WARNING: {self.num_workers} workers may cause memory exhaustion for VitalDB!")
+            print(f"   Capping to 6 workers. Override MAX_SAFE_WORKERS in rebuild_vitaldb_paired.py if needed.")
+            self.num_workers = 6
         self.datasets = datasets
         self.download_butppg = download_butppg
         self.format = format
@@ -1361,8 +1366,8 @@ Examples:
   # BUT-PPG with windowed format and overlapping windows
   python scripts/prepare_all_data.py --dataset butppg --format windowed --overlap 0.25
 
-  # Use 16 workers for faster processing
-  python scripts/prepare_all_data.py --num-workers 16
+  # Use 4-6 workers for faster processing (max 6 recommended for VitalDB)
+  python scripts/prepare_all_data.py --num-workers 4
 
   # Custom output directory
   python scripts/prepare_all_data.py --output data/my_processed_data
