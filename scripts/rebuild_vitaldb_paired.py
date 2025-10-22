@@ -49,6 +49,30 @@ except ImportError:
     sys.exit(1)
 
 
+def convert_to_python_types(obj):
+    """
+    Recursively convert numpy types to Python native types for JSON serialization.
+
+    Args:
+        obj: Any object that may contain numpy types
+
+    Returns:
+        Object with all numpy types converted to Python types
+    """
+    if isinstance(obj, dict):
+        return {k: convert_to_python_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_python_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
+
 def load_signal(case_id, track_names, default_fs):
     """Load a signal from VitalDB, trying multiple track names.
 
@@ -563,10 +587,10 @@ def main():
         elif len(split_failed) > 10:
             print(f"    Failed cases: {split_failed[:10]} ... and {len(split_failed)-10} more")
 
-    # Save summary
+    # Save summary (convert numpy types to Python types)
     summary_file = output_path / 'dataset_summary.json'
     with open(summary_file, 'w') as f:
-        json.dump({
+        summary_data = {
             'summary': summary,
             'config': {
                 'window_size': args.window_size,
@@ -574,12 +598,16 @@ def main():
                 'splits': {k: len(v) for k, v in splits.items()}
             },
             'failed_cases': failed_cases
-        }, f, indent=2)
+        }
+        # Convert all numpy types to Python types for JSON serialization
+        summary_data = convert_to_python_types(summary_data)
+        json.dump(summary_data, f, indent=2)
 
-    # Save splits
+    # Save splits (convert numpy arrays to lists)
     splits_file = output_path / 'splits.json'
     with open(splits_file, 'w') as f:
-        json.dump(splits, f, indent=2)
+        splits_python = convert_to_python_types(splits)
+        json.dump(splits_python, f, indent=2)
 
     # Final summary
     print(f"\n{'='*80}")
