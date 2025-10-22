@@ -526,12 +526,14 @@ def main():
         print(f"  ⚠️  Using checkpoint config patch_length: {patch_length}")
 
     # 2. Get d_model from encoder
-    if hasattr(encoder, 'encoder_dim'):
-        d_model = encoder.encoder_dim
-        print(f"  ✓ Using encoder runtime d_model: {d_model}")
-    elif hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'config'):
+    # CRITICAL: Query backbone.config FIRST because encoder.encoder_dim may be stale
+    # (encoder_dim is set during __init__ before IBM pretrained weights are loaded)
+    if hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'config'):
         d_model = encoder.backbone.config.d_model
-        print(f"  ✓ Using encoder config d_model: {d_model}")
+        print(f"  ✓ Using backbone config d_model: {d_model}")
+    elif hasattr(encoder, 'encoder_dim'):
+        d_model = encoder.encoder_dim
+        print(f"  ✓ Using encoder.encoder_dim: {d_model}")
     else:
         d_model = checkpoint_info['config'].get('d_model', 192)
         print(f"  ⚠️  Using checkpoint config d_model: {d_model}")
