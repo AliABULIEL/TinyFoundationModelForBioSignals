@@ -56,6 +56,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Suppress warnings for cleaner output
+import warnings
+warnings.filterwarnings('ignore')
+
 import argparse
 import json
 import subprocess
@@ -500,7 +504,6 @@ def main():
             variant_name = "TTM-Advanced"
         else:
             variant_name = "Custom"
-            print(f"  ⚠️  Warning: Using custom dimensions - may not load pretrained weights")
 
         print(f"  Pretrained: {variant_name}")
         stage1_checkpoint = None  # Will initialize from scratch in Stage 2

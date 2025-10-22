@@ -35,6 +35,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Suppress warnings for cleaner output
+import warnings
+warnings.filterwarnings('ignore')
+
 import argparse
 import json
 import time
@@ -164,7 +168,6 @@ def init_ibm_pretrained(
     else:
         d_model = 256  # Custom - may not load pretrained weights
         variant_name = "Custom"
-        print(f"  ⚠️  Warning: Using custom dimensions - may not load pretrained weights")
 
     print(f"  Pretrained: {variant_name} (d_model={d_model})")
 

@@ -12,7 +12,9 @@
       "Bash(find:*)",
       "Bash(cat:*)",
       "Bash(tree:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

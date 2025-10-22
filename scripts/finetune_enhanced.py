@@ -69,10 +69,16 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Suppress all warnings for clean output
+import warnings
+warnings.filterwarnings('ignore')
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
+os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Async CUDA
+
 import argparse
 import json
 import time
-import warnings
 from typing import Dict, Optional, Tuple, List
 
 import torch
