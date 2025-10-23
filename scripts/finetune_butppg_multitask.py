@@ -283,35 +283,20 @@ def create_model(task: str, pretrained_path: str, device: str,
     print(f"    → num_patches: {num_patches} ({context_length}/{actual_patch_size})")
 
     # =========================================================================
-    # STEP 2: Detect if SSL used IBM pretrained (same logic as finetune_butppg.py:813-832)
+    # STEP 2: Create fresh model matching SSL checkpoint architecture
     # =========================================================================
-    ssl_used_ibm_pretrained = (context_length == 1024 and d_model == 192)
+    # CRITICAL: SSL checkpoint already has trained weights, so we DON'T need
+    # IBM pretrained anymore. Just create a model matching the SSL architecture.
+    print(f"\n  ℹ️  Creating fresh model matching SSL checkpoint architecture")
+    print(f"     Architecture: context={context_length}, d_model={d_model}, patch={actual_patch_size}")
 
-    if ssl_used_ibm_pretrained:
-        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced")
-        print(f"     Detected: context={context_length}, d_model={d_model}, actual_patch={actual_patch_size}")
-        print(f"     Will replicate SSL training process:")
-        print(f"       1. Load IBM pretrained with patch=128 config")
-        print(f"       2. Trigger auto-adaptation to actual patch={actual_patch_size}")
-        print(f"       3. Load SSL checkpoint weights")
-        model_patch_size = 128  # Load IBM pretrained, auto-adapts to actual_patch_size
-    else:
-        print(f"\n  ⚠️  SSL checkpoint used custom architecture")
-        print(f"     Will create fresh TTM with patch={actual_patch_size}")
-        model_patch_size = actual_patch_size
-
-    # =========================================================================
-    # STEP 3: Create model (same as SSL training used)
-    # =========================================================================
     print(f"\nCreating TTMAdapter:")
     print(f"  Task: {task_type}")
     print(f"  Input channels: 2 (PPG + ECG)")
     print(f"  Context length: {context_length}")
-    print(f"  Patch size (config): {model_patch_size}")
-    print(f"  Actual patch size (SSL): {actual_patch_size}")
+    print(f"  Patch size: {actual_patch_size}")
     print(f"  d_model: {d_model}")
-    if ssl_used_ibm_pretrained:
-        print(f"  Note: Will auto-adapt from {model_patch_size} → {actual_patch_size}")
+    print(f"  Loading pretrained: NO (will load SSL checkpoint instead)")
 
     model = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
@@ -319,48 +304,19 @@ def create_model(task: str, pretrained_path: str, device: str,
         num_classes=num_classes if task_type == 'classification' else None,
         input_channels=2,
         context_length=context_length,
-        patch_size=model_patch_size,
+        patch_size=actual_patch_size,  # Use ACTUAL patch size from SSL checkpoint
         d_model=d_model,
+        use_pretrained=False,  # Don't load IBM pretrained
         freeze_encoder=True  # Freeze for fine-tuning
     )
 
-    # Move to device BEFORE auto-adaptation
+    # Move to device
     model = model.to(device)
 
     # =========================================================================
-    # STEP 4: Trigger auto-adaptation (critical for IBM pretrained)
+    # STEP 3: Load SSL checkpoint weights (backbone only)
     # =========================================================================
-    if ssl_used_ibm_pretrained:
-        print(f"\n🔧 Triggering TTM auto-adaptation...")
-        print(f"  Current model patch_size: {model.patch_size}")
-
-        with torch.no_grad():
-            dummy_input = torch.randn(1, 2, context_length).to(device)
-            try:
-                _ = model.get_encoder_output(dummy_input)
-                print(f"  ✓ Auto-adaptation complete")
-                print(f"  Updated model patch_size: {model.patch_size}")
-                del dummy_input, _
-                if device == 'cuda':
-                    torch.cuda.empty_cache()
-            except Exception as e:
-                print(f"  ⚠️  Auto-adaptation failed: {e}")
-
-        # Verify patch_size matches SSL checkpoint
-        if model.patch_size != actual_patch_size:
-            raise RuntimeError(
-                f"Auto-adaptation failed!\n"
-                f"  Model patch_size: {model.patch_size}\n"
-                f"  SSL checkpoint patch_size: {actual_patch_size}\n"
-                f"  These must match to load weights correctly."
-            )
-        else:
-            print(f"  ✅ Patch sizes match - ready to load SSL weights")
-
-    # =========================================================================
-    # STEP 5: Load SSL checkpoint weights (backbone only)
-    # =========================================================================
-    print("\n📦 Loading backbone encoder weights...")
+    print("\n📦 Loading SSL backbone encoder weights...")
 
     backbone_state_dict = {}
     skipped_decoder = 0
