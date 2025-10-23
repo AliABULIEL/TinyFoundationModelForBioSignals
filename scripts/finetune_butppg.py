@@ -1170,78 +1170,118 @@ def main():
 
     # TECHNIQUE 5: DISCRIMINATIVE LEARNING RATES (⭐⭐⭐⭐⭐)
     def get_discriminative_params(model, base_lr, head_multiplier=50):
-        """Get parameter groups with layer-wise learning rate decay.
+        """Create parameter groups with discriminative learning rates.
+
+        Strategy:
+        - Head components (classifier, fusion, pooling): 50x base LR
+        - Last encoder block (mixers.2): 5x base LR
+        - Middle encoder blocks (mixers.1): 2x base LR
+        - Early encoder blocks (mixers.0): 1x base LR
 
         Args:
-            model: Model with encoder and head/classifier
-            base_lr: Base learning rate for early encoder layers
-            head_multiplier: LR multiplier for head (e.g., 50x)
+            model: The fine-tuning model
+            base_lr: Base learning rate
+            head_multiplier: Multiplier for head learning rate
 
         Returns:
             List of parameter groups for optimizer
         """
         param_groups = []
 
-        # Head/Classifier: highest LR (50x)
-        if hasattr(model, 'classifier'):
+        print("\n" + "="*70)
+        print("DISCRIMINATIVE LEARNING RATES")
+        print("="*70)
+
+        # ==================================================================
+        # GROUP 1: HEAD COMPONENTS (highest LR)
+        # ==================================================================
+        head_params = []
+        head_keywords = ['classifier', 'fusion', 'pooling', 'attention']
+
+        for name, param in model.named_parameters():
+            if param.requires_grad and any(keyword in name for keyword in head_keywords):
+                head_params.append(param)
+
+        if head_params:
             param_groups.append({
-                'params': model.classifier.parameters(),
+                'params': head_params,
                 'lr': base_lr * head_multiplier,
-                'name': 'classifier'
+                'name': 'head_components'
             })
-        elif hasattr(model, 'head'):
+            print(f"  Head components: {len(head_params)} params, LR = {base_lr * head_multiplier:.2e}")
+
+        # ==================================================================
+        # GROUP 2: ENCODER BLOCKS (layer-wise learning rates)
+        # ==================================================================
+        encoder_params = {
+            'late': [],      # mixers.2 - highest encoder LR
+            'middle': [],    # mixers.1 - medium encoder LR
+            'early': [],     # mixers.0 - lowest encoder LR
+            'other': []      # patcher, etc. - medium LR
+        }
+
+        for name, param in model.named_parameters():
+            # Only process encoder parameters that are trainable
+            if not param.requires_grad:
+                continue
+
+            # Skip if already in head group
+            if any(keyword in name for keyword in head_keywords):
+                continue
+
+            # Must be an encoder parameter
+            if 'encoder' not in name:
+                continue
+
+            # Categorize by mixer block index
+            if 'mixers.2' in name:
+                encoder_params['late'].append(param)
+            elif 'mixers.1' in name:
+                encoder_params['middle'].append(param)
+            elif 'mixers.0' in name:
+                encoder_params['early'].append(param)
+            else:
+                # Other encoder params (patcher, normalization, etc.)
+                encoder_params['other'].append(param)
+
+        # Add encoder parameter groups with different learning rates
+        if encoder_params['late']:
             param_groups.append({
-                'params': model.head.parameters(),
-                'lr': base_lr * head_multiplier,
-                'name': 'head'
+                'params': encoder_params['late'],
+                'lr': base_lr * 5,
+                'name': 'encoder_late'
             })
+            print(f"  Encoder (late):   {len(encoder_params['late'])} params, LR = {base_lr * 5:.2e}")
 
-        # Fusion layer: high LR (25x)
-        if hasattr(model, 'fusion'):
+        if encoder_params['middle']:
             param_groups.append({
-                'params': model.fusion.parameters(),
-                'lr': base_lr * 25,
-                'name': 'fusion'
+                'params': encoder_params['middle'],
+                'lr': base_lr * 2,
+                'name': 'encoder_middle'
             })
+            print(f"  Encoder (middle): {len(encoder_params['middle'])} params, LR = {base_lr * 2:.2e}")
 
-        # Pooling: high LR (25x)
-        if hasattr(model, 'pooling'):
+        if encoder_params['early']:
             param_groups.append({
-                'params': model.pooling.parameters(),
-                'lr': base_lr * 25,
-                'name': 'pooling'
+                'params': encoder_params['early'],
+                'lr': base_lr * 1,
+                'name': 'encoder_early'
             })
+            print(f"  Encoder (early):  {len(encoder_params['early'])} params, LR = {base_lr * 1:.2e}")
 
-        # Encoder blocks with layer-wise decay
-        if hasattr(model, 'encoder'):
-            encoder = model.encoder
-            if hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'encoder'):
-                blocks = encoder.backbone.encoder.layers
-                num_blocks = len(blocks)
+        if encoder_params['other']:
+            param_groups.append({
+                'params': encoder_params['other'],
+                'lr': base_lr * 2,
+                'name': 'encoder_other'
+            })
+            print(f"  Encoder (other):  {len(encoder_params['other'])} params, LR = {base_lr * 2:.2e}")
 
-                # Last 1/3 of blocks: 5x LR
-                for i in range(2 * num_blocks // 3, num_blocks):
-                    param_groups.append({
-                        'params': blocks[i].parameters(),
-                        'lr': base_lr * 5,
-                        'name': f'encoder_late_block_{i}'
-                    })
+        print("="*70 + "\n")
 
-                # Middle 1/3 of blocks: 2x LR
-                for i in range(num_blocks // 3, 2 * num_blocks // 3):
-                    param_groups.append({
-                        'params': blocks[i].parameters(),
-                        'lr': base_lr * 2,
-                        'name': f'encoder_middle_block_{i}'
-                    })
-
-                # First 1/3 of blocks: 1x LR (base)
-                for i in range(num_blocks // 3):
-                    param_groups.append({
-                        'params': blocks[i].parameters(),
-                        'lr': base_lr,
-                        'name': f'encoder_early_block_{i}'
-                    })
+        # Sanity check: make sure we have at least one parameter group
+        if not param_groups:
+            raise ValueError("No trainable parameters found! Check model.requires_grad settings.")
 
         return param_groups
 
