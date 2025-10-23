@@ -211,13 +211,16 @@ class BUTPPGMultiTaskDataset(Dataset):
         return self.signals[idx], self.labels[idx]
 
 
-def create_model(task: str, pretrained_path: str, device: str) -> nn.Module:
+def create_model(task: str, pretrained_path: str, device: str,
+                 patch_size_override: int = None, context_length_override: int = None) -> nn.Module:
     """Create model for the specified task.
 
     Args:
         task: Task name
         pretrained_path: Path to pretrained checkpoint
         device: Device to load model on
+        patch_size_override: Force specific patch_size (overrides auto-detection)
+        context_length_override: Force specific context_length (overrides auto-detection)
 
     Returns:
         Model ready for fine-tuning
@@ -255,18 +258,31 @@ def create_model(task: str, pretrained_path: str, device: str) -> nn.Module:
 
     if patcher_key:
         patcher_weight = state_dict[patcher_key]
-        d_model, patch_size = patcher_weight.shape
-        print(f"  ✓ Detected from checkpoint: d_model={d_model}, patch_size={patch_size}")
+        d_model, patch_size_detected = patcher_weight.shape
+        print(f"  ✓ Detected from checkpoint: d_model={d_model}, patch_size={patch_size_detected}")
     else:
         # Defaults
         d_model = 192
-        patch_size = 128
-        print(f"  ⚠️  Could not detect from checkpoint, using defaults: d_model={d_model}, patch_size={patch_size}")
+        patch_size_detected = 128
+        print(f"  ⚠️  Could not detect from checkpoint, using defaults: d_model={d_model}, patch_size={patch_size_detected}")
+
+    # Use overrides if provided (CRITICAL FIX!)
+    if patch_size_override is not None:
+        patch_size = patch_size_override
+        print(f"  ⚠️  OVERRIDE: Using patch_size={patch_size} instead of detected {patch_size_detected}")
+    else:
+        patch_size = patch_size_detected
+
+    if context_length_override is not None:
+        context_length = context_length_override
+        print(f"  ⚠️  OVERRIDE: Using context_length={context_length}")
+    else:
+        context_length = 1024
 
     # Create model
     model = TTMAdapter(
         input_channels=2,
-        context_length=1024,
+        context_length=context_length,
         prediction_length=96,
         output_type=output_type,
         num_classes=num_classes,
@@ -498,8 +514,14 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    # Create model
-    model = create_model(args.task, args.pretrained, args.device)
+    # Create model (with architecture overrides if provided)
+    model = create_model(
+        args.task,
+        args.pretrained,
+        args.device,
+        patch_size_override=args.patch_size,
+        context_length_override=args.context_length
+    )
 
     # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
