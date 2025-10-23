@@ -34,7 +34,7 @@ Usage:
         --pretrained artifacts/foundation_model/best_model.pt \
         --data-dir data/processed/butppg/windows_with_labels \
         --epochs 30 \
-        --head-only-epochs 5 \
+        --head-only-epochs 2 \
         --unfreeze-last-n 2 \
         --batch-size 64 \
         --output-dir artifacts/but_ppg_finetuned
@@ -343,10 +343,35 @@ def create_dataloaders(
     # Create training loader
     print(f"\n✓ Found training directory: {train_dir}")
     train_dataset = BUTPPGDataset(train_dir, normalize=True, target_length=target_length)
+
+    # CRITICAL FIX: Add balanced sampling to handle class imbalance
+    # Without balanced sampling, batches are biased toward majority class
+    print(f"  Creating balanced sampler to ensure equal class representation in batches...")
+
+    # Get labels from dataset
+    train_labels = train_dataset.labels.numpy()
+    class_sample_counts = np.bincount(train_labels)
+
+    print(f"  Training set: Poor={class_sample_counts[0]}, Good={class_sample_counts[1]}")
+
+    # Compute sample weights (inverse frequency)
+    class_weights_for_sampling = 1.0 / class_sample_counts
+    sample_weights = class_weights_for_sampling[train_labels]
+
+    # Create balanced sampler
+    from torch.utils.data import WeightedRandomSampler
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True  # Allow sampling with replacement to balance classes
+    )
+
+    print(f"  ✓ Balanced sampler created (will sample ~50% from each class)")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        sampler=sampler,  # Use sampler instead of shuffle
         num_workers=num_workers,
         pin_memory=True
     )
@@ -700,8 +725,8 @@ def parse_args():
     parser.add_argument(
         '--head-only-epochs',
         type=int,
-        default=5,
-        help='Number of epochs for head-only training (Stage 1)'
+        default=2,
+        help='Number of epochs for head-only training (Stage 1) - reduced from 5 to 2'
     )
     parser.add_argument(
         '--unfreeze-last-n',
@@ -941,64 +966,28 @@ def main():
     print(f"  Class 1 (Good): {class_counts[1]} samples, weight: {class_weights[1]:.3f}")
     print(f"  ✓ Using weighted loss to handle {class_counts[0]/class_counts[1]:.1f}:1 imbalance")
 
-    # Focal Loss for severe class imbalance (addresses collapse to majority class)
-    class FocalLoss(nn.Module):
-        """Focal Loss - focuses on hard examples and minority class.
-
-        Args:
-            alpha: Weight for minority class (0-1). Higher = more focus on minority.
-            gamma: Focusing parameter (0-5). Higher = more focus on hard examples.
-                   gamma=0 → standard cross-entropy
-                   gamma=2 → recommended for most cases
-                   gamma=5 → aggressive focusing
-
-        References:
-            Lin et al. "Focal Loss for Dense Object Detection" (2017)
-        """
-        def __init__(self, alpha=0.75, gamma=2.0, reduction='mean'):
-            super().__init__()
-            self.alpha = alpha
-            self.gamma = gamma
-            self.reduction = reduction
-
-        def forward(self, inputs, targets):
-            # Standard cross-entropy
-            ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-
-            # Probability of correct class
-            pt = torch.exp(-ce_loss)
-
-            # Focal weight: (1 - pt)^gamma
-            # When pt is high (easy example) → weight ≈ 0 (ignore)
-            # When pt is low (hard example) → weight ≈ 1 (focus)
-            focal_weight = (1 - pt) ** self.gamma
-
-            # Alpha weighting for class balance
-            # Apply higher weight to minority class
-            alpha_weight = self.alpha * (targets == 1).float() + (1 - self.alpha) * (targets == 0).float()
-
-            # Combine
-            focal_loss = alpha_weight * focal_weight * ce_loss
-
-            if self.reduction == 'mean':
-                return focal_loss.mean()
-            elif self.reduction == 'sum':
-                return focal_loss.sum()
-            else:
-                return focal_loss
-
-    # Choose loss function based on severity of imbalance
+    # CRITICAL FIX: Use MODERATE weighted CrossEntropy instead of Focal Loss
+    # Focal Loss (alpha=0.85, gamma=4.0) was TOO AGGRESSIVE and caused model collapse
+    # to predicting minority class for everything (31.5% accuracy)
+    #
+    # New strategy: Moderate class weights + balanced sampling + label smoothing
     imbalance_ratio = class_counts[0] / class_counts[1]
 
-    if imbalance_ratio > 3.0:
-        # Severe imbalance (>3:1) - use Focal Loss
-        print(f"\n⚠️  Severe class imbalance detected ({imbalance_ratio:.1f}:1)")
-        print(f"  Using AGGRESSIVE Focal Loss (alpha=0.85, gamma=4.0) to prevent collapse")
-        criterion = FocalLoss(alpha=0.85, gamma=4.0)  # Much more aggressive!
-    else:
-        # Moderate imbalance - standard weighted cross-entropy
-        print(f"\n  Using weighted cross-entropy for {imbalance_ratio:.1f}:1 imbalance")
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+    print(f"\n  Class imbalance: {imbalance_ratio:.1f}:1 (Poor:Good)")
+    print(f"  ❌ NOT using Focal Loss (caused collapse in previous run)")
+    print(f"  ✅ Using MODERATE weighted CrossEntropy + label smoothing")
+
+    # Use moderate weights (not as extreme as computed weights)
+    # Computed: [0.43, 1.64], but we'll use [1.0, 2.0] for moderation
+    moderate_weights = torch.tensor([1.0, 2.0]).to(args.device)
+
+    print(f"  Moderate weights: Poor={moderate_weights[0]:.1f}, Good={moderate_weights[1]:.1f}")
+    print(f"  Label smoothing: 0.1 (helps with extreme imbalance)")
+
+    criterion = nn.CrossEntropyLoss(
+        weight=moderate_weights,
+        label_smoothing=0.1  # Regularization for imbalanced data
+    )
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
     
@@ -1027,9 +1016,16 @@ def main():
     print("Training only the classification head, encoder frozen")
     
     # Create optimizer for head-only
+    # CRITICAL FIX: Use HIGHER learning rate for head
+    # Head needs to learn quickly from scratch, encoder stays frozen
+    head_lr = args.lr * 25  # 25x higher for head (if lr=2e-5, head gets 5e-4)
+
+    print(f"  Head learning rate: {head_lr:.2e} (25x base LR)")
+    print(f"  Encoder learning rate: N/A (frozen)")
+
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=args.lr,
+        lr=head_lr,  # Use higher LR for head
         weight_decay=args.weight_decay
     )
     
@@ -1092,14 +1088,32 @@ def main():
         # Unfreeze last N blocks
         # Our model is a ClassificationWrapper, so unfreeze on model.encoder
         unfreeze_last_n_blocks(model.encoder, n=args.unfreeze_last_n, verbose=True)
-        
-        # Create new optimizer with unfrozen parameters
-        optimizer = torch.optim.AdamW(
-            [p for p in model.parameters() if p.requires_grad],
-            lr=args.lr,
-            weight_decay=args.weight_decay
+
+        # Create new optimizer with differential learning rates
+        # CRITICAL FIX: Head still needs higher LR, encoder needs very low LR
+        head_lr = args.lr * 25  # Same as Stage 1
+        encoder_lr = args.lr    # Base LR for encoder
+
+        print(f"  Differential learning rates:")
+        print(f"    Head: {head_lr:.2e} (25x base)")
+        print(f"    Encoder (last {args.unfreeze_last_n} blocks): {encoder_lr:.2e}")
+
+        optimizer = torch.optim.AdamW([
+            {'params': model.head.parameters(), 'lr': head_lr},
+            {'params': model.encoder.parameters(), 'lr': encoder_lr}
+        ], weight_decay=args.weight_decay)
+
+        # Add learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='max',  # Maximize accuracy
+            factor=0.5,
+            patience=5,
+            verbose=True,
+            min_lr=1e-7
         )
-        
+        print(f"  ✓ LR scheduler: ReduceLROnPlateau (patience=5, factor=0.5)")
+
         for epoch in range(remaining_epochs):
             epoch_start = time.time()
             
