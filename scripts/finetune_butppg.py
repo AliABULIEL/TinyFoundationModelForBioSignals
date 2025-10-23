@@ -428,12 +428,12 @@ def evaluate(
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     
-    # Per-class accuracy
+    # Per-class accuracy (return as fraction 0-1, not percentage)
     class_0_mask = all_labels == 0
     class_1_mask = all_labels == 1
-    
-    class_0_acc = (all_preds[class_0_mask] == all_labels[class_0_mask]).mean() * 100 if class_0_mask.sum() > 0 else 0.0
-    class_1_acc = (all_preds[class_1_mask] == all_labels[class_1_mask]).mean() * 100 if class_1_mask.sum() > 0 else 0.0
+
+    class_0_acc = (all_preds[class_0_mask] == all_labels[class_0_mask]).mean() if class_0_mask.sum() > 0 else 0.0
+    class_1_acc = (all_preds[class_1_mask] == all_labels[class_1_mask]).mean() if class_1_mask.sum() > 0 else 0.0
     
     return {
         'loss': total_loss / len(loader),
