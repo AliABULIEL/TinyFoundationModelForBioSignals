@@ -143,6 +143,16 @@ def load_vitaldb_checkpoint(
         task='ssl'
     ).to(device)
 
+    # ⚠️ CRITICAL CHECK: Verify TTM actually loaded (not fallback)
+    if not encoder.is_using_real_ttm():
+        print("\n" + "="*80)
+        print("❌ FATAL ERROR: TTM failed to load from checkpoint")
+        print("="*80)
+        print("SSL training REQUIRES real TTM encoder!")
+        print("Please check error messages above for details.")
+        print("="*80)
+        raise RuntimeError("TTM encoder failed to load - cannot proceed with SSL training")
+
     # Load weights
     try:
         encoder.load_state_dict(encoder_state, strict=False)
@@ -221,6 +231,21 @@ def init_ibm_pretrained(
     ).to(device)
 
     print("✓ IBM pretrained encoder initialized")
+
+    # ⚠️ CRITICAL CHECK: Verify TTM actually loaded (not fallback)
+    if not encoder.is_using_real_ttm():
+        print("\n" + "="*80)
+        print("❌ FATAL ERROR: TTM failed to load, using fallback CNN encoder")
+        print("="*80)
+        print("SSL training REQUIRES real TTM encoder!")
+        print("Fallback CNN encoder does not support get_encoder_output() for SSL.")
+        print("\nPossible causes:")
+        print("  1. tsfm_public not installed correctly")
+        print("  2. HuggingFace Hub download failed")
+        print("  3. Memory/CUDA issues")
+        print("\nPlease check the error messages above for details.")
+        print("="*80)
+        raise RuntimeError("TTM encoder failed to load - cannot proceed with SSL training")
 
     # Create config dict
     config = {

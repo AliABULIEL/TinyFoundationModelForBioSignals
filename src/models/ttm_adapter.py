@@ -276,8 +276,17 @@ class TTMAdapter(nn.Module):
             print(f"  Using pretrained weights: {can_use_pretrained}")
             
         except Exception as e:
-            warnings.warn(f"Failed to load real TTM: {e}")
-            warnings.warn("Falling back to simple encoder")
+            print(f"\n{'='*80}")
+            print(f"❌ CRITICAL ERROR: Failed to load real TTM")
+            print(f"{'='*80}")
+            print(f"Exception type: {type(e).__name__}")
+            print(f"Exception message: {e}")
+            print(f"\nFull traceback:")
+            import traceback
+            traceback.print_exc()
+            print(f"{'='*80}")
+            print(f"⚠️  Falling back to CNN encoder (NOT suitable for SSL!)")
+            print(f"{'='*80}\n")
             self._create_fallback_encoder()
     
     def _create_fallback_encoder(self):

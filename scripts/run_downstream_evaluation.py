@@ -386,21 +386,27 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
             # Load quality label (handle NaN)
             if 'quality' in data:
                 quality = data['quality']
-                quality_labels_list.append(quality if not np.isnan(quality) else -1)
+                # Convert 0-d numpy array to Python scalar
+                quality_val = float(quality.item()) if isinstance(quality, np.ndarray) else float(quality)
+                quality_labels_list.append(quality_val if not np.isnan(quality_val) else -1)
             else:
                 quality_labels_list.append(-1)
 
             # Load HR label
             if 'hr' in data:
                 hr = data['hr']
-                hr_labels_list.append(hr if not np.isnan(hr) else -1)
+                # Convert 0-d numpy array to Python scalar
+                hr_val = float(hr.item()) if isinstance(hr, np.ndarray) else float(hr)
+                hr_labels_list.append(hr_val if not np.isnan(hr_val) else -1)
             else:
                 hr_labels_list.append(-1)
 
             # Load motion label
             if 'motion' in data:
                 motion = data['motion']
-                motion_labels_list.append(motion if not np.isnan(motion) else -1)
+                # Convert 0-d numpy array to Python scalar
+                motion_val = int(motion.item()) if isinstance(motion, np.ndarray) else int(motion)
+                motion_labels_list.append(motion_val if not np.isnan(motion_val) else -1)
             else:
                 motion_labels_list.append(-1)
 
