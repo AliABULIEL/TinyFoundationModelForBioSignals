@@ -584,14 +584,24 @@ def main():
     else:
         encoder_state = checkpoint
 
-    # Detect architecture from weights
+    # Detect architecture from weights (FIXED: correct patch_size detection)
+    # Get d_model from patcher
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k and 'encoder' in k]
     if not patcher_keys:
         raise ValueError("Could not find patcher weights in checkpoint")
 
     patcher_weight = encoder_state[patcher_keys[0]]
     d_model = patcher_weight.shape[0]
-    patch_size = patcher_weight.shape[1]
+
+    # Get patch_size from decoder adapter (CORRECT location!)
+    adapter_keys = [k for k in encoder_state.keys() if 'decoder.adapter.weight' in k]
+    if adapter_keys:
+        adapter_weight = encoder_state[adapter_keys[0]]
+        patch_size = adapter_weight.shape[0]  # [patch_length, d_model]
+    else:
+        # Fallback: try to infer from patcher (may be incorrect for multi-channel)
+        patch_size = patcher_weight.shape[1] // 2  # Divide by input_channels
+        print(f"  ⚠️  No decoder.adapter found, using fallback patch_size={patch_size}")
 
     context_length = 1024  # VitalDB standard
 
@@ -600,14 +610,16 @@ def main():
     print(f"  patch_size: {patch_size}")
     print(f"  context_length: {context_length}")
 
-    # Create SSL encoder
+    # Create SSL encoder (FIXED: use_real_ttm=False to match checkpoint architecture)
     print(f"\nCreating SSL encoder...")
     encoder = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
         task='ssl',
         input_channels=2,
         context_length=context_length,
-        use_real_ttm=True
+        patch_size=patch_size,  # Use detected patch_size
+        d_model=d_model,        # Use detected d_model
+        use_real_ttm=False  # Create fresh TTM without IBM pretrained (matches SSL checkpoint)
     )
 
     # Load SSL weights

@@ -832,7 +832,7 @@ def main():
         context_length=context_length,
         patch_size=patch_size,  # Use EXACT patch_size from SSL checkpoint
         d_model=d_model,
-        use_real_ttm=True  # Use TTM architecture (will create fresh since patch_size=64 doesn't match pretrained)
+        use_real_ttm=False  # Create fresh TTM without IBM pretrained (matches SSL checkpoint architecture)
     )
 
     # Move model to device
