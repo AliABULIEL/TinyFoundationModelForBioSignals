@@ -110,14 +110,16 @@ TASK_CONFIGS = {
         'num_classes': 2,
         'label_keys': ['quality'],
         'primary_metric': 'auroc',
-        'description': 'PPG quality classification (good vs poor)'
+        'description': 'PPG quality classification (good vs poor)',
+        'target': 0.85
     },
     'motion': {
         'type': 'classification',
-        'num_classes': 4,  # 0=sitting, 1=walking, 2=running, 3=cycling
+        'num_classes': 8,  # Updated to 8 classes (BUT-PPG full motion taxonomy)
         'label_keys': ['motion'],
         'primary_metric': 'auroc',
-        'description': 'Motion state classification'
+        'description': 'Motion state classification (8 classes)',
+        'target': 0.85
     },
 
     # Regression tasks
@@ -126,35 +128,56 @@ TASK_CONFIGS = {
         'num_outputs': 1,
         'label_keys': ['hr'],
         'primary_metric': 'mae',
-        'description': 'Heart rate estimation (bpm)'
+        'description': 'Heart rate estimation (bpm)',
+        'target': 2.0  # MAE target in BPM
+    },
+    'hr_estimation': {  # Alias for hr (for compatibility)
+        'type': 'regression',
+        'num_outputs': 1,
+        'label_keys': ['hr'],
+        'primary_metric': 'mae',
+        'description': 'Heart rate estimation (bpm)',
+        'target': 2.0
     },
     'bp_systolic': {
         'type': 'regression',
         'num_outputs': 1,
         'label_keys': ['bp_systolic'],
         'primary_metric': 'mae',
-        'description': 'Systolic blood pressure estimation (mmHg)'
+        'description': 'Systolic blood pressure estimation (mmHg)',
+        'target': 5.0  # AAMI standard
     },
     'bp_diastolic': {
         'type': 'regression',
         'num_outputs': 1,
         'label_keys': ['bp_diastolic'],
         'primary_metric': 'mae',
-        'description': 'Diastolic blood pressure estimation (mmHg)'
+        'description': 'Diastolic blood pressure estimation (mmHg)',
+        'target': 5.0  # AAMI standard
     },
     'blood_pressure': {
         'type': 'regression',
         'num_outputs': 2,
         'label_keys': ['bp_systolic', 'bp_diastolic'],
         'primary_metric': 'mae',
-        'description': 'Blood pressure estimation (systolic, diastolic)'
+        'description': 'Blood pressure estimation (systolic, diastolic)',
+        'target': 5.0
     },
     'spo2': {
         'type': 'regression',
         'num_outputs': 1,
         'label_keys': ['spo2'],
         'primary_metric': 'mae',
-        'description': 'SpO2 estimation (%)'
+        'description': 'SpO2 estimation (%)',
+        'target': 2.0  # Standard clinical tolerance
+    },
+    'glycaemia': {
+        'type': 'regression',
+        'num_outputs': 1,
+        'label_keys': ['glycaemia'],
+        'primary_metric': 'mae',
+        'description': 'Blood glucose estimation (mg/dL)',
+        'target': 15.0  # Clinical standard for CGM accuracy
     },
 }
 
