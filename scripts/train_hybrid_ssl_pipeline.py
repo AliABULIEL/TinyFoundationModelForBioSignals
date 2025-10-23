@@ -226,6 +226,96 @@ def run_stage3_supervised_finetune(
     return checkpoint_path
 
 
+def run_stage3_multitask(
+    init_checkpoint: str,
+    data_dir: str,
+    output_dir: str,
+    epochs: int = 30,
+    batch_size: int = 64,
+    lr: float = 1e-4,
+    device: str = 'cuda'
+) -> Dict[str, str]:
+    """Run Stage 3: Multi-task fine-tuning on ALL 7 BUT-PPG tasks.
+
+    Args:
+        init_checkpoint: Path to Stage 2 checkpoint
+        data_dir: Path to BUT-PPG data
+        output_dir: Output directory
+        epochs: Number of epochs per task
+        batch_size: Batch size
+        lr: Learning rate
+        device: Device to use
+
+    Returns:
+        task_checkpoints: Dict mapping task name to checkpoint path
+    """
+    print("\n" + "="*80)
+    print("[Stage 3/3] BUT-PPG Multi-Task Fine-Tuning")
+    print("="*80)
+    print("Objective: Train models for ALL 7 clinical tasks")
+    print("Tasks: quality, hr_estimation, motion, bp_systolic, bp_diastolic, spo2, glycaemia")
+    print("Method: Fine-tune Stage 2 checkpoint separately for each task")
+    print("="*80 + "\n")
+
+    # Define all tasks
+    TASKS = [
+        'quality',
+        'hr_estimation',
+        'motion',
+        'bp_systolic',
+        'bp_diastolic',
+        'spo2',
+        'glycaemia'
+    ]
+
+    task_checkpoints = {}
+
+    for task_idx, task in enumerate(TASKS, 1):
+        print(f"\n{'='*80}")
+        print(f"Task {task_idx}/7: {task.upper()}")
+        print(f"{'='*80}\n")
+
+        task_output_dir = Path(output_dir) / f'stage3_{task}'
+        task_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build command
+        cmd = [
+            'python3', 'scripts/finetune_butppg_multitask.py',
+            '--pretrained', init_checkpoint,
+            '--task', task,
+            '--data-dir', data_dir,
+            '--output-dir', str(task_output_dir),
+            '--epochs', str(epochs),
+            '--batch-size', str(batch_size),
+            '--lr', str(lr),
+            '--device', device
+        ]
+
+        # Run
+        print(f"Running: {' '.join(cmd)}\n")
+        try:
+            result = subprocess.run(cmd, check=True)
+            checkpoint_path = str(task_output_dir / 'best_model.pt')
+            task_checkpoints[task] = checkpoint_path
+            print(f"\n✓ Task '{task}' complete!")
+            print(f"  Checkpoint: {checkpoint_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"\n✗ Task '{task}' failed with error: {e}")
+            task_checkpoints[task] = None
+
+    print("\n" + "="*80)
+    print("STAGE 3 MULTI-TASK TRAINING COMPLETE!")
+    print("="*80)
+    successful = sum(1 for v in task_checkpoints.values() if v is not None)
+    print(f"Successfully trained: {successful}/{len(TASKS)} tasks")
+    for task, ckpt in task_checkpoints.items():
+        status = "✓" if ckpt else "✗"
+        print(f"  {status} {task}: {ckpt if ckpt else 'FAILED'}")
+    print("="*80 + "\n")
+
+    return task_checkpoints
+
+
 def collate_butppg_batch(batch):
     """Custom collate function for BUT-PPG dataset with label dictionaries.
 
@@ -542,6 +632,8 @@ def main():
                        help='Skip all training, only evaluate existing checkpoint (requires --stage3-checkpoint)')
     parser.add_argument('--skip-evaluation', action='store_true',
                        help='Skip final evaluation (useful for just running training)')
+    parser.add_argument('--train-all-tasks', action='store_true',
+                       help='Train all 7 tasks in Stage 3 (quality, hr, motion, bp_systolic, bp_diastolic, spo2, glycaemia)')
 
     # Checkpoint resuming (alternative to skip flags)
     parser.add_argument('--resume-from-stage2', type=str,
@@ -715,7 +807,23 @@ def main():
         stage3_checkpoint = args.stage3_checkpoint
         evaluation_checkpoint = args.stage3_checkpoint
         evaluation_stage = "Stage 3"
+    elif args.train_all_tasks:
+        # Train all 7 tasks
+        task_checkpoints = run_stage3_multitask(
+            init_checkpoint=stage2_checkpoint,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            epochs=args.stage3_epochs,
+            batch_size=args.stage3_batch_size,
+            lr=args.stage3_lr,
+            device=args.device
+        )
+        # Use quality task checkpoint for evaluation (for compatibility)
+        stage3_checkpoint = task_checkpoints.get('quality', stage2_checkpoint)
+        evaluation_checkpoint = stage3_checkpoint
+        evaluation_stage = "Stage 3 (Multi-Task)"
     else:
+        # Single task (quality only - default behavior)
         stage3_checkpoint = run_stage3_supervised_finetune(
             init_checkpoint=stage2_checkpoint,
             data_dir=args.data_dir,

@@ -372,6 +372,10 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
         quality_labels_list = []
         hr_labels_list = []
         motion_labels_list = []
+        bp_systolic_labels_list = []
+        bp_diastolic_labels_list = []
+        spo2_labels_list = []
+        glycaemia_labels_list = []
 
         for window_file in window_files:
             data = np.load(window_file)
@@ -419,11 +423,59 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
             else:
                 motion_labels_list.append(-1)
 
+            # Load BP systolic label (handle NaN and 0-d arrays)
+            if 'bp_systolic' in data:
+                bp_sys = data['bp_systolic']
+                if isinstance(bp_sys, np.ndarray):
+                    bp_sys_val = float(bp_sys.item()) if bp_sys.size == 1 else float(bp_sys)
+                else:
+                    bp_sys_val = float(bp_sys)
+                bp_systolic_labels_list.append(bp_sys_val if not np.isnan(bp_sys_val) else -1)
+            else:
+                bp_systolic_labels_list.append(-1)
+
+            # Load BP diastolic label (handle NaN and 0-d arrays)
+            if 'bp_diastolic' in data:
+                bp_dia = data['bp_diastolic']
+                if isinstance(bp_dia, np.ndarray):
+                    bp_dia_val = float(bp_dia.item()) if bp_dia.size == 1 else float(bp_dia)
+                else:
+                    bp_dia_val = float(bp_dia)
+                bp_diastolic_labels_list.append(bp_dia_val if not np.isnan(bp_dia_val) else -1)
+            else:
+                bp_diastolic_labels_list.append(-1)
+
+            # Load SpO2 label (handle NaN and 0-d arrays)
+            if 'spo2' in data:
+                spo2 = data['spo2']
+                if isinstance(spo2, np.ndarray):
+                    spo2_val = float(spo2.item()) if spo2.size == 1 else float(spo2)
+                else:
+                    spo2_val = float(spo2)
+                spo2_labels_list.append(spo2_val if not np.isnan(spo2_val) else -1)
+            else:
+                spo2_labels_list.append(-1)
+
+            # Load Glycaemia label (handle NaN and 0-d arrays)
+            if 'glycaemia' in data:
+                glyc = data['glycaemia']
+                if isinstance(glyc, np.ndarray):
+                    glyc_val = float(glyc.item()) if glyc.size == 1 else float(glyc)
+                else:
+                    glyc_val = float(glyc)
+                glycaemia_labels_list.append(glyc_val if not np.isnan(glyc_val) else -1)
+            else:
+                glycaemia_labels_list.append(-1)
+
         # Stack into tensors
         signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, C, T]
         quality_labels = torch.tensor(quality_labels_list, dtype=torch.long)
         hr_labels = torch.tensor(hr_labels_list, dtype=torch.float)
         motion_labels = torch.tensor(motion_labels_list, dtype=torch.long)
+        bp_systolic_labels = torch.tensor(bp_systolic_labels_list, dtype=torch.float)
+        bp_diastolic_labels = torch.tensor(bp_diastolic_labels_list, dtype=torch.float)
+        spo2_labels = torch.tensor(spo2_labels_list, dtype=torch.float)
+        glycaemia_labels = torch.tensor(glycaemia_labels_list, dtype=torch.float)
 
         print(f"    Loaded: {signals.shape[0]} samples, signal shape: {signals.shape}")
 
@@ -454,6 +506,42 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
             print(f"    ✓ Motion: {len(dataset)} samples ({valid_motion.sum()}/{len(motion_labels)} have labels)")
         else:
             print(f"    ⚠️  Motion: No valid labels (all NaN or -1)")
+
+        # BP Systolic task
+        valid_bp_sys = bp_systolic_labels != -1
+        if valid_bp_sys.sum() > 0:
+            dataset = TensorDataset(signals[valid_bp_sys], bp_systolic_labels[valid_bp_sys])
+            loaders['bp_systolic'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ BP Systolic: {len(dataset)} samples ({valid_bp_sys.sum()}/{len(bp_systolic_labels)} have labels)")
+        else:
+            print(f"    ⚠️  BP Systolic: No valid labels (all NaN or -1)")
+
+        # BP Diastolic task
+        valid_bp_dia = bp_diastolic_labels != -1
+        if valid_bp_dia.sum() > 0:
+            dataset = TensorDataset(signals[valid_bp_dia], bp_diastolic_labels[valid_bp_dia])
+            loaders['bp_diastolic'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ BP Diastolic: {len(dataset)} samples ({valid_bp_dia.sum()}/{len(bp_diastolic_labels)} have labels)")
+        else:
+            print(f"    ⚠️  BP Diastolic: No valid labels (all NaN or -1)")
+
+        # SpO2 task
+        valid_spo2 = spo2_labels != -1
+        if valid_spo2.sum() > 0:
+            dataset = TensorDataset(signals[valid_spo2], spo2_labels[valid_spo2])
+            loaders['spo2'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ SpO2: {len(dataset)} samples ({valid_spo2.sum()}/{len(spo2_labels)} have labels)")
+        else:
+            print(f"    ⚠️  SpO2: No valid labels (all NaN or -1)")
+
+        # Glycaemia task
+        valid_glyc = glycaemia_labels != -1
+        if valid_glyc.sum() > 0:
+            dataset = TensorDataset(signals[valid_glyc], glycaemia_labels[valid_glyc])
+            loaders['glycaemia'] = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            print(f"    ✓ Glycaemia: {len(dataset)} samples ({valid_glyc.sum()}/{len(glycaemia_labels)} have labels)")
+        else:
+            print(f"    ⚠️  Glycaemia: No valid labels (all NaN or -1)")
 
         # If we found windowed format, return immediately
         if loaders:
@@ -677,13 +765,21 @@ def main():
             is_classification = hasattr(butppg_model, 'head') and hasattr(butppg_model.head, 'fc') and butppg_model.head.fc.out_features == 2
 
             if is_classification:
-                print("\n  ℹ️  Model is classification (quality) - skipping HR/motion tasks")
+                print("\n  ℹ️  Model is classification (quality) - skipping regression tasks")
                 hr_model = None
                 motion_model = None
+                bp_sys_model = None
+                bp_dia_model = None
+                spo2_model = None
+                glyc_model = None
             else:
-                # Regression or multi-task model
+                # Regression or multi-task model - can be used for all regression tasks
                 hr_model = butppg_model if 'hr_estimation' in butppg_loaders else None
                 motion_model = butppg_model if 'motion' in butppg_loaders else None
+                bp_sys_model = butppg_model if 'bp_systolic' in butppg_loaders else None
+                bp_dia_model = butppg_model if 'bp_diastolic' in butppg_loaders else None
+                spo2_model = butppg_model if 'spo2' in butppg_loaders else None
+                glyc_model = butppg_model if 'glycaemia' in butppg_loaders else None
 
             butppg_results = run_all_butppg_tasks(
                 quality_model=butppg_model if is_classification else None,
@@ -692,6 +788,14 @@ def main():
                 quality_loader=butppg_loaders['quality'],
                 hr_loader=butppg_loaders.get('hr_estimation', None),
                 motion_loader=butppg_loaders.get('motion', None),
+                bp_systolic_model=bp_sys_model,
+                bp_diastolic_model=bp_dia_model,
+                spo2_model=spo2_model,
+                glycaemia_model=glyc_model,
+                bp_systolic_loader=butppg_loaders.get('bp_systolic', None),
+                bp_diastolic_loader=butppg_loaders.get('bp_diastolic', None),
+                spo2_loader=butppg_loaders.get('spo2', None),
+                glycaemia_loader=butppg_loaders.get('glycaemia', None),
                 device=args.device,
                 compute_ci=not args.no_ci
             )
