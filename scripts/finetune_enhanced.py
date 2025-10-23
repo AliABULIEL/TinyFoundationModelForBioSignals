@@ -96,6 +96,7 @@ from src.models.domain_adaptation import (
     DomainAdversarialAdapter,
     ProgressiveFineTuner
 )
+from src.utils.checkpoint_utils import load_ssl_checkpoint_safe
 from src.data.butppg_dataset import BUTPPGDataset
 
 
@@ -774,94 +775,24 @@ def main():
     print(f"Device: {args.device}")
     print("=" * 70)
 
-    # Load pretrained checkpoint
-    print("\n" + "=" * 70)
-    print("LOADING PRETRAINED MODEL")
-    print("=" * 70)
-
-    checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
-
-    # Get encoder weights
-    if 'encoder_state_dict' in checkpoint:
-        encoder_state = checkpoint['encoder_state_dict']
-    elif 'model_state_dict' in checkpoint:
-        encoder_state = checkpoint['model_state_dict']
-    else:
-        encoder_state = checkpoint
-
-    # Detect architecture from weights
-    # TTM patcher: [d_model, patch_size] per-channel
-    # This is the CORRECT way to detect patch_size!
-
-    patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k and 'encoder' in k]
-    if not patcher_keys:
-        raise ValueError("Could not find patcher weights in checkpoint")
-
-    patcher_weight = encoder_state[patcher_keys[0]]
-    d_model = patcher_weight.shape[0]      # [d_model, patch_size]
-    patch_size = patcher_weight.shape[1]   # This IS the patch_size!
-
-    context_length = 1024  # VitalDB standard
-
-    print(f"Detected architecture:")
-    print(f"  d_model: {d_model}")
-    print(f"  patch_size: {patch_size} (from patcher.weight)")
-    print(f"  context_length: {context_length}")
-
-    # CRITICAL FIX: Don't try to load IBM pretrained during fine-tuning!
-    # Your SSL checkpoint ALREADY contains the learned weights (including IBM pretrained base).
-    # Just create a fresh model matching the SSL checkpoint architecture.
-    print(f"\n  ℹ️  Creating model matching SSL checkpoint architecture")
-    print(f"     Architecture: context={context_length}, patch={patch_size}, d_model={d_model}")
-    print(f"     Strategy: Fresh TTM (no IBM loading) + Load SSL weights")
-
-    # Create SSL encoder with EXACT SSL checkpoint architecture
-    print(f"\nCreating SSL encoder...")
-    encoder = TTMAdapter(
-        variant='ibm-granite/granite-timeseries-ttm-r1',
-        task='ssl',
-        input_channels=2,
-        context_length=context_length,
-        patch_size=patch_size,  # Use EXACT patch_size from SSL checkpoint
-        d_model=d_model,
-        use_real_ttm=True,  # Use real TTM (not fallback CNN)
-        force_from_scratch=True  # But don't load IBM pretrained weights (matches SSL checkpoint)
+    # Load pretrained checkpoint using robust loader
+    encoder, architecture_config, metrics = load_ssl_checkpoint_safe(
+        checkpoint_path=args.pretrained,
+        device=args.device,
+        verbose=True
     )
 
-    # Move model to device
-    encoder = encoder.to(args.device)
-
-    # Verify architecture
-    print(f"\n✅ Model architecture:")
-    print(f"  Patch size: {encoder.patch_size}")
-    print(f"  Num patches: {encoder.num_patches}")
-    print(f"  Context length: {encoder.context_length}")
-    print(f"  Expected (from SSL): patch={patch_size}")
-
-    if encoder.patch_size != patch_size:
-        raise RuntimeError(
-            f"Architecture mismatch!\n"
-            f"  Model patch_size: {encoder.patch_size}\n"
-            f"  SSL checkpoint patch_size: {patch_size}"
-        )
-
-    # Load SSL weights - ONLY load encoder.backbone (skip decoder)
-    # Filter to only load matching encoder backbone weights
-    encoder_backbone_weights = {
-        k: v for k, v in encoder_state.items()
-        if k.startswith('encoder.backbone') or k.startswith('backbone')
-    }
-
-    print(f"Loading encoder backbone weights ({len(encoder_backbone_weights)} layers)...")
-    missing, unexpected = encoder.load_state_dict(encoder_backbone_weights, strict=False)
-    print(f"  Missing: {len(missing)} (decoder/head, expected)")
-    print(f"  Unexpected: {len(unexpected)}")
-
+    # Freeze encoder
     encoder.eval()
     for param in encoder.parameters():
         param.requires_grad = False
 
     print(f"✓ SSL encoder loaded and frozen")
+
+    # Extract architecture parameters for building adapter and head
+    d_model = architecture_config['d_model']
+    context_length = architecture_config['context_length']
+    patch_size = architecture_config['patch_size']
 
     # Create domain adapter
     if args.adaptation == 'projection':

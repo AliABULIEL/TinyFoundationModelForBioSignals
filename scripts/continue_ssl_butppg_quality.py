@@ -58,6 +58,7 @@ from src.ssl.objectives import MaskedSignalModeling
 from src.ssl.quality_contrastive import QualityContrastiveLoss, HybridSSLLoss
 from src.data.butppg_quality_dataset import QualityStratifiedBUTPPGDataset, BalancedQualitySampler
 from src.utils.seed import set_seed
+from src.utils.checkpoint_utils import save_ssl_checkpoint
 
 
 def load_vitaldb_checkpoint(
@@ -231,6 +232,15 @@ def init_ibm_pretrained(
     ).to(device)
 
     print("✓ IBM pretrained encoder initialized")
+
+    # Log actual architecture
+    arch_config = encoder.get_architecture_config()
+    print(f"\n  ACTUAL ARCHITECTURE DETECTED:")
+    print(f"    Context length: {arch_config['context_length']}")
+    print(f"    Patch size: {arch_config['patch_size']}")
+    print(f"    d_model: {arch_config['d_model']}")
+    print(f"    Num patches: {arch_config['num_patches']}")
+    print(f"    Using real TTM: {arch_config['using_real_ttm']}")
 
     # ⚠️ CRITICAL CHECK: Verify TTM actually loaded (not fallback)
     if not encoder.is_using_real_ttm():
@@ -761,34 +771,38 @@ def main():
         history['train_reconstruction'].append(train_metrics['reconstruction'])
         history['val_reconstruction'].append(val_metrics['reconstruction'])
 
-        # Save best model
+        # Save best model using robust checkpoint saver
         if val_metrics['loss'] < best_val_loss:
             best_val_loss = val_metrics['loss']
 
-            checkpoint = {
-                'epoch': epoch + 1,
-                'encoder_state_dict': encoder.state_dict(),
-                'decoder_state_dict': decoder.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_metrics['loss'],
-                'config': checkpoint_info['config'],
-                'args': vars(args)
-            }
-
-            torch.save(checkpoint, output_dir / 'best_model.pt')
+            save_ssl_checkpoint(
+                checkpoint_path=str(output_dir / 'best_model.pt'),
+                epoch=epoch + 1,
+                encoder=encoder,
+                decoder=decoder,
+                optimizer=optimizer,
+                metrics={
+                    'val_loss': val_metrics['loss'],
+                    'train_loss': train_metrics['loss'],
+                    'best_val_loss': best_val_loss
+                },
+                args=vars(args)
+            )
             print(f"✓ Best model saved! (val_loss: {val_metrics['loss']:.4f})")
 
-        # Save last checkpoint
-        checkpoint = {
-            'epoch': epoch + 1,
-            'encoder_state_dict': encoder.state_dict(),
-            'decoder_state_dict': decoder.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': val_metrics['loss'],
-            'config': checkpoint_info['config'],
-            'args': vars(args)
-        }
-        torch.save(checkpoint, output_dir / 'last_checkpoint.pt')
+        # Save last checkpoint using robust checkpoint saver
+        save_ssl_checkpoint(
+            checkpoint_path=str(output_dir / 'last_checkpoint.pt'),
+            epoch=epoch + 1,
+            encoder=encoder,
+            decoder=decoder,
+            optimizer=optimizer,
+            metrics={
+                'val_loss': val_metrics['loss'],
+                'train_loss': train_metrics['loss']
+            },
+            args=vars(args)
+        )
 
     # Save training history
     with open(output_dir / 'training_history.json', 'w') as f:

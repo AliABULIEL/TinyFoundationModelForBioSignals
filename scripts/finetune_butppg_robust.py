@@ -53,6 +53,7 @@ from src.models.domain_adaptation import (
     DomainAdversarialAdapter,
     ProgressiveFineTuner
 )
+from src.utils.checkpoint_utils import load_ssl_checkpoint_safe
 
 
 class BUTPPGDataset(Dataset):
@@ -594,7 +595,17 @@ def main():
     d_model = patcher_weight.shape[0]      # [d_model, patch_size]
     patch_size = patcher_weight.shape[1]   # This IS the patch_size!
 
-    context_length = 1024  # VitalDB standard
+    # Detect context_length from head dimensions
+    head_keys = [k for k in encoder_state.keys() if 'head.base_forecast_block.weight' in k]
+    if head_keys:
+        head_weight = encoder_state[head_keys[0]]
+        input_size = head_weight.shape[1]
+        num_patches_estimate = round(input_size / d_model)
+        context_length = num_patches_estimate * patch_size
+        print(f"  Detected from head: num_patches≈{num_patches_estimate}, context_length={context_length}")
+    else:
+        context_length = 1024
+        print(f"  No head found, using default context_length={context_length}")
 
     print(f"Detected architecture:")
     print(f"  d_model: {d_model}")

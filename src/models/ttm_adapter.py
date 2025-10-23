@@ -96,11 +96,12 @@ class TTMAdapter(nn.Module):
         d_model: Optional[int] = None,  # Allow explicit d_model from checkpoint
         prediction_length: int = 96,
         use_real_ttm: bool = True,
+        force_from_scratch: bool = False,  # NEW: Force fresh TTM without IBM pretrained
         decoder_mode: str = "mix_channel",
         **ttm_kwargs
     ):
         super().__init__()
-        
+
         self.variant = variant
         self.task = task
         self.freeze_encoder = freeze_encoder
@@ -109,6 +110,7 @@ class TTMAdapter(nn.Module):
         self.context_length = context_length
         self.patch_size = patch_size
         self.prediction_length = prediction_length
+        self.force_from_scratch = force_from_scratch  # NEW: Store the flag
         self.using_real_ttm = False
         
         # Calculate encoder dimension based on configuration
@@ -202,18 +204,21 @@ class TTMAdapter(nn.Module):
             
             can_use_pretrained = False
             pretrained_variant = None
-            
-            # Check if dimensions match any pretrained variant
-            if self.context_length == 512 and self.patch_size == 64:
-                can_use_pretrained = True
-                pretrained_variant = "TTM-Base"
-            elif self.context_length == 1024 and self.patch_size == 128:
-                can_use_pretrained = True
-                pretrained_variant = "TTM-Enhanced"
-            elif self.context_length == 1536 and self.patch_size == 128:
-                can_use_pretrained = True
-                pretrained_variant = "TTM-Advanced"
-            
+
+            # Check if dimensions match any pretrained variant (unless force_from_scratch is True)
+            if not self.force_from_scratch:
+                if self.context_length == 512 and self.patch_size == 64:
+                    can_use_pretrained = True
+                    pretrained_variant = "TTM-Base"
+                elif self.context_length == 1024 and self.patch_size == 128:
+                    can_use_pretrained = True
+                    pretrained_variant = "TTM-Enhanced"
+                elif self.context_length == 1536 and self.patch_size == 128:
+                    can_use_pretrained = True
+                    pretrained_variant = "TTM-Advanced"
+            else:
+                print(f"  ⚠️  force_from_scratch=True - skipping IBM pretrained loading")
+
             if can_use_pretrained:
                 print(f"  ✓ Dimensions match {pretrained_variant} - loading pretrained weights!")
                 # FIX: Use TinyTimeMixerForPrediction directly instead of get_model
@@ -674,6 +679,98 @@ class TTMAdapter(nn.Module):
     def is_using_real_ttm(self) -> bool:
         """Check if using real TTM or fallback."""
         return self.using_real_ttm
+
+    def get_actual_patch_size(self) -> int:
+        """Get the ACTUAL patch size being used by TTM.
+
+        This is critical because TTM may use adaptive patching where the
+        patch_size stored in config differs from what's actually used.
+
+        Returns:
+            actual_patch_size: The patch size actually being used by the encoder
+        """
+        if not self.using_real_ttm:
+            return self.patch_size
+
+        # For IBM TTM, check the backbone config
+        if hasattr(self, 'backbone') and hasattr(self.backbone, 'config'):
+            # TTM config has patch_length attribute
+            if hasattr(self.backbone.config, 'patch_length'):
+                return self.backbone.config.patch_length
+
+        # Fallback to stored patch_size
+        return self.patch_size
+
+    def get_architecture_config(self) -> dict:
+        """Get complete architecture configuration.
+
+        This method extracts the ACTUAL architecture being used, not just
+        what was passed in the constructor. This is critical for checkpoint
+        saving/loading.
+
+        Returns:
+            config: Dict with all architecture parameters including:
+                - context_length: Input sequence length
+                - patch_size: Actual patch size (may differ from constructor)
+                - d_model: Encoder dimension
+                - num_patches: Number of patches (derived)
+                - input_channels: Number of input channels
+                - variant: Model variant string
+                - using_real_ttm: Whether using real TTM or fallback
+                - adaptive_patching: Whether adaptive patching is enabled
+        """
+        actual_patch_size = self.get_actual_patch_size()
+
+        config = {
+            'context_length': self.context_length,
+            'patch_size': actual_patch_size,
+            'd_model': self.encoder_dim,
+            'num_patches': self.num_patches,
+            'input_channels': self.input_channels,
+            'variant': self.variant,
+            'using_real_ttm': self.using_real_ttm,
+            'adaptive_patching': False,  # Default
+        }
+
+        # If using real TTM, get additional config from backbone
+        if self.using_real_ttm and hasattr(self, 'backbone'):
+            if hasattr(self.backbone, 'config'):
+                ttm_config = self.backbone.config
+                config.update({
+                    'adaptive_patching': getattr(ttm_config, 'adaptive_patching_levels', 0) > 0,
+                    'num_layers': getattr(ttm_config, 'num_layers', None),
+                    'expansion_factor': getattr(ttm_config, 'expansion_factor', None),
+                    'decoder_mode': getattr(ttm_config, 'decoder_mode', None),
+                })
+
+        return config
+
+    def verify_architecture(self, expected_config: dict) -> tuple[bool, str]:
+        """Verify that current architecture matches expected configuration.
+
+        Args:
+            expected_config: Dict with expected architecture parameters
+
+        Returns:
+            (matches, message): True if matches, plus explanation message
+        """
+        actual_config = self.get_architecture_config()
+
+        mismatches = []
+        critical_keys = ['context_length', 'patch_size', 'd_model', 'input_channels']
+
+        for key in critical_keys:
+            if key in expected_config:
+                expected = expected_config[key]
+                actual = actual_config.get(key)
+                if expected != actual:
+                    mismatches.append(f"{key}: expected={expected}, actual={actual}")
+
+        if mismatches:
+            message = "Architecture mismatch:\n  " + "\n  ".join(mismatches)
+            return False, message
+        else:
+            return True, "Architecture matches expected configuration"
 
     def get_quality_aware_features(
         self,
