@@ -89,7 +89,7 @@ def run_stage2_quality_ssl(
     use_ibm_pretrained: bool = False,
     ibm_variant: str = 'ibm-granite/granite-timeseries-ttm-r1',
     ibm_context_length: int = 1024,
-    ibm_patch_size: int = 128
+    ibm_patch_size: int = 64  # FIXED: TTM-Enhanced uses patch=64, not 128
 ) -> str:
     """Run Stage 2: Quality-aware SSL on BUT-PPG.
 
@@ -623,8 +623,8 @@ def main():
                        help='IBM TTM variant to use')
     parser.add_argument('--ibm-context-length', type=int, default=1024,
                        help='Context length for IBM TTM (512, 1024, or 1536)')
-    parser.add_argument('--ibm-patch-size', type=int, default=128,
-                       help='Patch size for IBM TTM (64 or 128)')
+    parser.add_argument('--ibm-patch-size', type=int, default=64,
+                       help='Patch size for IBM TTM (TTM-Enhanced uses 64)')
 
     # Pipeline control (skip stages)
     parser.add_argument('--skip-stage2', action='store_true',
@@ -735,8 +735,8 @@ def main():
         # Map to pretrained variant name
         if args.ibm_context_length == 512 and args.ibm_patch_size == 64:
             variant_name = "TTM-Base"
-        elif args.ibm_context_length == 1024 and args.ibm_patch_size == 128:
-            variant_name = "TTM-Enhanced"
+        elif args.ibm_context_length == 1024 and args.ibm_patch_size == 64:
+            variant_name = "TTM-Enhanced"  # FIXED: Was 128, should be 64
         elif args.ibm_context_length == 1536 and args.ibm_patch_size == 128:
             variant_name = "TTM-Advanced"
         else:
