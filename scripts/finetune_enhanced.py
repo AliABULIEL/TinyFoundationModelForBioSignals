@@ -790,18 +790,30 @@ def main():
         encoder_state = checkpoint
 
     # Detect architecture from weights
+    # FIXED: Correctly detect patch_size from decoder.adapter.weight [patch_length, d_model]
+    # NOT from patcher.weight [d_model, input_channels]!
+
+    # Get d_model from patcher
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k and 'encoder' in k]
     if not patcher_keys:
         raise ValueError("Could not find patcher weights in checkpoint")
 
     patcher_weight = encoder_state[patcher_keys[0]]
     d_model = patcher_weight.shape[0]
-    patch_size = patcher_weight.shape[1]
+
+    # Get patch_size from decoder adapter (CORRECT location!)
+    adapter_keys = [k for k in encoder_state.keys() if 'decoder.adapter.weight' in k]
+    if not adapter_keys:
+        raise ValueError("Could not find decoder adapter weights in checkpoint")
+
+    adapter_weight = encoder_state[adapter_keys[0]]
+    patch_size = adapter_weight.shape[0]  # [patch_length, d_model]
+
     context_length = 1024  # VitalDB standard
 
     print(f"Detected architecture:")
     print(f"  d_model: {d_model}")
-    print(f"  patch_size: {patch_size}")
+    print(f"  patch_size: {patch_size} (from decoder.adapter.weight)")
     print(f"  context_length: {context_length}")
 
     # CRITICAL FIX: Don't try to load IBM pretrained during fine-tuning!
