@@ -216,14 +216,14 @@ class TTMAdapter(nn.Module):
             
             if can_use_pretrained:
                 print(f"  ✓ Dimensions match {pretrained_variant} - loading pretrained weights!")
-                # Use get_model to load pretrained weights
-                self.encoder = get_model(
+                # FIX: Use TinyTimeMixerForPrediction directly instead of get_model
+                # to avoid library version incompatibility with use_pretrained parameter
+                # TinyTimeMixerForPrediction is already imported from tsfm_public at the top
+                self.encoder = TinyTimeMixerForPrediction.from_pretrained(
                     model_id,
                     context_length=self.context_length,
                     prediction_length=self.prediction_length,
                     num_input_channels=self.input_channels,
-                    decoder_mode=decoder_mode,
-                    **filtered_kwargs  # Use filtered kwargs!
                 )
                 print(f"  ✓ Successfully loaded {pretrained_variant} pretrained weights!")
             else:
