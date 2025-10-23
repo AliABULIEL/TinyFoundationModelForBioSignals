@@ -62,7 +62,7 @@ from src.utils.checkpoint_utils import save_ssl_checkpoint
 
 # ============================================================================
 # SCRIPT VERSION: 2025-10-23-RESAMPLING-FIX-V2
-# Changes: 2-channel loading + F.interpolate resampling (1250→1024)
+# Changes: 2-channel loading + F.interpolate resampling (1250→512 for IBM TTM-Enhanced)
 # ============================================================================
 
 def load_vitaldb_checkpoint(
@@ -207,28 +207,38 @@ def init_ibm_pretrained(
     print(f"  Channels: {num_channels}")
 
     # Determine expected d_model based on pretrained variant
-    # CRITICAL FIX: IBM TTM-Enhanced uses patch_size=64, NOT 128!
-    if context_length == 512 and patch_size == 64:
+    # CRITICAL: IBM TTM-Enhanced uses context=1024 for loading, but processes 512 timesteps (8 patches)
+    if context_length == 1024 and patch_size == 64:
+        d_model = 192  # TTM-Enhanced
+        variant_name = "TTM-Enhanced"
+        actual_processing_length = 512  # 8 patches × 64 = 512 timesteps (NOT 1024!)
+        expected_num_patches = 8  # IBM's actual value
+    elif context_length == 512 and patch_size == 64:
         d_model = 192  # TTM-Base
         variant_name = "TTM-Base"
-    elif context_length == 1024 and patch_size == 64:
-        d_model = 192  # TTM-Enhanced (FIXED: was 128, should be 64)
-        variant_name = "TTM-Enhanced"
+        actual_processing_length = 512
+        expected_num_patches = 8
     elif context_length == 1536 and patch_size == 128:
         d_model = 192  # TTM-Advanced
         variant_name = "TTM-Advanced"
+        actual_processing_length = 1536
+        expected_num_patches = 12  # 1536 ÷ 128 = 12
     else:
         d_model = 256  # Custom - may not load pretrained weights
         variant_name = "Custom"
+        actual_processing_length = context_length
+        expected_num_patches = context_length // patch_size
 
     print(f"  Pretrained: {variant_name} (d_model={d_model})")
+    print(f"  Actual processing length: {actual_processing_length} timesteps")
 
     # Create encoder with IBM pretrained weights
+    # CRITICAL: Use actual_processing_length (512) for TTMAdapter, not context_length (1024)
     encoder = TTMAdapter(
         variant=variant,
         task='ssl',  # We'll use for SSL pretraining
         input_channels=num_channels,
-        context_length=context_length,
+        context_length=actual_processing_length,  # Use actual processing length (512 for TTM-Enhanced)
         patch_size=patch_size,
         d_model=d_model,
         use_real_ttm=True,  # Use real IBM TTM
@@ -248,15 +258,15 @@ def init_ibm_pretrained(
     print(f"    Using real TTM: {arch_config['using_real_ttm']}")
 
     # CRITICAL: Validate num_patches matches expected value
-    # IBM TTM creates 8 patches for context=1024 (not 16 from simple division)
-    expected_patches = 8  # IBM TTM actual behavior
+    # IBM TTM creates 8 patches for processing_length=512 (8 × 64 = 512 timesteps)
+    expected_patches = expected_num_patches  # Use variant-specific value from above
     actual_patches = arch_config['num_patches']
 
     if actual_patches != expected_patches:
         print("\n" + "="*80)
         print("❌ CRITICAL ERROR: Patch count mismatch!")
         print("="*80)
-        print(f"  Expected patches: {expected_patches} (IBM TTM with context={context_length}, patch={patch_size})")
+        print(f"  Expected patches: {expected_patches} (IBM TTM with processing_length={actual_processing_length}, patch={patch_size})")
         print(f"  Actual patches: {actual_patches}")
         print(f"  Difference: {actual_patches / expected_patches if expected_patches else 'N/A':.1f}x")
         print("\nThis will cause dimension mismatches during training!")
@@ -265,11 +275,11 @@ def init_ibm_pretrained(
         print("  1. TTM variant mismatch (wrong pretrained weights loaded)")
         print("  2. Incorrect context_length or patch_size specification")
         print("  3. TTM using different patching strategy than expected")
-        print("\nPlease check the TTM model variant and configuration.")
+        print(f"\nNote: IBM TTM-Enhanced uses context_length=1024 for loading, but processes {actual_processing_length} timesteps")
         print("="*80)
         raise ValueError(f"Patch count mismatch: expected {expected_patches}, got {actual_patches}")
 
-    print(f"  ✓ Patch count validated: {actual_patches} matches expected {expected_patches} (IBM TTM)")
+    print(f"  ✓ Patch count validated: {actual_patches} matches expected {expected_patches} (IBM TTM processes {actual_processing_length} timesteps)")
 
     # ⚠️ CRITICAL CHECK: Verify TTM actually loaded (not fallback)
     if not encoder.is_using_real_ttm():
@@ -288,10 +298,12 @@ def init_ibm_pretrained(
 
     # Create config dict
     config = {
-        'context_length': context_length,
+        'context_length': actual_processing_length,  # Use actual processing length (512 for TTM-Enhanced)
+        'loading_context_length': context_length,  # Context used for model loading (1024)
         'num_channels': num_channels,
         'd_model': encoder.encoder_dim,  # Use actual encoder dim
         'patch_length': patch_size,
+        'num_patches': expected_num_patches,  # Store expected patch count
         'variant': variant,
         'variant_name': variant_name
     }
@@ -353,12 +365,13 @@ def train_epoch(
         signals = signals[:, :2, :]  # [B, 5, T] → [B, 2, T]
 
         # Get encoder's expected context length
-        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
+        # IBM TTM-Enhanced processes 512 timesteps (8 patches × 64)
+        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 512
         current_length = signals.shape[2]
 
         if current_length != expected_length:
-            # Use high-quality resampling instead of crop/pad
-            # This preserves signal frequency content better than cropping
+            # Use high-quality resampling: 1250 → 512 samples
+            # IBM TTM processes 512 timesteps (8 patches × 64 patch_size)
             import torch.nn.functional as F
             signals = F.interpolate(
                 signals,
@@ -474,12 +487,13 @@ def validate_epoch(
         signals = signals[:, :2, :]  # [B, 5, T] → [B, 2, T]
 
         # Get encoder's expected context length
-        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
+        # IBM TTM-Enhanced processes 512 timesteps (8 patches × 64)
+        expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 512
         current_length = signals.shape[2]
 
         if current_length != expected_length:
-            # Use high-quality resampling instead of crop/pad
-            # This preserves signal frequency content better than cropping
+            # Use high-quality resampling: 1250 → 512 samples
+            # IBM TTM processes 512 timesteps (8 patches × 64 patch_size)
             import torch.nn.functional as F
             signals = F.interpolate(
                 signals,
@@ -535,7 +549,7 @@ def validate_epoch(
 def verify_ttm_shapes(
     encoder: TTMAdapter,
     device: str = 'cuda',
-    expected_context_length: int = 1024,
+    expected_context_length: int = 512,  # IBM TTM-Enhanced processes 512 timesteps (8 patches × 64)
     expected_patch_size: int = 64,
     expected_d_model: int = 192
 ) -> bool:
@@ -544,7 +558,7 @@ def verify_ttm_shapes(
     Args:
         encoder: TTMAdapter instance to test
         device: Device to run test on
-        expected_context_length: Expected input length
+        expected_context_length: Expected input processing length (512 for TTM-Enhanced)
         expected_patch_size: Expected patch size
         expected_d_model: Expected embedding dimension
 
@@ -556,7 +570,7 @@ def verify_ttm_shapes(
     print("="*80)
 
     try:
-        # Create test input
+        # Create test input with 512 samples (IBM TTM-Enhanced actual processing length)
         batch_size = 4
         channels = 2
         test_input = torch.randn(batch_size, channels, expected_context_length).to(device)
@@ -565,9 +579,9 @@ def verify_ttm_shapes(
         print(f"Expected: [batch={batch_size}, channels={channels}, length={expected_context_length}]")
 
         # Get expected number of patches
-        # IBM TTM creates 8 patches for context=1024, patch_size=64 (with internal downsampling/striding)
-        expected_patches = 8  # IBM TTM actual behavior (not context÷patch_size)
-        print(f"\nExpected patches: {expected_patches} (IBM TTM with context={expected_context_length}, patch_size={expected_patch_size})")
+        # IBM TTM-Enhanced creates 8 patches for processing_length=512 (8 × 64 = 512 timesteps)
+        expected_patches = 8  # IBM TTM actual behavior
+        print(f"\nExpected patches: {expected_patches} (IBM TTM with processing_length={expected_context_length}, patch_size={expected_patch_size})")
 
         # Test forward pass
         encoder.eval()
@@ -678,7 +692,7 @@ def main():
     print("="*80)
     print("🔧 SCRIPT VERSION: 2025-10-23-RESAMPLING-FIX-V2")
     print("   ✓ 2-channel loading (PPG+ECG only)")
-    print("   ✓ F.interpolate resampling (1250→1024)")
+    print("   ✓ F.interpolate resampling (1250→512 for IBM TTM-Enhanced)")
     print("="*80)
     print(f"Data directory: {args.data_dir}")
     print(f"Output directory: {args.output_dir}")
@@ -709,7 +723,8 @@ def main():
         encoder, checkpoint_info = load_vitaldb_checkpoint(args.vitaldb_checkpoint, device=str(device))
 
     # Create decoder
-    context_length = checkpoint_info['config'].get('context_length', 1024)
+    # IBM TTM-Enhanced processes 512 timesteps (8 patches × 64)
+    context_length = checkpoint_info['config'].get('context_length', 512)
     num_channels = checkpoint_info['config'].get('num_channels', 2)
 
     # CRITICAL: Get runtime parameters from encoder (not from checkpoint config)
@@ -773,10 +788,10 @@ def main():
         import sys
         sys.exit(1)
 
-    # Check if data needs resampling for TTM-Enhanced (1024 samples)
-    # BUT-PPG data is 1250 samples (10s @ 125Hz), TTM-Enhanced expects 1024
-    print(f"\n⚠️  NOTE: BUT-PPG data is 1250 samples, but TTM-Enhanced expects 1024 samples")
-    print(f"   Inline resampling (F.interpolate) will handle this automatically.")
+    # Check if data needs resampling for TTM-Enhanced (512 samples for processing)
+    # BUT-PPG data is 1250 samples (10s @ 125Hz), TTM-Enhanced processes 512 timesteps
+    print(f"\n⚠️  NOTE: BUT-PPG data is 1250 samples, but TTM-Enhanced processes 512 timesteps")
+    print(f"   Inline resampling (F.interpolate 1250→512) will handle this automatically.")
 
     # Create datasets
     print(f"\nLoading BUT-PPG data...")

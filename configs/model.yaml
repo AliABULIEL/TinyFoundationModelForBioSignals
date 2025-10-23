@@ -8,8 +8,8 @@ model:
   
   # Model architecture parameters
   input_channels: 2  # PPG, ECG (VitalDB pretraining)
-  context_length: 1024  # 8.192 seconds at 125 Hz (TTM-Enhanced)
-  patch_size: 64  # FIXED: TTM-Enhanced uses 64, not 128 (16 patches @ 1024 context)
+  context_length: 512  # 4.096 seconds at 125 Hz (IBM TTM-Enhanced actual processing length)
+  patch_size: 64  # FIXED: TTM-Enhanced uses 64, not 128 (8 patches @ 512 processing length)
   stride: 64  # Non-overlapping patches for SSL
   
   # Hidden dimensions (depends on variant)
