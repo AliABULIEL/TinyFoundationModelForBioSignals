@@ -63,6 +63,107 @@ from tqdm import tqdm
 from src.models.channel_utils import unfreeze_last_n_blocks
 
 
+def load_ssl_encoder_from_checkpoint(checkpoint_path: str, device: str = 'cuda'):
+    """Load the SSL encoder directly from checkpoint.
+
+    This function recreates the encoder used in SSL training by:
+    1. Loading the SSL checkpoint
+    2. Detecting architecture from weights
+    3. Creating a new encoder with IBM pretrained
+    4. Loading the SSL-trained weights
+
+    This ensures we use the EXACT encoder from SSL (with IBM TTM inside),
+    not a new TTMAdapter that might fall back to CNN.
+
+    Args:
+        checkpoint_path: Path to SSL checkpoint
+        device: Device to load on
+
+    Returns:
+        encoder: SSL-trained encoder with IBM TTM
+        config: Architecture configuration
+    """
+    print(f"\n📦 Loading SSL encoder from: {checkpoint_path}")
+
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    # Get encoder state dict
+    if 'encoder_state_dict' in checkpoint:
+        encoder_state = checkpoint['encoder_state_dict']
+        print("  ✓ Found encoder_state_dict")
+    else:
+        raise ValueError(f"Checkpoint missing encoder_state_dict. Keys: {list(checkpoint.keys())}")
+
+    # Detect architecture from weights
+    patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k]
+    if not patcher_keys:
+        raise ValueError("Cannot find patcher weights to detect architecture")
+
+    patcher_weight = encoder_state[patcher_keys[0]]
+    d_model = patcher_weight.shape[0]
+    patch_size = patcher_weight.shape[1]
+
+    print(f"  Detected from weights:")
+    print(f"    d_model: {d_model}")
+    print(f"    patch_size: {patch_size}")
+
+    # Get config from checkpoint or infer
+    if 'config' in checkpoint:
+        config = checkpoint['config']
+        context_length = config.get('context_length', 512)
+    else:
+        # IBM TTM-Enhanced with patch=64 uses context=512
+        context_length = 512 if patch_size == 64 else 1024
+        print(f"  ⚠️  No config found, inferred context_length={context_length}")
+
+    print(f"    context_length: {context_length}")
+    print(f"    num_patches: {context_length // patch_size}")
+
+    # Import the init function from SSL script
+    # This creates encoder with IBM pretrained (same as SSL training)
+    import sys
+    from pathlib import Path
+    ssl_script_dir = Path(__file__).parent
+    sys.path.insert(0, str(ssl_script_dir))
+
+    # Import the SSL initialization function
+    from continue_ssl_butppg_quality import init_ibm_pretrained
+
+    print(f"\n  Creating encoder with IBM pretrained (matching SSL)...")
+    encoder, _ = init_ibm_pretrained(
+        variant='ibm-granite/granite-timeseries-ttm-r1',
+        context_length=1024,  # Loading context (IBM's API)
+        patch_size=patch_size,
+        num_channels=2,
+        device=device
+    )
+
+    print(f"  ✓ Encoder created with IBM TTM backbone")
+
+    # Load SSL-trained weights
+    print(f"\n  Loading SSL-trained weights...")
+    missing, unexpected = encoder.load_state_dict(encoder_state, strict=False)
+
+    if missing:
+        print(f"    ⚠️  Missing keys ({len(missing)}): {missing[:3]}...")
+    if unexpected:
+        print(f"    ⚠️  Unexpected keys ({len(unexpected)}): {unexpected[:3]}...")
+
+    if not missing and not unexpected:
+        print(f"    ✓ All weights loaded successfully!")
+
+    # Return encoder and config
+    config_dict = {
+        'context_length': context_length,
+        'patch_size': patch_size,
+        'd_model': d_model,
+        'num_patches': context_length // patch_size
+    }
+
+    return encoder, config_dict
+
+
 class BUTPPGDataset(Dataset):
     """Dataset for BUT-PPG quality classification.
 
@@ -728,272 +829,87 @@ def main():
     print(f"AMP: {not args.no_amp and torch.cuda.is_available()}")
     print("=" * 70)
 
-    # Load pretrained model (2 channels, no inflation needed)
+    # Load pretrained SSL encoder (CRITICAL FIX: Use encoder from SSL directly)
     print("\n" + "=" * 70)
-    print("LOADING PRETRAINED MODEL")
+    print("LOADING SSL ENCODER")
     print("=" * 70)
+    print("Using Option 3: Load complete SSL encoder with IBM TTM inside")
+    print("This avoids fallback CNN and preserves all SSL features!")
 
-    # Load pretrained checkpoint
-    print(f"Loading checkpoint: {args.pretrained}")
-    checkpoint = torch.load(args.pretrained, map_location='cpu', weights_only=False)
-
-    # Get state dict - handle different checkpoint formats
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-        print("  ✓ Found 'model_state_dict' (fine-tuning checkpoint)")
-    elif 'encoder_state_dict' in checkpoint:
-        state_dict = checkpoint['encoder_state_dict']
-        print("  ✓ Found 'encoder_state_dict' (SSL checkpoint)")
-    elif 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-        print("  ✓ Found 'state_dict' (generic checkpoint)")
-    elif 'encoder' in checkpoint and isinstance(checkpoint['encoder'], dict):
-        state_dict = checkpoint['encoder']
-        print("  ✓ Found 'encoder' (encoder weights)")
-    else:
-        # Check if checkpoint IS the state dict (all keys are parameter names)
-        all_keys = list(checkpoint.keys())
-        param_prefixes = ['encoder.', 'backbone.', 'decoder.', 'head.']
-        if all(any(k.startswith(p) for p in param_prefixes) for k in all_keys[:10]):
-            state_dict = checkpoint
-            print("  ✓ Using raw checkpoint (is state dict)")
-        else:
-            raise ValueError(f"Cannot find state dict in checkpoint. Keys: {list(checkpoint.keys())[:10]}")
-
-    # CRITICAL: Detect actual architecture from checkpoint weights
-    # The saved config may be incorrect - we must use the actual weight shapes
-    print("🔍 Detecting architecture from checkpoint weights...")
-
-    # Sample keys to understand structure
-    sample_keys = list(state_dict.keys())[:5]
-    print(f"  Sample keys: {sample_keys[0]}")
-
-    # STEP 1: Detect d_model and patch_size from patcher (RELIABLE)
-    # TTM patcher converts [channels, patch_size] → [d_model]
-    patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
-    if not patcher_keys:
-        raise ValueError(
-            "Could not find patcher weights in checkpoint.\n"
-            "Cannot determine model architecture."
+    # Use our new function to load SSL encoder
+    try:
+        ssl_encoder, ssl_config = load_ssl_encoder_from_checkpoint(
+            checkpoint_path=args.pretrained,
+            device=args.device
         )
 
-    patcher_weight = state_dict[patcher_keys[0]]
-    d_model = patcher_weight.shape[0]  # Output dimension
-    patch_size = patcher_weight.shape[1]  # Input dimension = patch_size per channel
+        context_length = ssl_config['context_length']
+        patch_size = ssl_config['patch_size']
+        d_model = ssl_config['d_model']
+        num_patches = ssl_config['num_patches']
 
-    print(f"  ✓ Step 1: Detected from patcher:")
-    print(f"    Key: {patcher_keys[0]}")
-    print(f"    Shape: {patcher_weight.shape}")
-    print(f"    → d_model: {d_model}")
-    print(f"    → patch_size: {patch_size}")
-    print(f"    (TTM patcher operates per-channel: input_dim = patch_size)")
+        print(f"\n✅ SSL encoder loaded successfully!")
+        print(f"  Context length: {context_length}")
+        print(f"  Patch size: {patch_size}")
+        print(f"  d_model: {d_model}")
+        print(f"  Num patches: {num_patches}")
+        print(f"  Total encoder params: {sum(p.numel() for p in ssl_encoder.parameters()):,}")
 
-    # STEP 2: Determine context_length
-    # CRITICAL FIX: IBM TTM-Enhanced uses context=512 (not 1024) for processing
-    # First try checkpoint config, then calculate from num_patches
-    if 'config' in checkpoint:
-        ssl_config = checkpoint['config']
-        context_length = ssl_config.get('context_length', None)
-        if context_length:
-            print(f"  ✓ Step 2: From checkpoint config:")
-            print(f"    → context_length: {context_length}")
-        else:
-            # Calculate from patch architecture
-            # For IBM TTM-Enhanced: 8 patches × 64 patch_size = 512 timesteps
-            context_length = 512 if patch_size == 64 else 1024
-            print(f"  ⚠️  Step 2: No context_length in config, calculating from architecture:")
-            print(f"    → context_length: {context_length} (8 patches × {patch_size} for IBM TTM)")
-    else:
-        # No config - calculate from patch_size
-        # IBM TTM-Enhanced with patch=64 processes 512 timesteps (8 patches)
-        context_length = 512 if patch_size == 64 else 1024
-        print(f"  ⚠️  Step 2: No config in checkpoint, calculating from patch_size:")
-        print(f"    → context_length: {context_length} (8 patches × {patch_size})")
+    except Exception as e:
+        print(f"\n❌ FATAL: Failed to load SSL encoder: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nCannot proceed without SSL encoder - exiting")
+        import sys
+        sys.exit(1)
 
-    # STEP 3: Calculate num_patches
-    num_patches = context_length // patch_size
-    print(f"  ✓ Step 3: Calculated:")
-    print(f"    num_patches = context_length / patch_size")
-    print(f"              = {context_length} / {patch_size}")
-    print(f"              = {num_patches}")
+    # Freeze SSL encoder for Stage 1
+    for param in ssl_encoder.parameters():
+        param.requires_grad = False
+    print(f"  ✓ Encoder frozen (will train head only in Stage 1)")
 
-    # STEP 4: Determine if SSL used IBM pretrained
-    # CRITICAL FIX: IBM TTM-Enhanced processes 512 timesteps (not 1024)
-    # Detect IBM pretrained by: patch=64, d_model=192, context=512
-    ssl_used_ibm_pretrained = (
-        patch_size == 64 and
-        d_model == 192 and
-        context_length == 512
-    )
+    # Create classification wrapper around SSL encoder
+    print(f"\n📦 Creating classification wrapper...")
 
-    # Legacy support: Also detect old 1024-context checkpoints
-    if context_length == 1024 and patch_size == 64 and d_model == 192:
-        ssl_used_ibm_pretrained = True
-        print(f"  ⚠️  Warning: Detected legacy context=1024 checkpoint")
-        print(f"     IBM TTM-Enhanced now uses context=512 for processing")
+    class ClassificationWrapper(nn.Module):
+        """Wrapper that adds classification head to SSL encoder."""
 
-    if ssl_used_ibm_pretrained:
-        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced")
-        print(f"     Detected: context={context_length}, d_model={d_model}, patch={patch_size}")
-        print(f"     Will create model matching SSL architecture")
-        # CRITICAL FIX: Use detected patch_size directly (64, not 128)
-        # The SSL checkpoint already has the correct architecture
-        model_patch_size = patch_size  # Use exact architecture from SSL checkpoint
-    else:
-        print(f"\n  ⚠️  SSL checkpoint used custom architecture (not IBM pretrained)")
-        print(f"     Will create fresh TTM with patch={patch_size}")
-        model_patch_size = patch_size
+        def __init__(self, encoder, d_model: int, num_classes: int):
+            super().__init__()
+            self.encoder = encoder
+            self.head = nn.Linear(d_model, num_classes)
 
-    # Create model with classification head
-    from src.models.ttm_adapter import TTMAdapter
+            # Store config for compatibility
+            self.context_length = getattr(encoder, 'context_length', None)
+            self.patch_size = getattr(encoder, 'patch_size', None)
+            self.num_classes = num_classes
 
-    print(f"\nCreating TTMAdapter for fine-tuning:")
-    print(f"  Task: classification (2 classes)")
-    print(f"  Input channels: 2 (PPG + ECG)")
-    print(f"  Context length: {context_length}")
-    print(f"  Patch size: {model_patch_size}")
-    print(f"  d_model: {d_model}")
-    print(f"  Num patches: {num_patches}")
-    print(f"  Freeze encoder: True (will train head only in Stage 1)")
-    if ssl_used_ibm_pretrained:
-        print(f"  Note: Architecture matches SSL checkpoint (IBM TTM-Enhanced)")
+        def forward(self, x):
+            """Forward pass: encoder → pool → classify."""
+            # Get encoder features: [B, C, T] → [B, P, D]
+            features = self.encoder.get_encoder_output(x)
+            # Pool across patches: [B, P, D] → [B, D]
+            features_pooled = features.mean(dim=1)
+            # Classify: [B, D] → [B, num_classes]
+            logits = self.head(features_pooled)
+            return logits
 
-    # CRITICAL: Don't reload IBM pretrained - we'll load from SSL checkpoint
-    model = TTMAdapter(
-        variant='ibm-granite/granite-timeseries-ttm-r1',
-        task='classification',
-        num_classes=2,
-        input_channels=2,
-        context_length=context_length,
-        patch_size=model_patch_size,  # Use detected patch_size to match SSL checkpoint
-        d_model=d_model,
-        freeze_encoder=True,
-        use_real_ttm=False  # Don't reload pretrained - we'll load SSL checkpoint weights
-    )
+        def get_encoder_output(self, x):
+            """Get encoder features (for analysis)."""
+            return self.encoder.get_encoder_output(x)
 
-    # Verify model architecture matches SSL checkpoint
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"\n✅ Model created successfully:")
-    print(f"  Total parameters: {total_params:,}")
-
-    if ssl_used_ibm_pretrained:
-        # Should match SSL checkpoint (946K encoder + decoder + head)
-        expected_params = 946904  # IBM TTM-Enhanced encoder
-        if abs(total_params - expected_params) < 100000:
-            print(f"  ✓ Parameter count matches SSL checkpoint (~{expected_params:,})")
-        else:
-            print(f"  ⚠️  Warning: Expected ~{expected_params:,} params (SSL checkpoint)")
-            print(f"     Got {total_params:,} - architecture might not match!")
-
-    # Move model to device
+    model = ClassificationWrapper(ssl_encoder, d_model=d_model, num_classes=2)
     model = model.to(args.device)
 
-    # SKIP auto-adaptation - model already created with correct architecture
-    # (We created TTMAdapter with detected patch_size=64, so no adaptation needed)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    # Verify model configuration matches SSL checkpoint
-    print(f"\nVerifying model configuration:")
-    print(f"  Model context_length: {model.context_length if hasattr(model, 'context_length') else 'N/A'}")
-    print(f"  Model patch_size: {model.patch_size if hasattr(model, 'patch_size') else model_patch_size}")
-    print(f"  SSL checkpoint patch_size: {patch_size}")
-    print(f"  SSL checkpoint context_length: {context_length}")
+    print(f"  ✓ Classification wrapper created")
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,} (head only)")
+    print(f"  Frozen parameters: {total_params - trainable_params:,} (encoder)")
 
-    # Get model's actual patch_size (may be stored differently)
-    actual_model_patch_size = getattr(model, 'patch_size', model_patch_size)
-
-    if actual_model_patch_size != patch_size:
-        print(f"\n  ⚠️  WARNING: Model patch_size ({actual_model_patch_size}) != SSL checkpoint ({patch_size})")
-        print(f"     This may cause weight loading issues!")
-    else:
-        print(f"  ✅ Architecture matches - ready to load SSL weights")
-
-    # Load encoder weights from SSL checkpoint
-    # Note: state_dict was already loaded earlier for architecture detection
-    # It contains encoder weights with 'encoder.' prefix that needs to be stripped
-
-    print("\n📦 Loading backbone encoder weights (skipping SSL decoder)...")
-
-    # Filter state_dict to only include backbone encoder weights
-    # IMPORTANT:
-    # 1. Skip SSL decoder (different architecture from fine-tuning decoder)
-    # 2. Keep encoder.backbone.* keys as-is (fine-tuning model expects this format)
-    # 3. SSL checkpoint has duplicate keys (encoder.backbone.* AND backbone.*) - use encoder.backbone.*
-    backbone_state_dict = {}
-    skipped_decoder = 0
-    skipped_head = 0
-    skipped_duplicate = 0
-
-    for key, value in state_dict.items():
-        # Skip decoder weights (SSL-specific, different dimensions)
-        if 'encoder.decoder' in key or 'decoder_state' in key:
-            skipped_decoder += 1
-            continue
-        # Skip SSL head (task-specific)
-        elif 'encoder.head' in key or 'head.' in key:
-            skipped_head += 1
-            continue
-        # Include encoder.backbone weights (keep prefix as-is!)
-        elif 'encoder.backbone' in key:
-            # Add with original key: encoder.backbone.*
-            backbone_state_dict[key] = value
-            # ALSO add with stripped prefix: backbone.*
-            # (Model has BOTH formats in state_dict!)
-            # IMPORTANT: Only replace FIRST occurrence of 'encoder.'
-            # encoder.backbone.encoder.X → backbone.encoder.X (keep second encoder.)
-            stripped_key = key.replace('encoder.', '', 1)
-            backbone_state_dict[stripped_key] = value
-        # Also include plain backbone.* keys if they exist in SSL checkpoint
-        elif key.startswith('backbone.') and 'decoder' not in key:
-            backbone_state_dict[key] = value
-            # Track these separately (shouldn't happen if checkpoint is consistent)
-            skipped_duplicate += 1
-
-    print(f"  Prepared {len(backbone_state_dict)} weight entries for loading")
-    print(f"    (98 SSL weights × 2 locations = 196 keys)")
-    print(f"  Skipped SSL decoder: {skipped_decoder} keys (different architecture)")
-    print(f"  Skipped SSL head: {skipped_head} keys (task-specific)")
-
-    # Try loading backbone weights
-    missing_keys, unexpected_keys = model.load_state_dict(backbone_state_dict, strict=False)
-
-    # Verify loading success
-    backbone_missing = [k for k in missing_keys if 'backbone' in k and 'encoder' in k]
-
-    if len(backbone_state_dict) == 196 and len(backbone_missing) == 0:
-        print("\n✅ SSL encoder weights loaded successfully!")
-        print("  ✓ All 196 backbone keys matched (98 weights loaded to 2 locations)")
-    elif len(backbone_missing) > 0:
-        print(f"\n⚠️ SSL encoder loading FAILED:")
-        print(f"  Attempted to load: {len(backbone_state_dict)} keys")
-        print(f"  Missing backbone keys: {len(backbone_missing)}")
-        print(f"  This means SSL weights did NOT load - model will train from scratch!")
-    else:
-        print(f"\n✅ SSL encoder weights loaded")
-        print(f"  Loaded: {len(backbone_state_dict)} keys")
-        print(f"  Missing (non-backbone): {len([k for k in missing_keys if 'backbone' not in k])}")
-
-    print("✓ Initialized new classification head (2 classes)")
-
-    # Show what was not loaded (expected - head is new)
-    if missing_keys:
-        head_keys = [k for k in missing_keys if 'head' in k or 'classifier' in k or 'decoder' in k]
-        backbone_keys = [k for k in missing_keys if 'backbone' in k]
-
-        if head_keys:
-            print(f"  New head parameters: {len(head_keys)} keys (expected)")
-        if backbone_keys:
-            print(f"  ⚠️ Missing backbone keys: {len(backbone_keys)} (unexpected!)")
-            if len(backbone_keys) < 10:
-                for k in backbone_keys[:5]:
-                    print(f"     {k}")
-
-    if unexpected_keys:
-        print(f"  ⚠️ Unexpected keys in checkpoint: {len(unexpected_keys)}")
-        if len(unexpected_keys) < 10:
-            for k in unexpected_keys[:5]:
-                print(f"     {k}")
-
-    # Model already on device (moved before auto-adaptation)
+    # Weight loading complete - encoder already has SSL weights from our load function!
 
     # Create dataloaders with target_length matching SSL model
     print(f"\n📊 Creating dataloaders (resizing windows to {context_length} samples if needed)...")
@@ -1172,9 +1088,10 @@ def main():
         print(f"STAGE 2: PARTIAL UNFREEZING ({remaining_epochs} epochs)")
         print("=" * 70)
         print(f"Unfreezing last {args.unfreeze_last_n} encoder blocks")
-        
+
         # Unfreeze last N blocks
-        unfreeze_last_n_blocks(model, n=args.unfreeze_last_n, verbose=True)
+        # Our model is a ClassificationWrapper, so unfreeze on model.encoder
+        unfreeze_last_n_blocks(model.encoder, n=args.unfreeze_last_n, verbose=True)
         
         # Create new optimizer with unfrozen parameters
         optimizer = torch.optim.AdamW(
