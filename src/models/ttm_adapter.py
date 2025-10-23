@@ -122,8 +122,8 @@ class TTMAdapter(nn.Module):
         elif context_length == 512 and patch_size == 64:
             # TTM-Base pretrained
             self.encoder_dim = 192  # TTM-Base d_model
-        elif context_length == 1024 and patch_size == 128:
-            # TTM-Enhanced pretrained
+        elif context_length == 1024 and patch_size == 64:
+            # TTM-Enhanced pretrained (FIXED: was 128, should be 64)
             self.encoder_dim = 192  # TTM-Enhanced d_model
         elif context_length == 1536 and patch_size == 128:
             # TTM-Advanced pretrained
@@ -199,7 +199,7 @@ class TTMAdapter(nn.Module):
             # For custom context_length, we need to check if we can use pretrained weights
             # IBM's pretrained TTM variants:
             # - TTM-Base: context=512, patch=64
-            # - TTM-Enhanced: context=1024, patch=128  ← BEST for biosignals!
+            # - TTM-Enhanced: context=1024, patch=64  ← BEST for biosignals! (FIXED: was 128)
             # - TTM-Advanced: context=1536, patch=128
             
             can_use_pretrained = False
@@ -210,9 +210,9 @@ class TTMAdapter(nn.Module):
                 if self.context_length == 512 and self.patch_size == 64:
                     can_use_pretrained = True
                     pretrained_variant = "TTM-Base"
-                elif self.context_length == 1024 and self.patch_size == 128:
+                elif self.context_length == 1024 and self.patch_size == 64:
                     can_use_pretrained = True
-                    pretrained_variant = "TTM-Enhanced"
+                    pretrained_variant = "TTM-Enhanced"  # FIXED: was 128, should be 64
                 elif self.context_length == 1536 and self.patch_size == 128:
                     can_use_pretrained = True
                     pretrained_variant = "TTM-Advanced"
@@ -233,7 +233,7 @@ class TTMAdapter(nn.Module):
                 print(f"  ✓ Successfully loaded {pretrained_variant} pretrained weights!")
             else:
                 print(f"  Note: Dimensions (context={self.context_length}, patch={self.patch_size}) don't match pretrained variants")
-                print(f"  Recommended: Use context=1024, patch=128 for TTM-Enhanced with biosignals (8.192s @ 125Hz)")
+                print(f"  Recommended: Use context=1024, patch=64 for TTM-Enhanced with biosignals (8.192s @ 125Hz)")
                 print(f"  Creating fresh TTM architecture without pretrained weights...")
                 
                 # Import config class

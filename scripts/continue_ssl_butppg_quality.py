@@ -184,7 +184,7 @@ def load_vitaldb_checkpoint(
 def init_ibm_pretrained(
     variant: str = 'ibm-granite/granite-timeseries-ttm-r1',
     context_length: int = 1024,
-    patch_size: int = 128,
+    patch_size: int = 64,
     num_channels: int = 2,
     device: str = 'cuda'
 ) -> Tuple[TTMAdapter, dict]:
@@ -207,11 +207,12 @@ def init_ibm_pretrained(
     print(f"  Channels: {num_channels}")
 
     # Determine expected d_model based on pretrained variant
+    # CRITICAL FIX: IBM TTM-Enhanced uses patch_size=64, NOT 128!
     if context_length == 512 and patch_size == 64:
         d_model = 192  # TTM-Base
         variant_name = "TTM-Base"
-    elif context_length == 1024 and patch_size == 128:
-        d_model = 192  # TTM-Enhanced
+    elif context_length == 1024 and patch_size == 64:
+        d_model = 192  # TTM-Enhanced (FIXED: was 128, should be 64)
         variant_name = "TTM-Enhanced"
     elif context_length == 1536 and patch_size == 128:
         d_model = 192  # TTM-Advanced
@@ -507,6 +508,78 @@ def validate_epoch(
     return metrics
 
 
+def verify_ttm_shapes(
+    encoder: TTMAdapter,
+    device: str = 'cuda',
+    expected_context_length: int = 1024,
+    expected_patch_size: int = 64,
+    expected_d_model: int = 192
+) -> bool:
+    """Verify TTM encoder produces correct output shapes.
+
+    Args:
+        encoder: TTMAdapter instance to test
+        device: Device to run test on
+        expected_context_length: Expected input length
+        expected_patch_size: Expected patch size
+        expected_d_model: Expected embedding dimension
+
+    Returns:
+        True if all shapes are correct, False otherwise
+    """
+    print("\n" + "="*80)
+    print("TTM SHAPE VERIFICATION")
+    print("="*80)
+
+    try:
+        # Create test input
+        batch_size = 4
+        channels = 2
+        test_input = torch.randn(batch_size, channels, expected_context_length).to(device)
+
+        print(f"Input shape: {test_input.shape}")
+        print(f"Expected: [batch={batch_size}, channels={channels}, length={expected_context_length}]")
+
+        # Get expected number of patches
+        expected_patches = expected_context_length // expected_patch_size
+        print(f"\nExpected patches: {expected_patches} (context={expected_context_length} ÷ patch_size={expected_patch_size})")
+
+        # Test forward pass
+        encoder.eval()
+        with torch.no_grad():
+            output = encoder.get_encoder_output(test_input)
+
+        print(f"\nOutput shape: {output.shape}")
+        print(f"Expected: [batch={batch_size}, patches={expected_patches}, d_model={expected_d_model}]")
+
+        # Verify shapes match
+        if output.shape[0] != batch_size:
+            print(f"✗ Batch size mismatch: got {output.shape[0]}, expected {batch_size}")
+            return False
+
+        if output.shape[1] != expected_patches:
+            print(f"✗ Patch count mismatch: got {output.shape[1]}, expected {expected_patches}")
+            print(f"  This suggests patch_size mismatch in TTM configuration!")
+            return False
+
+        if output.shape[2] != expected_d_model:
+            print(f"✗ d_model mismatch: got {output.shape[2]}, expected {expected_d_model}")
+            return False
+
+        print("\n" + "="*80)
+        print("✅ SHAPE VERIFICATION PASSED")
+        print("="*80)
+        return True
+
+    except Exception as e:
+        print(f"\n✗ Shape verification failed with error:")
+        print(f"  {type(e).__name__}: {e}")
+        print("\n" + "="*80)
+        print("❌ SHAPE VERIFICATION FAILED")
+        print("="*80)
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Quality-Aware SSL on BUT-PPG (Stage 2)",
@@ -528,8 +601,8 @@ def main():
                        help='IBM TTM variant to use')
     parser.add_argument('--ibm-context-length', type=int, default=1024,
                        help='Context length for IBM TTM (512, 1024, or 1536)')
-    parser.add_argument('--ibm-patch-size', type=int, default=128,
-                       help='Patch size for IBM TTM (64 or 128)')
+    parser.add_argument('--ibm-patch-size', type=int, default=64,
+                       help='Patch size for IBM TTM (64 or 128, TTM-Enhanced uses 64)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50,
@@ -653,14 +726,32 @@ def main():
     print(f"  d_model: {d_model}")
     print(f"  patch_size: {patch_length}")
 
+    # CRITICAL: Verify TTM shapes before training
+    if not verify_ttm_shapes(
+        encoder=encoder,
+        device=str(device),
+        expected_context_length=context_length,
+        expected_patch_size=patch_length,
+        expected_d_model=d_model
+    ):
+        print("\n" + "="*80)
+        print("❌ FATAL ERROR: TTM shape verification failed!")
+        print("="*80)
+        print("The encoder is producing incorrect output shapes.")
+        print("This will cause dimension mismatch errors during training.")
+        print("\nPossible causes:")
+        print("  1. patch_size configuration mismatch")
+        print("  2. TTM pretrained weights not loaded correctly")
+        print("  3. Architecture detection error")
+        print("\nPlease fix the configuration before training.")
+        print("="*80)
+        import sys
+        sys.exit(1)
+
     # Check if data needs resampling for TTM-Enhanced (1024 samples)
     # BUT-PPG data is 1250 samples (10s @ 125Hz), TTM-Enhanced expects 1024
     print(f"\n⚠️  NOTE: BUT-PPG data is 1250 samples, but TTM-Enhanced expects 1024 samples")
-    print(f"   The dataset will need to handle this mismatch.")
-    print(f"   Consider using resampled data or adding inline resampling.")
-
-    # For now, we'll use the data as-is and let the model adapt
-    # TODO: Add proper resampling or use pre-resampled data directory
+    print(f"   Inline resampling (F.interpolate) will handle this automatically.")
 
     # Create datasets
     print(f"\nLoading BUT-PPG data...")
