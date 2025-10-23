@@ -245,42 +245,68 @@ def _detect_architecture_from_state_dict(
     config = {}
 
     # Detect d_model and patch_size from patcher weights
-    # TTM patcher: [d_model, patch_size] per-channel
+    # TTM patcher: [d_model, patch_size * input_channels]
+    # For 2-channel input: [d_model, 2 * patch_size]
     patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'backbone' in k]
     if patcher_keys:
         patcher_weight = state_dict[patcher_keys[0]]
         config['d_model'] = patcher_weight.shape[0]
-        config['patch_size'] = patcher_weight.shape[1]
+        patch_dim = patcher_weight.shape[1]
+
+        # FIX: Account for input_channels when detecting patch_size
+        # Assume 2 channels (PPG+ECG) for biosignals
+        input_channels = 2
+        config['input_channels'] = input_channels
+        config['patch_size'] = patch_dim // input_channels
 
         if verbose:
-            print(f"  ✓ Detected from patcher: d_model={config['d_model']}, patch_size={config['patch_size']}")
+            print(f"  ✓ Detected from patcher: d_model={config['d_model']}, "
+                  f"patch_dim={patch_dim}, patch_size={config['patch_size']} "
+                  f"(={patch_dim}/{input_channels} channels)")
     else:
         raise ValueError("Could not find patcher weights in checkpoint")
 
-    # Detect context_length from head dimensions (if available)
-    head_keys = [k for k in state_dict.keys() if 'head.base_forecast_block.weight' in k]
-    if head_keys:
-        head_weight = state_dict[head_keys[0]]
-        input_size = head_weight.shape[1]  # [output_size, input_size]
-        # input_size ≈ d_model * num_patches
-        num_patches = round(input_size / config['d_model'])
+    # Detect num_patches from backbone encoder patch mixer
+    # Patch mixer MLP operates on num_patches dimension
+    patch_mixer_keys = [k for k in state_dict.keys()
+                        if 'backbone.encoder' in k and 'patch_mixer.mlp.fc1.weight' in k]
+    if patch_mixer_keys:
+        # Use first encoder layer
+        first_key = sorted(patch_mixer_keys)[0]
+        mlp_weight = state_dict[first_key]
+        # MLP weight shape: [out_features, in_features] where in_features = num_patches
+        num_patches = mlp_weight.shape[1]
+        config['num_patches'] = num_patches
         config['context_length'] = num_patches * config['patch_size']
 
         if verbose:
-            print(f"  ✓ Detected from head: num_patches≈{num_patches}, context_length={config['context_length']}")
+            print(f"  ✓ Detected from patch_mixer: num_patches={num_patches}, "
+                  f"context_length={config['context_length']}")
     else:
-        # Default assumption
-        config['context_length'] = 1024
-        if verbose:
-            print(f"  ⚠️  No head found, assuming context_length=1024")
+        # Fallback: try to detect from head dimensions
+        head_keys = [k for k in state_dict.keys() if 'head.base_forecast_block.weight' in k]
+        if head_keys:
+            head_weight = state_dict[head_keys[0]]
+            input_size = head_weight.shape[1]  # [output_size, input_size]
+            # input_size ≈ d_model * num_patches
+            num_patches = round(input_size / config['d_model'])
+            config['num_patches'] = num_patches
+            config['context_length'] = num_patches * config['patch_size']
 
-    # Detect input_channels (usually 2 for PPG+ECG)
-    config['input_channels'] = 2  # Standard for biosignals
+            if verbose:
+                print(f"  ✓ Detected from head: num_patches≈{num_patches}, "
+                      f"context_length={config['context_length']}")
+        else:
+            # Last resort: assume standard TTM-Enhanced
+            config['context_length'] = 1024
+            config['num_patches'] = config['context_length'] // config['patch_size']
+            if verbose:
+                print(f"  ⚠️  No patch_mixer or head found, assuming context_length=1024")
+                print(f"     num_patches={config['num_patches']}")
 
     # Add other defaults
     config['variant'] = 'ibm-granite/granite-timeseries-ttm-r1'
     config['using_real_ttm'] = True
-    config['num_patches'] = config['context_length'] // config['patch_size']
 
     return config
 
