@@ -441,6 +441,12 @@ def main():
                        default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--seed', type=int, default=42)
 
+    # Architecture overrides (to match SSL checkpoint)
+    parser.add_argument('--context-length', type=int, default=None,
+                       help='Override context length (should match SSL checkpoint)')
+    parser.add_argument('--patch-size', type=int, default=None,
+                       help='Override patch size (should match SSL checkpoint)')
+
     args = parser.parse_args()
 
     # Set output dir

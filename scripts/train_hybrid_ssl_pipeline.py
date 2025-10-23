@@ -279,6 +279,7 @@ def run_stage3_multitask(
         task_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build command
+        # IMPORTANT: Use patch_size=128 to match Stage 2 SSL checkpoint architecture
         cmd = [
             'python3', 'scripts/finetune_butppg_multitask.py',
             '--pretrained', init_checkpoint,
@@ -288,7 +289,9 @@ def run_stage3_multitask(
             '--epochs', str(epochs),
             '--batch-size', str(batch_size),
             '--lr', str(lr),
-            '--device', device
+            '--device', device,
+            '--context-length', '1024',
+            '--patch-size', '128'
         ]
 
         # Run
