@@ -56,7 +56,12 @@ from src.models.decoders import ReconstructionHead1D
 from src.ssl.masking import random_masking
 from src.ssl.objectives import MaskedSignalModeling
 from src.ssl.quality_contrastive import QualityContrastiveLoss, HybridSSLLoss
-from src.data.butppg_quality_dataset import QualityStratifiedBUTPPGDataset, BalancedQualitySampler
+from src.data.butppg_quality_dataset import (
+    QualityStratifiedBUTPPGDataset,
+    BalancedQualitySampler,
+    BinaryQualityBUTPPGDataset,  # CRITICAL FIX: Binary labels matching fine-tuning
+    BinaryQualitySampler,  # Balanced sampling for binary labels
+)
 from src.utils.seed import set_seed
 from src.utils.checkpoint_utils import save_ssl_checkpoint
 
@@ -663,11 +668,11 @@ def main():
     parser.add_argument('--temperature', type=float, default=0.03,
                        help='Temperature for contrastive loss (lower = harder discrimination)')
 
-    # Quality stratification
-    parser.add_argument('--quality-bins', type=int, default=3,
-                       help='Number of quality bins (3 = low/medium/high)')
-    parser.add_argument('--balanced-sampling', action='store_true',
-                       help='Use balanced sampling across quality bins')
+    # Quality stratification (deprecated - now using binary labels)
+    parser.add_argument('--quality-bins', type=int, default=2,
+                       help='Number of quality bins (DEPRECATED: now always uses binary Poor/Good)')
+    parser.add_argument('--balanced-sampling', type=lambda x: (str(x).lower() != 'false'), default=True,
+                       help='Use balanced sampling (default: True - CRITICAL for binary quality labels)')
 
     # Other
     parser.add_argument('--device', type=str, default='cuda',
@@ -794,23 +799,28 @@ def main():
     print(f"   Inline resampling (F.interpolate 1250→512) will handle this automatically.")
 
     # Create datasets
-    print(f"\nLoading BUT-PPG data...")
-    train_dataset = QualityStratifiedBUTPPGDataset(
+    # CRITICAL FIX: Use binary quality labels matching fine-tuning (Poor=0, Good=1)
+    # NOT ternary labels (Low/Med/High) which caused 98.8% to be classified as "Medium"
+    print(f"\n{'='*80}")
+    print(f"CRITICAL FIX: Using BINARY quality labels (Poor/Good)")
+    print(f"{'='*80}")
+    print(f"Previous issue: Ternary labels (Low/Med/High) had 98.8% as 'Medium'")
+    print(f"                → No discrimination to learn → contrastive loss collapsed")
+    print(f"New approach: Binary labels (Poor=78.6%, Good=21.4%)")
+    print(f"              → Clear quality difference → strong discrimination")
+    print(f"{'='*80}\n")
+
+    print(f"\nLoading BUT-PPG data with BINARY quality labels...")
+    train_dataset = BinaryQualityBUTPPGDataset(
         data_dir=args.data_dir,
         split='train',
         modality=['ppg', 'ecg'],  # Only PPG + ECG (2 channels) for IBM pretrained TTM
-        mode='preprocessed',
-        quality_bins=args.quality_bins,
-        precompute_quality=True
     )
 
-    val_dataset = QualityStratifiedBUTPPGDataset(
+    val_dataset = BinaryQualityBUTPPGDataset(
         data_dir=args.data_dir,
         split='val',
         modality=['ppg', 'ecg'],  # Only PPG + ECG (2 channels) for IBM pretrained TTM
-        mode='preprocessed',
-        quality_bins=args.quality_bins,
-        precompute_quality=True
     )
 
     # Limit samples for testing
@@ -819,25 +829,26 @@ def main():
         train_limit = min(args.max_samples, len(train_dataset))
         train_dataset.base_dataset.window_files = train_dataset.base_dataset.window_files[:train_limit]
         train_dataset.base_dataset.valid_indices = train_dataset.base_dataset.valid_indices[:train_limit]
-        # Also update quality scores to match
-        if train_dataset.quality_scores is not None:
-            train_dataset.quality_scores = train_dataset.quality_scores[:train_limit]
-            train_dataset.quality_bin_indices = train_dataset.quality_bin_indices[:train_limit]
+        # Also update quality labels to match (binary labels, not scores/bins)
+        if hasattr(train_dataset, 'quality_labels') and train_dataset.quality_labels is not None:
+            train_dataset.quality_labels = train_dataset.quality_labels[:train_limit]
 
         # Limit val dataset
         val_limit = min(args.max_samples // 4, len(val_dataset))
         val_dataset.base_dataset.window_files = val_dataset.base_dataset.window_files[:val_limit]
         val_dataset.base_dataset.valid_indices = val_dataset.base_dataset.valid_indices[:val_limit]
-        # Also update quality scores to match
-        if val_dataset.quality_scores is not None:
-            val_dataset.quality_scores = val_dataset.quality_scores[:val_limit]
-            val_dataset.quality_bin_indices = val_dataset.quality_bin_indices[:val_limit]
+        # Also update quality labels to match (binary labels, not scores/bins)
+        if hasattr(val_dataset, 'quality_labels') and val_dataset.quality_labels is not None:
+            val_dataset.quality_labels = val_dataset.quality_labels[:val_limit]
 
         print(f"\n⚠️  Limited to {train_limit} train / {val_limit} val samples for testing")
 
     # Create data loaders
-    if args.balanced_sampling and train_dataset.quality_scores is not None:
-        train_sampler = BalancedQualitySampler(train_dataset, samples_per_bin=None)
+    # CRITICAL FIX: Always use balanced sampling for binary quality labels
+    # This ensures each batch has ~50% Poor and ~50% Good samples
+    if args.balanced_sampling:
+        print(f"\n✓ Using balanced sampling (equal Poor/Good representation)")
+        train_sampler = BinaryQualitySampler(train_dataset, samples_per_class=None)
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
@@ -846,6 +857,7 @@ def main():
             pin_memory=True
         )
     else:
+        print(f"\n⚠️  NOT using balanced sampling (batches will be biased toward Poor class)")
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,

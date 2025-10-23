@@ -352,3 +352,263 @@ class BalancedQualitySampler(Sampler):
     def __len__(self):
         """Return total number of samples."""
         return self.total_samples
+
+
+class BinaryQualityBUTPPGDataset(Dataset):
+    """BUT-PPG dataset with BINARY quality labels for SSL.
+
+    CRITICAL FIX: Uses the same binary quality labels (Poor=0, Good=1) as fine-tuning,
+    instead of computing continuous scores and binning into Low/Med/High.
+
+    This ensures SSL learns quality discrimination that transfers to fine-tuning.
+
+    Args:
+        data_dir: Path to preprocessed BUT-PPG data with window_*.npz files
+        split: 'train', 'val', or 'test'
+        modality: Modality specification (default: ['ppg', 'ecg'])
+        **kwargs: Additional arguments for BUTPPGDataset
+
+    Returns:
+        sample: Dictionary containing:
+            - signal: Signal tensor [C, T]
+            - quality_score: Binary quality label [1] (0=Poor, 1=Good)
+            - idx: Sample index [1]
+
+    Example:
+        >>> dataset = BinaryQualityBUTPPGDataset(
+        ...     data_dir='data/processed/butppg/windows_with_labels',
+        ...     split='train',
+        ...     modality=['ppg', 'ecg']
+        ... )
+        >>> sample = dataset[0]
+        >>> print(sample['quality_score'])  # 0 or 1
+    """
+
+    def __init__(
+        self,
+        data_dir: Union[str, Path],
+        split: str = 'train',
+        modality: Union[str, List[str]] = ['ppg', 'ecg'],
+        **kwargs
+    ):
+        super().__init__()
+
+        self.data_dir = Path(data_dir)
+        self.split = split
+
+        # Create base dataset in PREPROCESSED mode with task='quality'
+        self.base_dataset = BUTPPGDataset(
+            data_dir=data_dir,
+            split=split,
+            modality=modality,
+            mode='preprocessed',  # Use preprocessed windows
+            task='quality',  # Load quality labels
+            filter_missing=True,  # Only samples with valid quality labels
+            return_labels=False,  # We'll load labels manually
+            **kwargs
+        )
+
+        # Load binary quality labels directly from window files
+        self.quality_labels = self._load_binary_quality_labels()
+
+        # Print statistics
+        self._print_statistics()
+
+    def _load_binary_quality_labels(self) -> torch.Tensor:
+        """Load binary quality labels (0=Poor, 1=Good) from window files."""
+        print(f"\n  Loading binary quality labels for {self.split}...")
+
+        quality_labels = []
+        for idx in self.base_dataset.valid_indices:
+            window_file = self.base_dataset.window_files[idx]
+            try:
+                data = np.load(window_file)
+                if 'quality' in data:
+                    label = int(data['quality'].item())
+                    quality_labels.append(label)
+                else:
+                    # If no quality label, skip
+                    continue
+            except Exception as e:
+                print(f"    ⚠️  Failed to load quality from {window_file}: {e}")
+                continue
+
+        quality_labels = torch.tensor(quality_labels, dtype=torch.long)
+
+        print(f"  ✓ Loaded {len(quality_labels)} binary quality labels")
+
+        return quality_labels
+
+    def _print_statistics(self):
+        """Print dataset statistics."""
+        print(f"\n  Binary Quality Distribution ({self.split}):")
+
+        # Count Poor (0) and Good (1)
+        num_poor = (self.quality_labels == 0).sum().item()
+        num_good = (self.quality_labels == 1).sum().item()
+        total = len(self.quality_labels)
+
+        pct_poor = 100 * num_poor / total
+        pct_good = 100 * num_good / total
+
+        print(f"    Poor (0): {num_poor} samples ({pct_poor:.1f}%)")
+        print(f"    Good (1): {num_good} samples ({pct_good:.1f}%)")
+        print(f"    Ratio: {num_poor/num_good:.2f}:1 (Poor:Good)")
+
+        # Verify this matches fine-tuning expectations
+        if self.split == 'train':
+            expected_poor_pct = 78.6
+            expected_good_pct = 21.4
+
+            if abs(pct_poor - expected_poor_pct) < 5:
+                print(f"    ✓ Matches fine-tuning distribution (~{expected_poor_pct:.0f}% Poor, ~{expected_good_pct:.0f}% Good)")
+            else:
+                print(f"    ⚠️  Distribution differs from expected ({expected_poor_pct:.0f}% Poor, {expected_good_pct:.0f}% Good)")
+
+    def __len__(self) -> int:
+        """Return number of samples."""
+        return len(self.quality_labels)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get sample with binary quality label.
+
+        Returns:
+            sample: Dictionary containing:
+                - signal: Signal tensor [C, T]
+                - quality_score: Binary quality label (0=Poor, 1=Good)
+                - idx: Sample index
+        """
+        # Get base sample (uses valid_indices internally)
+        base_idx = self.base_dataset.valid_indices[idx]
+        sample = self.base_dataset[idx]
+
+        # Handle paired samples (seg1, seg2) - use first segment
+        if isinstance(sample, tuple):
+            signal = sample[0]
+        else:
+            signal = sample
+
+        # Convert to tensor if needed
+        if not isinstance(signal, torch.Tensor):
+            signal = torch.from_numpy(signal).float()
+
+        # Get binary quality label
+        quality_label = self.quality_labels[idx]
+
+        return {
+            'signal': signal,
+            'quality_score': quality_label,  # Binary label (0 or 1)
+            'idx': torch.tensor(idx, dtype=torch.long)
+        }
+
+    def get_class_indices(self, class_label: int) -> List[int]:
+        """Get indices of samples with specific quality class.
+
+        Args:
+            class_label: 0 for Poor, 1 for Good
+
+        Returns:
+            indices: List of sample indices with this class
+        """
+        mask = self.quality_labels == class_label
+        indices = torch.where(mask)[0].tolist()
+        return indices
+
+
+class BinaryQualitySampler(Sampler):
+    """Sampler that ensures balanced sampling of Poor/Good quality samples.
+
+    Oversamples minority class (Good) to ensure equal representation in each epoch.
+
+    Args:
+        dataset: BinaryQualityBUTPPGDataset instance
+        samples_per_class: Number of samples per class per epoch (default: size of majority class)
+        shuffle: Whether to shuffle samples (default: True)
+
+    Example:
+        >>> dataset = BinaryQualityBUTPPGDataset(...)
+        >>> sampler = BinaryQualitySampler(dataset)
+        >>> loader = DataLoader(dataset, batch_size=128, sampler=sampler)
+    """
+
+    def __init__(
+        self,
+        dataset: BinaryQualityBUTPPGDataset,
+        samples_per_class: Optional[int] = None,
+        shuffle: bool = True
+    ):
+        self.dataset = dataset
+        self.shuffle = shuffle
+
+        # Get indices for each class
+        self.poor_indices = dataset.get_class_indices(0)  # Poor
+        self.good_indices = dataset.get_class_indices(1)  # Good
+
+        # Determine samples per class
+        if samples_per_class is None:
+            # Use size of majority class (Poor)
+            samples_per_class = max(len(self.poor_indices), len(self.good_indices))
+
+        self.samples_per_class = samples_per_class
+        self.total_samples = samples_per_class * 2  # 2 classes
+
+        print(f"\n  Balanced Sampling:")
+        print(f"    Poor indices: {len(self.poor_indices)}")
+        print(f"    Good indices: {len(self.good_indices)}")
+        print(f"    Samples per class: {self.samples_per_class}")
+        print(f"    Total samples per epoch: {self.total_samples}")
+
+    def __iter__(self):
+        """Generate sampling indices with balanced classes."""
+        all_indices = []
+
+        # Sample Poor class
+        if len(self.poor_indices) >= self.samples_per_class:
+            # Subsample
+            if self.shuffle:
+                poor_sampled = np.random.choice(
+                    self.poor_indices, size=self.samples_per_class, replace=False
+                )
+            else:
+                poor_sampled = self.poor_indices[:self.samples_per_class]
+        else:
+            # Oversample (this shouldn't happen for Poor since it's majority)
+            if self.shuffle:
+                poor_sampled = np.random.choice(
+                    self.poor_indices, size=self.samples_per_class, replace=True
+                )
+            else:
+                repeats = (self.samples_per_class // len(self.poor_indices)) + 1
+                poor_sampled = (self.poor_indices * repeats)[:self.samples_per_class]
+
+        # Sample Good class (minority - will oversample)
+        if len(self.good_indices) >= self.samples_per_class:
+            # Subsample (unlikely for Good since it's minority)
+            if self.shuffle:
+                good_sampled = np.random.choice(
+                    self.good_indices, size=self.samples_per_class, replace=False
+                )
+            else:
+                good_sampled = self.good_indices[:self.samples_per_class]
+        else:
+            # Oversample (expected for Good)
+            if self.shuffle:
+                good_sampled = np.random.choice(
+                    self.good_indices, size=self.samples_per_class, replace=True
+                )
+            else:
+                repeats = (self.samples_per_class // len(self.good_indices)) + 1
+                good_sampled = (self.good_indices * repeats)[:self.samples_per_class]
+
+        # Combine and shuffle
+        all_indices.extend(poor_sampled.tolist() if isinstance(poor_sampled, np.ndarray) else poor_sampled)
+        all_indices.extend(good_sampled.tolist() if isinstance(good_sampled, np.ndarray) else good_sampled)
+
+        if self.shuffle:
+            np.random.shuffle(all_indices)
+
+        return iter(all_indices)
+
+    def __len__(self):
+        """Return total number of samples per epoch."""
+        return self.total_samples
