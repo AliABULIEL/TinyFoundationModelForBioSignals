@@ -383,29 +383,38 @@ def load_butppg_data(data_dir: str, batch_size: int) -> Dict[str, DataLoader]:
             signal = data['signal']  # [2, 1024] or [C, T]
             signals_list.append(signal)
 
-            # Load quality label (handle NaN)
+            # Load quality label (handle NaN and 0-d arrays)
             if 'quality' in data:
                 quality = data['quality']
                 # Convert 0-d numpy array to Python scalar
-                quality_val = float(quality.item()) if isinstance(quality, np.ndarray) else float(quality)
+                if isinstance(quality, np.ndarray):
+                    quality_val = float(quality.item()) if quality.size == 1 else float(quality)
+                else:
+                    quality_val = float(quality)
                 quality_labels_list.append(quality_val if not np.isnan(quality_val) else -1)
             else:
                 quality_labels_list.append(-1)
 
-            # Load HR label
+            # Load HR label (handle NaN and 0-d arrays)
             if 'hr' in data:
                 hr = data['hr']
                 # Convert 0-d numpy array to Python scalar
-                hr_val = float(hr.item()) if isinstance(hr, np.ndarray) else float(hr)
+                if isinstance(hr, np.ndarray):
+                    hr_val = float(hr.item()) if hr.size == 1 else float(hr)
+                else:
+                    hr_val = float(hr)
                 hr_labels_list.append(hr_val if not np.isnan(hr_val) else -1)
             else:
                 hr_labels_list.append(-1)
 
-            # Load motion label
+            # Load motion label (handle NaN and 0-d arrays)
             if 'motion' in data:
                 motion = data['motion']
                 # Convert 0-d numpy array to Python scalar
-                motion_val = int(motion.item()) if isinstance(motion, np.ndarray) else int(motion)
+                if isinstance(motion, np.ndarray):
+                    motion_val = int(motion.item()) if motion.size == 1 else int(motion)
+                else:
+                    motion_val = int(motion)
                 motion_labels_list.append(motion_val if not np.isnan(motion_val) else -1)
             else:
                 motion_labels_list.append(-1)
