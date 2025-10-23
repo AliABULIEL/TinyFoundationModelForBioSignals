@@ -1076,8 +1076,8 @@ def main():
     if imbalance_ratio > 3.0:
         # Severe imbalance (>3:1) - use Focal Loss
         print(f"\n⚠️  Severe class imbalance detected ({imbalance_ratio:.1f}:1)")
-        print(f"  Using Focal Loss (alpha=0.75, gamma=2.0) to prevent collapse")
-        criterion = FocalLoss(alpha=0.75, gamma=2.0)
+        print(f"  Using AGGRESSIVE Focal Loss (alpha=0.85, gamma=4.0) to prevent collapse")
+        criterion = FocalLoss(alpha=0.85, gamma=4.0)  # Much more aggressive!
     else:
         # Moderate imbalance - standard weighted cross-entropy
         print(f"\n  Using weighted cross-entropy for {imbalance_ratio:.1f}:1 imbalance")
@@ -1318,8 +1318,8 @@ def main():
         print(f"\nTest Results:")
         print(f"  Loss: {test_metrics['loss']:.4f}")
         print(f"  Accuracy: {test_metrics['accuracy']:.2f}%")
-        print(f"  Class 0 (Poor) Accuracy: {test_metrics['class_0_acc']:.2f}%")
-        print(f"  Class 1 (Good) Accuracy: {test_metrics['class_1_acc']:.2f}%")
+        print(f"  Class 0 (Poor) Accuracy: {test_metrics['class_0_acc']*100:.2f}%")
+        print(f"  Class 1 (Good) Accuracy: {test_metrics['class_1_acc']*100:.2f}%")
         
         # Save test metrics
         with open(output_dir / 'test_metrics.json', 'w') as f:
