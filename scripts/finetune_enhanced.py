@@ -790,30 +790,22 @@ def main():
         encoder_state = checkpoint
 
     # Detect architecture from weights
-    # FIXED: Correctly detect patch_size from decoder.adapter.weight [patch_length, d_model]
-    # NOT from patcher.weight [d_model, input_channels]!
+    # TTM patcher: [d_model, patch_size] per-channel
+    # This is the CORRECT way to detect patch_size!
 
-    # Get d_model from patcher
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k and 'encoder' in k]
     if not patcher_keys:
         raise ValueError("Could not find patcher weights in checkpoint")
 
     patcher_weight = encoder_state[patcher_keys[0]]
-    d_model = patcher_weight.shape[0]
-
-    # Get patch_size from decoder adapter (CORRECT location!)
-    adapter_keys = [k for k in encoder_state.keys() if 'decoder.adapter.weight' in k]
-    if not adapter_keys:
-        raise ValueError("Could not find decoder adapter weights in checkpoint")
-
-    adapter_weight = encoder_state[adapter_keys[0]]
-    patch_size = adapter_weight.shape[0]  # [patch_length, d_model]
+    d_model = patcher_weight.shape[0]      # [d_model, patch_size]
+    patch_size = patcher_weight.shape[1]   # This IS the patch_size!
 
     context_length = 1024  # VitalDB standard
 
     print(f"Detected architecture:")
     print(f"  d_model: {d_model}")
-    print(f"  patch_size: {patch_size} (from decoder.adapter.weight)")
+    print(f"  patch_size: {patch_size} (from patcher.weight)")
     print(f"  context_length: {context_length}")
 
     # CRITICAL FIX: Don't try to load IBM pretrained during fine-tuning!
@@ -832,7 +824,8 @@ def main():
         context_length=context_length,
         patch_size=patch_size,  # Use EXACT patch_size from SSL checkpoint
         d_model=d_model,
-        use_real_ttm=False  # Create fresh TTM without IBM pretrained (matches SSL checkpoint architecture)
+        use_real_ttm=True,  # Use real TTM (not fallback CNN)
+        force_from_scratch=True  # But don't load IBM pretrained weights (matches SSL checkpoint)
     )
 
     # Move model to device
@@ -852,8 +845,18 @@ def main():
             f"  SSL checkpoint patch_size: {patch_size}"
         )
 
-    # Load SSL weights
-    encoder.load_state_dict(encoder_state, strict=False)
+    # Load SSL weights - ONLY load encoder.backbone (skip decoder)
+    # Filter to only load matching encoder backbone weights
+    encoder_backbone_weights = {
+        k: v for k, v in encoder_state.items()
+        if k.startswith('encoder.backbone') or k.startswith('backbone')
+    }
+
+    print(f"Loading encoder backbone weights ({len(encoder_backbone_weights)} layers)...")
+    missing, unexpected = encoder.load_state_dict(encoder_backbone_weights, strict=False)
+    print(f"  Missing: {len(missing)} (decoder/head, expected)")
+    print(f"  Unexpected: {len(unexpected)}")
+
     encoder.eval()
     for param in encoder.parameters():
         param.requires_grad = False

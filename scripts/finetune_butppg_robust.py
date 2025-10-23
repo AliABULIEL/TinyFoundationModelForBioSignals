@@ -584,24 +584,15 @@ def main():
     else:
         encoder_state = checkpoint
 
-    # Detect architecture from weights (FIXED: correct patch_size detection)
-    # Get d_model from patcher
+    # Detect architecture from weights
+    # TTM patcher: [d_model, patch_size] per-channel - CORRECT detection method
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k and 'encoder' in k]
     if not patcher_keys:
         raise ValueError("Could not find patcher weights in checkpoint")
 
     patcher_weight = encoder_state[patcher_keys[0]]
-    d_model = patcher_weight.shape[0]
-
-    # Get patch_size from decoder adapter (CORRECT location!)
-    adapter_keys = [k for k in encoder_state.keys() if 'decoder.adapter.weight' in k]
-    if adapter_keys:
-        adapter_weight = encoder_state[adapter_keys[0]]
-        patch_size = adapter_weight.shape[0]  # [patch_length, d_model]
-    else:
-        # Fallback: try to infer from patcher (may be incorrect for multi-channel)
-        patch_size = patcher_weight.shape[1] // 2  # Divide by input_channels
-        print(f"  ⚠️  No decoder.adapter found, using fallback patch_size={patch_size}")
+    d_model = patcher_weight.shape[0]      # [d_model, patch_size]
+    patch_size = patcher_weight.shape[1]   # This IS the patch_size!
 
     context_length = 1024  # VitalDB standard
 
@@ -610,7 +601,7 @@ def main():
     print(f"  patch_size: {patch_size}")
     print(f"  context_length: {context_length}")
 
-    # Create SSL encoder (FIXED: use_real_ttm=False to match checkpoint architecture)
+    # Create SSL encoder (FIXED: use real TTM but skip IBM pretrained)
     print(f"\nCreating SSL encoder...")
     encoder = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
@@ -619,11 +610,20 @@ def main():
         context_length=context_length,
         patch_size=patch_size,  # Use detected patch_size
         d_model=d_model,        # Use detected d_model
-        use_real_ttm=False  # Create fresh TTM without IBM pretrained (matches SSL checkpoint)
+        use_real_ttm=True,  # Use real TTM (not fallback CNN)
+        force_from_scratch=True  # But don't load IBM pretrained (matches SSL checkpoint)
     )
 
-    # Load SSL weights
-    encoder.load_state_dict(encoder_state, strict=False)
+    # Load SSL weights - ONLY load encoder.backbone (skip decoder)
+    encoder_backbone_weights = {
+        k: v for k, v in encoder_state.items()
+        if k.startswith('encoder.backbone') or k.startswith('backbone')
+    }
+
+    print(f"Loading encoder backbone weights ({len(encoder_backbone_weights)} layers)...")
+    missing, unexpected = encoder.load_state_dict(encoder_backbone_weights, strict=False)
+    print(f"  Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+
     encoder = encoder.to(args.device)
     encoder.eval()  # Freeze encoder initially
     for param in encoder.parameters():

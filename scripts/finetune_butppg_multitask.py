@@ -300,7 +300,7 @@ def create_model(task: str, pretrained_path: str, device: str,
     print(f"  Freeze encoder: True")
 
     # Create model with EXACT SSL checkpoint architecture
-    # use_pretrained=False to avoid IBM pretrained loading issues
+    # force_from_scratch=True to avoid IBM pretrained loading issues
     model = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
         task=task_type,
@@ -309,7 +309,8 @@ def create_model(task: str, pretrained_path: str, device: str,
         context_length=context_length,
         patch_size=actual_patch_size,  # Use EXACT patch_size from SSL checkpoint
         d_model=d_model,
-        use_pretrained=False,  # CRITICAL: Don't load IBM pretrained!
+        use_real_ttm=True,  # Use real TTM (not fallback CNN)
+        force_from_scratch=True,  # CRITICAL: Don't load IBM pretrained!
         freeze_encoder=True
     )
 
