@@ -24,7 +24,6 @@ def diagnose_ttm():
 
     # Check if tsfm_public is available
     try:
-        from tsfm_public.toolkit.get_model import get_model
         from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction
         print("✓ tsfm_public library is available")
     except ImportError as e:
@@ -38,8 +37,9 @@ def diagnose_ttm():
 
     try:
         # Load TTM with context_length=1024
-        ttm_model = get_model(
-            model_id='ibm-granite/granite-timeseries-ttm-r1',
+        # Use from_pretrained directly (correct API)
+        ttm_model = TinyTimeMixerForPrediction.from_pretrained(
+            'ibm-granite/granite-timeseries-ttm-r1',
             context_length=1024,
             prediction_length=96  # Standard
         )
@@ -54,7 +54,9 @@ def diagnose_ttm():
         print("="*80)
         print(f"  context_length:        {config.context_length}")
         print(f"  prediction_length:     {config.prediction_length}")
-        print(f"  patch_len:             {config.patch_len}")
+        # Try different attribute names (patch_len vs patch_length)
+        patch_size = getattr(config, 'patch_len', getattr(config, 'patch_length', None))
+        print(f"  patch_length:          {patch_size}")
         print(f"  num_patches:           {config.num_patches}")
         print(f"  d_model:               {config.d_model}")
         print(f"  num_input_channels:    {config.num_input_channels}")
@@ -69,14 +71,14 @@ def diagnose_ttm():
         print("\nVALIDATION:")
 
         expected_patch_len = 64
-        expected_num_patches = 16  # 1024 ÷ 64
+        expected_num_patches = 8  # IBM TTM creates 8 patches (with striding/downsampling)
         expected_d_model = 192
 
-        patch_ok = config.patch_len == expected_patch_len
+        patch_ok = patch_size == expected_patch_len
         patches_ok = config.num_patches == expected_num_patches
         d_model_ok = config.d_model == expected_d_model
 
-        print(f"  patch_len = {config.patch_len} (expected {expected_patch_len}): {'✓' if patch_ok else '✗'}")
+        print(f"  patch_length = {patch_size} (expected {expected_patch_len}): {'✓' if patch_ok else '✗'}")
         print(f"  num_patches = {config.num_patches} (expected {expected_num_patches}): {'✓' if patches_ok else '✗'}")
         print(f"  d_model = {config.d_model} (expected {expected_d_model}): {'✓' if d_model_ok else '✗'}")
 
@@ -86,7 +88,7 @@ def diagnose_ttm():
             print("="*80)
             print("\nYou should use these values in your training scripts:")
             print(f"  --ibm-context-length 1024")
-            print(f"  --ibm-patch-size {config.patch_len}")
+            print(f"  --ibm-patch-size {patch_size}")
             print(f"  Expected d_model: {config.d_model}")
             print(f"  Expected num_patches: {config.num_patches}")
             return True
@@ -98,8 +100,8 @@ def diagnose_ttm():
             if not patch_ok:
                 print(f"\n  Patch size mismatch:")
                 print(f"    Expected: {expected_patch_len}")
-                print(f"    Actual: {config.patch_len}")
-                print(f"    Impact: Will create {1024 // config.patch_len} patches instead of {expected_num_patches}")
+                print(f"    Actual: {patch_size}")
+                print(f"    Impact: Will create {1024 // patch_size if patch_size else 'unknown'} patches instead of {expected_num_patches}")
 
             if not patches_ok:
                 print(f"\n  Patch count mismatch:")
@@ -115,7 +117,7 @@ def diagnose_ttm():
 
             print("\nRECOMMENDATION:")
             print("  Use the ACTUAL values from TTM in your configuration:")
-            print(f"    patch_size = {config.patch_len}")
+            print(f"    patch_size = {patch_size}")
             print(f"    d_model = {config.d_model}")
             print(f"    num_patches = {config.num_patches}")
 

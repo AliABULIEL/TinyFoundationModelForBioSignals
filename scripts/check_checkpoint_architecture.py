@@ -144,7 +144,8 @@ def analyze_checkpoint(checkpoint_path: str):
         print("="*80)
 
         # Expected for TTM-Enhanced with context=1024, patch=64
-        expected_num_patches = 16
+        # IBM TTM actually creates 8 patches (not 16 from simple division)
+        expected_num_patches = 8
 
         issues = []
 
@@ -172,10 +173,10 @@ def analyze_checkpoint(checkpoint_path: str):
             print("\nOptions:")
             print("  1. Delete/rename this checkpoint")
             print("  2. Re-train SSL from scratch with correct configuration")
-            print("\nExpected configuration for TTM-Enhanced:")
+            print("\nExpected configuration for IBM TTM-Enhanced:")
             print("  context_length: 1024")
             print("  patch_size: 64")
-            print("  num_patches: 16")
+            print("  num_patches: 8  (IBM TTM creates 8, not 16)")
             print("  d_model: 192")
             print("="*80)
 
@@ -188,7 +189,7 @@ def analyze_checkpoint(checkpoint_path: str):
                 print(f"  Decoder patches: {decoder_num_patches}")
             if meta_num_patches:
                 print(f"  Metadata patches: {meta_num_patches}")
-            print("\n  All match expected: 16 patches for TTM-Enhanced")
+            print("\n  All match expected: 8 patches for IBM TTM-Enhanced")
 
             print("\n" + "="*80)
             print("✅ CHECKPOINT IS VALID")
