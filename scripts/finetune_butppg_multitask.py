@@ -213,14 +213,17 @@ class BUTPPGMultiTaskDataset(Dataset):
 
 def create_model(task: str, pretrained_path: str, device: str,
                  patch_size_override: int = None, context_length_override: int = None) -> nn.Module:
-    """Create model for the specified task.
+    """Create model for the specified task using the SAME process as SSL training.
+
+    CRITICAL: SSL checkpoint was trained with IBM pretrained that auto-adapted.
+    We must replicate this EXACT process to load weights correctly.
 
     Args:
         task: Task name
         pretrained_path: Path to pretrained checkpoint
         device: Device to load model on
-        patch_size_override: Force specific patch_size (overrides auto-detection)
-        context_length_override: Force specific context_length (overrides auto-detection)
+        patch_size_override: IGNORED - detected from checkpoint
+        context_length_override: IGNORED - detected from checkpoint
 
     Returns:
         Model ready for fine-tuning
@@ -237,88 +240,175 @@ def create_model(task: str, pretrained_path: str, device: str,
         output_type = 'regression'
         print(f"\n✓ Creating {task_type} model for '{task}' (1 output)")
 
-    # Load checkpoint to detect architecture
+    # =========================================================================
+    # STEP 1: Detect actual architecture from SSL checkpoint weights
+    # =========================================================================
     checkpoint = torch.load(pretrained_path, map_location='cpu')
 
-    # Detect patch size from checkpoint
     if 'encoder_state_dict' in checkpoint:
-        # SSL checkpoint
         state_dict = checkpoint['encoder_state_dict']
+        print("  ✓ Found SSL checkpoint (encoder_state_dict)")
     elif 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
+        print("  ✓ Found model checkpoint (model_state_dict)")
     else:
         state_dict = checkpoint
+        print("  ✓ Using raw checkpoint as state_dict")
 
-    # Detect d_model and patch_size from patcher weight
-    patcher_key = None
-    for key in state_dict.keys():
-        if 'patcher.weight' in key:
-            patcher_key = key
-            break
+    # Detect d_model and actual patch_size from patcher weight
+    patcher_keys = [k for k in state_dict.keys() if 'patcher.weight' in k and 'encoder' in k]
+    if not patcher_keys:
+        raise ValueError("Cannot find patcher.weight in checkpoint - cannot detect architecture")
 
-    if patcher_key:
-        patcher_weight = state_dict[patcher_key]
-        d_model, patch_size_detected = patcher_weight.shape
-        print(f"  ✓ Detected from checkpoint: d_model={d_model}, patch_size={patch_size_detected}")
-    else:
-        # Defaults
-        d_model = 192
-        patch_size_detected = 128
-        print(f"  ⚠️  Could not detect from checkpoint, using defaults: d_model={d_model}, patch_size={patch_size_detected}")
+    patcher_weight = state_dict[patcher_keys[0]]
+    d_model = patcher_weight.shape[0]  # Output dimension
+    actual_patch_size = patcher_weight.shape[1]  # Input dimension per channel
 
-    # Use overrides if provided (CRITICAL FIX!)
-    if patch_size_override is not None:
-        patch_size = patch_size_override
-        print(f"  ⚠️  OVERRIDE: Using patch_size={patch_size} instead of detected {patch_size_detected}")
-    else:
-        patch_size = patch_size_detected
+    print(f"  ✓ Detected from checkpoint weights:")
+    print(f"    Key: {patcher_keys[0]}")
+    print(f"    Shape: {patcher_weight.shape}")
+    print(f"    → d_model: {d_model}")
+    print(f"    → actual_patch_size: {actual_patch_size}")
 
-    if context_length_override is not None:
-        context_length = context_length_override
-        print(f"  ⚠️  OVERRIDE: Using context_length={context_length}")
+    # Get context_length from checkpoint config or use default
+    if 'config' in checkpoint:
+        context_length = checkpoint['config'].get('context_length', 1024)
+        print(f"    → context_length: {context_length} (from checkpoint config)")
     else:
         context_length = 1024
+        print(f"    → context_length: {context_length} (default)")
 
-    # Create model
+    # Calculate number of patches
+    num_patches = context_length // actual_patch_size
+    print(f"    → num_patches: {num_patches} ({context_length}/{actual_patch_size})")
+
+    # =========================================================================
+    # STEP 2: Detect if SSL used IBM pretrained (same logic as finetune_butppg.py:813-832)
+    # =========================================================================
+    ssl_used_ibm_pretrained = (context_length == 1024 and d_model == 192)
+
+    if ssl_used_ibm_pretrained:
+        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced")
+        print(f"     Detected: context={context_length}, d_model={d_model}, actual_patch={actual_patch_size}")
+        print(f"     Will replicate SSL training process:")
+        print(f"       1. Load IBM pretrained with patch=128 config")
+        print(f"       2. Trigger auto-adaptation to actual patch={actual_patch_size}")
+        print(f"       3. Load SSL checkpoint weights")
+        model_patch_size = 128  # Load IBM pretrained, auto-adapts to actual_patch_size
+    else:
+        print(f"\n  ⚠️  SSL checkpoint used custom architecture")
+        print(f"     Will create fresh TTM with patch={actual_patch_size}")
+        model_patch_size = actual_patch_size
+
+    # =========================================================================
+    # STEP 3: Create model (same as SSL training used)
+    # =========================================================================
+    print(f"\nCreating TTMAdapter:")
+    print(f"  Task: {task_type}")
+    print(f"  Input channels: 2 (PPG + ECG)")
+    print(f"  Context length: {context_length}")
+    print(f"  Patch size (config): {model_patch_size}")
+    print(f"  Actual patch size (SSL): {actual_patch_size}")
+    print(f"  d_model: {d_model}")
+    if ssl_used_ibm_pretrained:
+        print(f"  Note: Will auto-adapt from {model_patch_size} → {actual_patch_size}")
+
     model = TTMAdapter(
+        variant='ibm-granite/granite-timeseries-ttm-r1',
+        task=task_type,
+        num_classes=num_classes if task_type == 'classification' else None,
         input_channels=2,
         context_length=context_length,
-        prediction_length=96,
-        output_type=output_type,
-        num_classes=num_classes,
-        use_pretrained=False,  # Will load manually
+        patch_size=model_patch_size,
         d_model=d_model,
-        patch_size=patch_size
+        freeze_encoder=True  # Freeze for fine-tuning
     )
 
-    # Load pretrained weights
-    print(f"  ✓ Loading pretrained weights from: {pretrained_path}")
-
-    if 'encoder_state_dict' in checkpoint:
-        # SSL checkpoint - load encoder only (skip decoder/head)
-        encoder_state = checkpoint['encoder_state_dict']
-
-        # Filter: only keep backbone encoder keys, skip decoder and head
-        model_state = {}
-        for key, value in encoder_state.items():
-            # Only load backbone encoder, skip decoder and head
-            if 'decoder' in key or 'head' in key:
-                continue
-
-            # Keys are like: encoder.backbone.encoder.patcher.weight
-            # We want them as: encoder.backbone.encoder.patcher.weight (same!)
-            model_state[key] = value
-
-        # Load with strict=False to allow missing head weights
-        missing, unexpected = model.load_state_dict(model_state, strict=False)
-        print(f"    ✓ Loaded encoder weights ({len(model_state)} keys)")
-        print(f"    ℹ️  Missing keys (expected): {len(missing)} (new task head)")
-    else:
-        # Full model checkpoint
-        model.load_state_dict(state_dict)
-        print(f"    ✓ Loaded full model weights")
-
+    # Move to device BEFORE auto-adaptation
     model = model.to(device)
+
+    # =========================================================================
+    # STEP 4: Trigger auto-adaptation (critical for IBM pretrained)
+    # =========================================================================
+    if ssl_used_ibm_pretrained:
+        print(f"\n🔧 Triggering TTM auto-adaptation...")
+        print(f"  Current model patch_size: {model.patch_size}")
+
+        with torch.no_grad():
+            dummy_input = torch.randn(1, 2, context_length).to(device)
+            try:
+                _ = model.get_encoder_output(dummy_input)
+                print(f"  ✓ Auto-adaptation complete")
+                print(f"  Updated model patch_size: {model.patch_size}")
+                del dummy_input, _
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"  ⚠️  Auto-adaptation failed: {e}")
+
+        # Verify patch_size matches SSL checkpoint
+        if model.patch_size != actual_patch_size:
+            raise RuntimeError(
+                f"Auto-adaptation failed!\n"
+                f"  Model patch_size: {model.patch_size}\n"
+                f"  SSL checkpoint patch_size: {actual_patch_size}\n"
+                f"  These must match to load weights correctly."
+            )
+        else:
+            print(f"  ✅ Patch sizes match - ready to load SSL weights")
+
+    # =========================================================================
+    # STEP 5: Load SSL checkpoint weights (backbone only)
+    # =========================================================================
+    print("\n📦 Loading backbone encoder weights...")
+
+    backbone_state_dict = {}
+    skipped_decoder = 0
+    skipped_head = 0
+
+    for key, value in state_dict.items():
+        # Skip SSL decoder (different from fine-tuning decoder)
+        if 'encoder.decoder' in key or 'decoder_state' in key:
+            skipped_decoder += 1
+            continue
+        # Skip SSL head (task-specific)
+        elif 'encoder.head' in key or 'head.' in key:
+            skipped_head += 1
+            continue
+        # Include encoder.backbone weights
+        elif 'encoder.backbone' in key:
+            # Add with original key
+            backbone_state_dict[key] = value
+            # Also add with stripped prefix (model has both)
+            stripped_key = key.replace('encoder.', '', 1)
+            backbone_state_dict[stripped_key] = value
+        # Include plain backbone.* keys
+        elif key.startswith('backbone.') and 'decoder' not in key:
+            backbone_state_dict[key] = value
+
+    print(f"  Prepared {len(backbone_state_dict)} weight entries")
+    print(f"  Skipped SSL decoder: {skipped_decoder} keys")
+    print(f"  Skipped SSL head: {skipped_head} keys")
+
+    # Load backbone weights
+    missing_keys, unexpected_keys = model.load_state_dict(backbone_state_dict, strict=False)
+
+    # Verify loading success
+    backbone_missing = [k for k in missing_keys if 'backbone' in k and 'encoder' in k]
+
+    if len(backbone_missing) == 0:
+        print(f"\n✅ SSL encoder weights loaded successfully!")
+        print(f"  ✓ All backbone keys matched")
+    else:
+        print(f"\n⚠️ WARNING: SSL encoder loading FAILED:")
+        print(f"  Missing backbone keys: {len(backbone_missing)}")
+        print(f"  Model will train from scratch!")
+        if len(backbone_missing) < 10:
+            for k in backbone_missing[:5]:
+                print(f"    - {k}")
+
+    print(f"✓ Initialized new {task_type} head")
+
     return model
 
 
