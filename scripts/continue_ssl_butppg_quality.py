@@ -639,12 +639,21 @@ def main():
     print(f"  d_model: {d_model}")
     print(f"  patch_size: {patch_length}")
 
+    # Check if data needs resampling for TTM-Enhanced (1024 samples)
+    # BUT-PPG data is 1250 samples (10s @ 125Hz), TTM-Enhanced expects 1024
+    print(f"\n⚠️  NOTE: BUT-PPG data is 1250 samples, but TTM-Enhanced expects 1024 samples")
+    print(f"   The dataset will need to handle this mismatch.")
+    print(f"   Consider using resampled data or adding inline resampling.")
+
+    # For now, we'll use the data as-is and let the model adapt
+    # TODO: Add proper resampling or use pre-resampled data directory
+
     # Create datasets
     print(f"\nLoading BUT-PPG data...")
     train_dataset = QualityStratifiedBUTPPGDataset(
         data_dir=args.data_dir,
         split='train',
-        modality='all',  # PPG + ECG + ACC
+        modality=['ppg', 'ecg'],  # Only PPG + ECG (2 channels) for IBM pretrained TTM
         mode='preprocessed',
         quality_bins=args.quality_bins,
         precompute_quality=True
@@ -653,7 +662,7 @@ def main():
     val_dataset = QualityStratifiedBUTPPGDataset(
         data_dir=args.data_dir,
         split='val',
-        modality='all',
+        modality=['ppg', 'ecg'],  # Only PPG + ECG (2 channels) for IBM pretrained TTM
         mode='preprocessed',
         quality_bins=args.quality_bins,
         precompute_quality=True
