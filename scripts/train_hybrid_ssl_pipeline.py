@@ -532,11 +532,21 @@ def main():
     parser.add_argument('--ibm-patch-size', type=int, default=128,
                        help='Patch size for IBM TTM (64 or 128)')
 
-    # Pipeline control
+    # Pipeline control (skip stages)
     parser.add_argument('--skip-stage2', action='store_true',
-                       help='Skip Stage 2 (direct fine-tuning from VitalDB)')
+                       help='Skip Stage 2 quality-aware SSL (use VitalDB checkpoint directly for Stage 3)')
+    parser.add_argument('--skip-stage3', action='store_true',
+                       help='Skip Stage 3 fine-tuning (evaluate Stage 2 checkpoint directly)')
     parser.add_argument('--evaluate-only', action='store_true',
-                       help='Only evaluate existing checkpoint (requires --stage3-checkpoint)')
+                       help='Skip all training, only evaluate existing checkpoint (requires --stage3-checkpoint)')
+    parser.add_argument('--skip-evaluation', action='store_true',
+                       help='Skip final evaluation (useful for just running training)')
+
+    # Checkpoint resuming (alternative to skip flags)
+    parser.add_argument('--resume-from-stage2', type=str,
+                       help='Resume from existing Stage 2 checkpoint and run Stage 3 + eval')
+    parser.add_argument('--resume-from-stage3', type=str,
+                       help='Resume from existing Stage 3 checkpoint and run evaluation only')
 
     # Training parameters
     parser.add_argument('--stage2-epochs', type=int, default=50,
@@ -578,10 +588,30 @@ def main():
     print(f"Output: {args.output_dir}")
     print("="*80)
 
-    # Evaluate-only mode
+    # ========== PIPELINE CONTROL LOGIC ==========
+
+    # Handle convenience flags (--resume-from-X)
+    if args.resume_from_stage3:
+        args.stage3_checkpoint = args.resume_from_stage3
+        args.evaluate_only = True
+    elif args.resume_from_stage2:
+        args.stage2_checkpoint = args.resume_from_stage2
+        args.skip_stage2 = True
+
+    # Validate flag combinations
+    if args.evaluate_only and args.skip_stage3:
+        raise ValueError("Cannot use --evaluate-only with --skip-stage3 (conflicting modes)")
+
+    # Evaluate-only mode (skip all training)
     if args.evaluate_only:
         if not args.stage3_checkpoint:
             raise ValueError("--stage3-checkpoint required for --evaluate-only mode")
+
+        print("\n" + "="*80)
+        print("EVALUATION ONLY MODE")
+        print("="*80)
+        print(f"Checkpoint: {args.stage3_checkpoint}")
+        print("="*80)
 
         results = evaluate_quality_classification(
             args.stage3_checkpoint, args.data_dir, args.device
@@ -671,19 +701,51 @@ def main():
             )
 
     # Stage 3: Supervised fine-tuning
-    stage3_checkpoint = run_stage3_supervised_finetune(
-        init_checkpoint=stage2_checkpoint,
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        epochs=args.stage3_epochs,
-        batch_size=args.stage3_batch_size,
-        lr=args.stage3_lr,
-        max_samples=args.max_samples
-    )
+    if args.skip_stage3:
+        print("\n[Stage 3/3] Supervised Fine-tuning")
+        print("  Status: ⊘ Skipped (will evaluate Stage 2 checkpoint directly)")
+        stage3_checkpoint = stage2_checkpoint
+        evaluation_checkpoint = stage2_checkpoint
+        evaluation_stage = "Stage 2"
+    elif args.stage3_checkpoint:
+        print("\n[Stage 3/3] Supervised Fine-tuning")
+        print("  Status: ✓ Using existing checkpoint")
+        print(f"  Checkpoint: {args.stage3_checkpoint}")
+        stage3_checkpoint = args.stage3_checkpoint
+        evaluation_checkpoint = args.stage3_checkpoint
+        evaluation_stage = "Stage 3"
+    else:
+        stage3_checkpoint = run_stage3_supervised_finetune(
+            init_checkpoint=stage2_checkpoint,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            epochs=args.stage3_epochs,
+            batch_size=args.stage3_batch_size,
+            lr=args.stage3_lr,
+            max_samples=args.max_samples
+        )
+        evaluation_checkpoint = stage3_checkpoint
+        evaluation_stage = "Stage 3"
 
     # Evaluation
+    if args.skip_evaluation:
+        print("\n" + "="*80)
+        print("EVALUATION SKIPPED")
+        print("="*80)
+        print(f"Trained model saved to: {stage3_checkpoint}")
+        print("\nTo evaluate later, run:")
+        print(f"  python {__file__} \\")
+        print(f"    --evaluate-only \\")
+        print(f"    --stage3-checkpoint {stage3_checkpoint} \\")
+        print(f"    --data-dir {args.data_dir}")
+        return
+
+    print("\n" + "="*80)
+    print(f"[Evaluation] Testing {evaluation_stage} Checkpoint")
+    print("="*80)
+
     results = evaluate_quality_classification(
-        stage3_checkpoint, args.data_dir, args.device
+        evaluation_checkpoint, args.data_dir, args.device
     )
 
     # Final summary

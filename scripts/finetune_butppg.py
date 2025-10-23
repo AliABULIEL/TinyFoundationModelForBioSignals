@@ -1024,8 +1024,64 @@ def main():
     print(f"  Class 1 (Good): {class_counts[1]} samples, weight: {class_weights[1]:.3f}")
     print(f"  ✓ Using weighted loss to handle {class_counts[0]/class_counts[1]:.1f}:1 imbalance")
 
-    # Setup training with class weights
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Focal Loss for severe class imbalance (addresses collapse to majority class)
+    class FocalLoss(nn.Module):
+        """Focal Loss - focuses on hard examples and minority class.
+
+        Args:
+            alpha: Weight for minority class (0-1). Higher = more focus on minority.
+            gamma: Focusing parameter (0-5). Higher = more focus on hard examples.
+                   gamma=0 → standard cross-entropy
+                   gamma=2 → recommended for most cases
+                   gamma=5 → aggressive focusing
+
+        References:
+            Lin et al. "Focal Loss for Dense Object Detection" (2017)
+        """
+        def __init__(self, alpha=0.75, gamma=2.0, reduction='mean'):
+            super().__init__()
+            self.alpha = alpha
+            self.gamma = gamma
+            self.reduction = reduction
+
+        def forward(self, inputs, targets):
+            # Standard cross-entropy
+            ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+
+            # Probability of correct class
+            pt = torch.exp(-ce_loss)
+
+            # Focal weight: (1 - pt)^gamma
+            # When pt is high (easy example) → weight ≈ 0 (ignore)
+            # When pt is low (hard example) → weight ≈ 1 (focus)
+            focal_weight = (1 - pt) ** self.gamma
+
+            # Alpha weighting for class balance
+            # Apply higher weight to minority class
+            alpha_weight = self.alpha * (targets == 1).float() + (1 - self.alpha) * (targets == 0).float()
+
+            # Combine
+            focal_loss = alpha_weight * focal_weight * ce_loss
+
+            if self.reduction == 'mean':
+                return focal_loss.mean()
+            elif self.reduction == 'sum':
+                return focal_loss.sum()
+            else:
+                return focal_loss
+
+    # Choose loss function based on severity of imbalance
+    imbalance_ratio = class_counts[0] / class_counts[1]
+
+    if imbalance_ratio > 3.0:
+        # Severe imbalance (>3:1) - use Focal Loss
+        print(f"\n⚠️  Severe class imbalance detected ({imbalance_ratio:.1f}:1)")
+        print(f"  Using Focal Loss (alpha=0.75, gamma=2.0) to prevent collapse")
+        criterion = FocalLoss(alpha=0.75, gamma=2.0)
+    else:
+        # Moderate imbalance - standard weighted cross-entropy
+        print(f"\n  Using weighted cross-entropy for {imbalance_ratio:.1f}:1 imbalance")
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
     
@@ -1083,6 +1139,11 @@ def main():
         print(f"\nEpoch {epoch+1}/{args.head_only_epochs} ({epoch_time:.1f}s)")
         print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
         print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+
+        # Warn if class collapse detected
+        if val_metrics['class_1_acc'] < 0.10:  # Class 1 (Good) < 10%
+            print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
+            print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
         
         # Update history
         history['train_loss'].append(train_metrics['loss'])
@@ -1145,6 +1206,11 @@ def main():
             print(f"\nEpoch {args.head_only_epochs + epoch + 1}/{args.epochs} ({epoch_time:.1f}s)")
             print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
             print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+
+            # Warn if class collapse detected
+            if val_metrics['class_1_acc'] < 0.10:
+                print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
+                print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
             
             # Update history
             history['train_loss'].append(train_metrics['loss'])
@@ -1209,6 +1275,11 @@ def main():
             print(f"\nEpoch {args.epochs + epoch + 1}/{args.epochs + args.full_finetune_epochs} ({epoch_time:.1f}s)")
             print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
             print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+
+            # Warn if class collapse detected
+            if val_metrics['class_1_acc'] < 0.10:
+                print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
+                print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
             
             # Update history
             history['train_loss'].append(train_metrics['loss'])
