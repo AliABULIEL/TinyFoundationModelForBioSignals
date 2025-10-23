@@ -406,6 +406,144 @@ def create_dataloaders(
     return train_loader, val_loader, test_loader
 
 
+def mixup_data(x, y, alpha=0.2):
+    """Mixup augmentation: interpolate samples and labels.
+
+    Args:
+        x: Input signals [B, C, T]
+        y: Labels [B]
+        alpha: Beta distribution parameter (0.2 recommended)
+
+    Returns:
+        mixed_x: Mixed signals [B, C, T]
+        y_a, y_b: Original labels for both samples
+        lam: Mixing coefficient
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+
+    return mixed_x, y_a, y_b, lam
+
+
+def cutmix_data(x, y, alpha=1.0):
+    """CutMix augmentation: replace time segments between samples.
+
+    Args:
+        x: Input signals [B, C, T]
+        y: Labels [B]
+        alpha: Beta distribution parameter (1.0 recommended)
+
+    Returns:
+        mixed_x: Mixed signals [B, C, T]
+        y_a, y_b: Original labels for both samples
+        lam: Mixing coefficient (proportion of original sample)
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+
+    # Get time dimension
+    time_length = x.size(2)
+
+    # Calculate cut length
+    cut_length = int(time_length * (1 - lam))
+
+    # Random start position
+    start_pos = np.random.randint(0, time_length - cut_length + 1)
+
+    # Create mixed sample
+    mixed_x = x.clone()
+    mixed_x[:, :, start_pos:start_pos + cut_length] = x[index, :, start_pos:start_pos + cut_length]
+
+    y_a, y_b = y, y[index]
+
+    return mixed_x, y_a, y_b, lam
+
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Loss function for mixup/cutmix."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
+def quality_aware_augmentation(signals, labels, augmentation_prob=0.3):
+    """Apply quality-aware augmentations to help model learn discriminative features.
+
+    Strategy:
+    - For Poor quality (label=0): Apply "improvements" (smoothing, denoising)
+    - For Good quality (label=1): Apply "degradations" (noise, artifacts)
+
+    This helps the model learn what features differentiate quality levels.
+
+    Args:
+        signals: [batch, channels, length] input signals
+        labels: [batch] quality labels (0=Poor, 1=Good)
+        augmentation_prob: probability of applying each augmentation type
+
+    Returns:
+        augmented signals [batch, channels, length]
+    """
+    aug_signals = signals.clone()
+    batch_size = signals.size(0)
+
+    for i in range(batch_size):
+        label = labels[i].item()
+
+        if label == 0:  # Poor quality - try to "improve" it
+            # Augmentation 1: Smooth signal (reduce noise)
+            if np.random.rand() < augmentation_prob:
+                for c in range(aug_signals.size(1)):
+                    signal_np = aug_signals[i, c].cpu().numpy()
+                    smoothed = gaussian_filter1d(signal_np, sigma=2.0)
+                    aug_signals[i, c] = torch.from_numpy(smoothed).to(signals.device)
+
+            # Augmentation 2: Remove baseline wander
+            if np.random.rand() < augmentation_prob:
+                for c in range(aug_signals.size(1)):
+                    signal_np = aug_signals[i, c].cpu().numpy()
+                    baseline = gaussian_filter1d(signal_np, sigma=50.0)
+                    corrected = signal_np - baseline
+                    aug_signals[i, c] = torch.from_numpy(corrected).to(signals.device)
+
+        else:  # Good quality (label == 1) - try to "degrade" it
+            # Augmentation 1: Add Gaussian noise
+            if np.random.rand() < augmentation_prob:
+                noise_level = np.random.uniform(0.05, 0.15)
+                noise = torch.randn_like(aug_signals[i]) * noise_level
+                aug_signals[i] = aug_signals[i] + noise
+
+            # Augmentation 2: Add baseline wander
+            if np.random.rand() < augmentation_prob:
+                length = aug_signals.size(2)
+                t = torch.linspace(0, 2 * np.pi, length).to(signals.device)
+                frequency = np.random.uniform(0.3, 0.7)
+                amplitude = np.random.uniform(0.1, 0.3)
+                baseline_wander = amplitude * torch.sin(frequency * t)
+                for c in range(aug_signals.size(1)):
+                    aug_signals[i, c] = aug_signals[i, c] + baseline_wander
+
+            # Augmentation 3: Add motion artifact (sudden spike)
+            if np.random.rand() < augmentation_prob * 0.5:  # Less frequent
+                artifact_pos = np.random.randint(50, aug_signals.size(2) - 50)
+                artifact_length = np.random.randint(5, 20)
+                artifact_amplitude = np.random.uniform(0.5, 1.5)
+                for c in range(aug_signals.size(1)):
+                    aug_signals[i, c, artifact_pos:artifact_pos+artifact_length] += artifact_amplitude
+
+    return aug_signals
+
+
 def train_epoch(
     model: nn.Module,
     train_loader: DataLoader,
@@ -1053,120 +1191,8 @@ def main():
             """Get encoder features (for analysis)."""
             return self.encoder.get_encoder_output(x)
 
-    # TECHNIQUE 3 & 4: MIXUP AND CUTMIX AUGMENTATION (⭐⭐⭐⭐⭐)
-    def mixup_data(x, y, alpha=0.2):
-        """Mixup augmentation: interpolate samples and labels.
-
-        Args:
-            x: Input signals [B, C, T]
-            y: Labels [B]
-            alpha: Beta distribution parameter (0.2 recommended)
-
-        Returns:
-            mixed_x: Mixed signals [B, C, T]
-            y_a, y_b: Original labels for both samples
-            lam: Mixing coefficient
-        """
-        if alpha > 0:
-            lam = np.random.beta(alpha, alpha)
-        else:
-            lam = 1.0
-
-        batch_size = x.size(0)
-        index = torch.randperm(batch_size).to(x.device)
-
-        mixed_x = lam * x + (1 - lam) * x[index, :]
-        y_a, y_b = y, y[index]
-
-        return mixed_x, y_a, y_b, lam
-
-    def cutmix_data(x, y, alpha=1.0):
-        """CutMix augmentation: replace time segments between samples.
-
-        Args:
-            x: Input signals [B, C, T]
-            y: Labels [B]
-            alpha: Beta distribution parameter (1.0 recommended)
-
-        Returns:
-            mixed_x: Mixed signals [B, C, T]
-            y_a, y_b: Original labels for both samples
-            lam: Mixing coefficient (proportion of original sample)
-        """
-        if alpha > 0:
-            lam = np.random.beta(alpha, alpha)
-        else:
-            lam = 1.0
-
-        batch_size = x.size(0)
-        index = torch.randperm(batch_size).to(x.device)
-
-        # Get time dimension
-        time_length = x.size(2)
-
-        # Calculate cut length
-        cut_length = int(time_length * (1 - lam))
-
-        # Random start position
-        start_pos = np.random.randint(0, time_length - cut_length + 1)
-
-        # Create mixed sample
-        mixed_x = x.clone()
-        mixed_x[:, :, start_pos:start_pos + cut_length] = x[index, :, start_pos:start_pos + cut_length]
-
-        y_a, y_b = y, y[index]
-
-        return mixed_x, y_a, y_b, lam
-
-    def mixup_criterion(criterion, pred, y_a, y_b, lam):
-        """Loss function for mixup/cutmix."""
-        return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
-
-    # TECHNIQUE 9: QUALITY-AWARE AUGMENTATION (⭐⭐⭐⭐⭐)
-    def quality_aware_augmentation(signals, labels, augmentation_prob=0.5):
-        """Apply different augmentations based on quality label.
-
-        Poor quality (0): Apply "improvements" (smoothing, denoising)
-        Good quality (1): Apply "degradations" (noise, dropouts)
-
-        This helps the model learn robust quality discrimination.
-
-        Args:
-            signals: [B, C, T] tensor
-            labels: [B] tensor (0=Poor, 1=Good)
-            augmentation_prob: Probability of applying augmentation
-
-        Returns:
-            augmented_signals: [B, C, T] tensor
-        """
-        augmented = signals.clone()
-
-        for i in range(signals.size(0)):
-            if np.random.rand() > augmentation_prob:
-                continue
-
-            label = labels[i].item()
-
-            if label == 0:  # Poor quality → apply "improvements"
-                # Smoothing (simulate quality improvement)
-                signal = signals[i].cpu().numpy()  # [C, T]
-                for c in range(signal.shape[0]):
-                    signal[c] = gaussian_filter1d(signal[c], sigma=2.0)
-                augmented[i] = torch.from_numpy(signal).to(signals.device)
-
-            else:  # Good quality → apply "degradations"
-                # Add noise (simulate quality degradation)
-                noise_level = 0.05
-                noise = torch.randn_like(signals[i]) * noise_level
-                augmented[i] = signals[i] + noise
-
-                # Random dropout (simulate signal loss)
-                if np.random.rand() < 0.5:
-                    dropout_length = int(signals.size(2) * 0.1)  # 10% dropout
-                    start = np.random.randint(0, signals.size(2) - dropout_length)
-                    augmented[i, :, start:start + dropout_length] = 0
-
-        return augmented
+    # NOTE: All augmentation functions (mixup_data, cutmix_data, mixup_criterion,
+    # quality_aware_augmentation) are now defined at module level (before train_epoch)
 
     # TECHNIQUE 5: DISCRIMINATIVE LEARNING RATES (⭐⭐⭐⭐⭐)
     def get_discriminative_params(model, base_lr, head_multiplier=50):
