@@ -18,8 +18,8 @@ Usage:
         --epochs 50 \
         --batch-size 128 \
         --lr 5e-5 \
-        --contrastive-weight 1.0 \
-        --reconstruction-weight 0.3
+        --contrastive-weight 3.0 \
+        --reconstruction-weight 0.1
 
 Quick test (5 minutes):
     python scripts/continue_ssl_butppg_quality.py \
@@ -656,12 +656,12 @@ def main():
     # SSL parameters
     parser.add_argument('--mask-ratio', type=float, default=0.4,
                        help='Masking ratio for reconstruction')
-    parser.add_argument('--contrastive-weight', type=float, default=1.0,
-                       help='Weight for contrastive loss')
-    parser.add_argument('--reconstruction-weight', type=float, default=0.3,
-                       help='Weight for reconstruction loss')
-    parser.add_argument('--temperature', type=float, default=0.07,
-                       help='Temperature for contrastive loss')
+    parser.add_argument('--contrastive-weight', type=float, default=3.0,
+                       help='Weight for contrastive loss (increased for better discrimination)')
+    parser.add_argument('--reconstruction-weight', type=float, default=0.1,
+                       help='Weight for reconstruction loss (decreased to focus on contrastive)')
+    parser.add_argument('--temperature', type=float, default=0.03,
+                       help='Temperature for contrastive loss (lower = harder discrimination)')
 
     # Quality stratification
     parser.add_argument('--quality-bins', type=int, default=3,
