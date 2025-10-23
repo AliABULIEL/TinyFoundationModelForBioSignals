@@ -757,15 +757,16 @@ def main():
         }
 
     # Stage 2: Quality-aware SSL on BUT-PPG
-    if args.skip_stage2:
-        print("\n[Stage 2/3] BUT-PPG Quality-Aware SSL")
-        print("  Status: ⊘ Skipped (using Stage 1 checkpoint directly)")
-        stage2_checkpoint = stage1_checkpoint
-    elif args.stage2_checkpoint:
+    if args.stage2_checkpoint:
+        # Prioritize explicit checkpoint (from --stage2-checkpoint or --resume-from-stage2)
         print("\n[Stage 2/3] BUT-PPG Quality-Aware SSL")
         print("  Status: ✓ Using existing checkpoint")
         print(f"  Checkpoint: {args.stage2_checkpoint}")
         stage2_checkpoint = args.stage2_checkpoint
+    elif args.skip_stage2:
+        print("\n[Stage 2/3] BUT-PPG Quality-Aware SSL")
+        print("  Status: ⊘ Skipped (using Stage 1 checkpoint directly)")
+        stage2_checkpoint = stage1_checkpoint
     else:
         # Pass either checkpoint path or IBM config
         if use_ibm:
