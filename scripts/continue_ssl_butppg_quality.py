@@ -327,13 +327,16 @@ def train_epoch(
         expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
         current_length = signals.shape[2]
 
-        if current_length > expected_length:
-            # Crop to expected length
-            signals = signals[:, :, :expected_length]
-        elif current_length < expected_length:
-            # Pad to expected length
-            pad_length = expected_length - current_length
-            signals = torch.nn.functional.pad(signals, (0, pad_length), mode='constant', value=0)
+        if current_length != expected_length:
+            # Use high-quality resampling instead of crop/pad
+            # This preserves signal frequency content better than cropping
+            import torch.nn.functional as F
+            signals = F.interpolate(
+                signals,
+                size=expected_length,
+                mode='linear',
+                align_corners=False
+            )
 
         # Forward pass through encoder
         # CRITICAL: Use get_encoder_output() for SSL tasks to get patch-level features [B, P, D]
@@ -445,13 +448,16 @@ def validate_epoch(
         expected_length = encoder.context_length if hasattr(encoder, 'context_length') else 1024
         current_length = signals.shape[2]
 
-        if current_length > expected_length:
-            # Crop to expected length
-            signals = signals[:, :, :expected_length]
-        elif current_length < expected_length:
-            # Pad to expected length
-            pad_length = expected_length - current_length
-            signals = torch.nn.functional.pad(signals, (0, pad_length), mode='constant', value=0)
+        if current_length != expected_length:
+            # Use high-quality resampling instead of crop/pad
+            # This preserves signal frequency content better than cropping
+            import torch.nn.functional as F
+            signals = F.interpolate(
+                signals,
+                size=expected_length,
+                mode='linear',
+                align_corners=False
+            )
 
         # Forward pass
         # CRITICAL: Use get_encoder_output() to get patch-level features [B, P, D]
