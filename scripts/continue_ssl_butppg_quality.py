@@ -60,6 +60,10 @@ from src.data.butppg_quality_dataset import QualityStratifiedBUTPPGDataset, Bala
 from src.utils.seed import set_seed
 from src.utils.checkpoint_utils import save_ssl_checkpoint
 
+# ============================================================================
+# SCRIPT VERSION: 2025-10-23-RESAMPLING-FIX-V2
+# Changes: 2-channel loading + F.interpolate resampling (1250→1024)
+# ============================================================================
 
 def load_vitaldb_checkpoint(
     checkpoint_path: str,
@@ -573,6 +577,10 @@ def main():
 
     print("="*80)
     print("QUALITY-AWARE SSL ON BUT-PPG (STAGE 2)")
+    print("="*80)
+    print("🔧 SCRIPT VERSION: 2025-10-23-RESAMPLING-FIX-V2")
+    print("   ✓ 2-channel loading (PPG+ECG only)")
+    print("   ✓ F.interpolate resampling (1250→1024)")
     print("="*80)
     print(f"Data directory: {args.data_dir}")
     print(f"Output directory: {args.output_dir}")
