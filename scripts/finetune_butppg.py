@@ -1109,7 +1109,6 @@ def main():
             mode='max',  # Maximize accuracy
             factor=0.5,
             patience=5,
-            verbose=True,
             min_lr=1e-7
         )
         print(f"  ✓ LR scheduler: ReduceLROnPlateau (patience=5, factor=0.5)")
