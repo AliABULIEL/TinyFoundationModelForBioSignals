@@ -252,7 +252,8 @@ def collate_butppg_batch(batch):
 
     # Stack signals
     signals1 = torch.stack(signals1)
-    if signals2:
+    has_signals2 = len(signals2) > 0
+    if has_signals2:
         signals2 = torch.stack(signals2)
 
     # Convert list of label dicts to dict of batched values
@@ -270,7 +271,7 @@ def collate_butppg_batch(batch):
         # If labels are already tensors, stack them
         labels = torch.stack(labels_list) if labels_list else None
 
-    if signals2:
+    if has_signals2:
         return signals1, signals2, labels
     else:
         return signals1, labels
