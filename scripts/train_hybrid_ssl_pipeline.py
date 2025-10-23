@@ -226,6 +226,56 @@ def run_stage3_supervised_finetune(
     return checkpoint_path
 
 
+def collate_butppg_batch(batch):
+    """Custom collate function for BUT-PPG dataset with label dictionaries.
+
+    Handles batches where each item is (signal, signal_duplicate, labels_dict)
+    and converts the list of label dicts into a dict of batched tensors.
+    """
+    # Unpack batch
+    signals1 = []
+    signals2 = []
+    labels_list = []
+
+    for item in batch:
+        if len(item) == 3:
+            sig1, sig2, labels = item
+            signals1.append(sig1)
+            signals2.append(sig2)
+            labels_list.append(labels)
+        elif len(item) == 2:
+            sig1, labels = item
+            signals1.append(sig1)
+            labels_list.append(labels)
+        else:
+            raise ValueError(f"Unexpected batch item length: {len(item)}")
+
+    # Stack signals
+    signals1 = torch.stack(signals1)
+    if signals2:
+        signals2 = torch.stack(signals2)
+
+    # Convert list of label dicts to dict of batched values
+    if labels_list and isinstance(labels_list[0], dict):
+        batched_labels = {}
+        for key in labels_list[0].keys():
+            values = [labels[key] for labels in labels_list]
+            # Convert to tensor if numeric
+            if all(isinstance(v, (int, float, np.integer, np.floating)) for v in values):
+                batched_labels[key] = torch.tensor(values)
+            else:
+                batched_labels[key] = values  # Keep as list if not numeric
+        labels = batched_labels
+    else:
+        # If labels are already tensors, stack them
+        labels = torch.stack(labels_list) if labels_list else None
+
+    if signals2:
+        return signals1, signals2, labels
+    else:
+        return signals1, labels
+
+
 @torch.no_grad()
 def evaluate_quality_classification(
     checkpoint_path: str,
@@ -336,7 +386,8 @@ def evaluate_quality_classification(
         test_dataset,
         batch_size=64,
         shuffle=False,
-        num_workers=4
+        num_workers=4,
+        collate_fn=collate_butppg_batch  # Custom collate for label dicts
     )
 
     print(f"Test set: {len(test_dataset)} samples")
@@ -345,19 +396,47 @@ def evaluate_quality_classification(
     all_probs = []
     all_labels = []
 
-    for batch in test_loader:
+    print("Evaluating on test set...")
+    for i, batch in enumerate(test_loader):
         # Handle different batch formats (tuple, list, or dict)
         if isinstance(batch, (tuple, list)):
-            signals, labels = batch[0], batch[1]
+            # BUT-PPG collate function returns (signal, signal_duplicate, labels_dict)
+            if len(batch) == 3:
+                signals, _, labels_dict = batch
+            elif len(batch) == 2:
+                signals, labels_dict = batch
+            else:
+                raise ValueError(f"Unexpected batch length: {len(batch)}")
+
+            # Extract quality label from dictionary
+            if isinstance(labels_dict, dict):
+                if 'quality' in labels_dict:
+                    labels = labels_dict['quality']
+                else:
+                    raise KeyError(f"'quality' key not found in labels. Available keys: {list(labels_dict.keys())}")
+            else:
+                # Fallback: labels_dict might already be the tensor
+                labels = labels_dict
         else:
             signals = batch['signal']
             labels = batch['label']
 
         signals = signals.to(device)
 
-        # Ensure labels are 1D
-        if labels.dim() > 1:
-            labels = labels.squeeze()
+        # Ensure labels are 1D tensor
+        if not isinstance(labels, torch.Tensor):
+            labels = torch.tensor(labels)
+
+        # Flatten to 1D
+        labels = labels.view(-1)
+
+        # Debug: Print shapes for first batch
+        if i == 0:
+            print(f"\nFirst batch shapes:")
+            print(f"  signals: {signals.shape}")
+            print(f"  labels: {labels.shape}")
+            print(f"  labels dtype: {labels.dtype}")
+            print(f"  Sample labels: {labels[:5].tolist()}")
 
         # Forward pass
         # encoder has task='classification', so it returns logits directly
