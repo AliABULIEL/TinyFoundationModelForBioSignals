@@ -175,12 +175,22 @@ class TTMAdapter(nn.Module):
     
     def _init_real_ttm(self, model_id: str, decoder_mode: str, **kwargs):
         """Initialize the REAL TTM model using tsfm_public.
-        
+
         Args:
             model_id: HuggingFace model identifier
             decoder_mode: Decoder configuration for TTM
             **kwargs: Additional arguments passed to get_model
         """
+        # Filter out parameters that TTM doesn't accept
+        # These are custom parameters for our code, not IBM's TTM
+        invalid_ttm_params = ['output_type']
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in invalid_ttm_params}
+
+        # Warn if we filtered anything
+        filtered = set(kwargs.keys()) - set(filtered_kwargs.keys())
+        if filtered:
+            print(f"  Note: Filtered custom parameters not supported by TTM: {filtered}")
+
         try:
             print(f"Loading real TTM model: {model_id}")
             
@@ -213,7 +223,7 @@ class TTMAdapter(nn.Module):
                     prediction_length=self.prediction_length,
                     num_input_channels=self.input_channels,
                     decoder_mode=decoder_mode,
-                    **kwargs
+                    **filtered_kwargs  # Use filtered kwargs!
                 )
                 print(f"  ✓ Successfully loaded {pretrained_variant} pretrained weights!")
             else:
