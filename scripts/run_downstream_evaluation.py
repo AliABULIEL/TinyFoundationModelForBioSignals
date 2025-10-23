@@ -671,10 +671,24 @@ def main():
 
         # Run evaluation
         if 'quality' in butppg_loaders:
+            # Check model type - only use for compatible tasks
+            # Classification model (num_classes=2) is for quality only
+            # Regression model (out_features=1) is for HR only
+            is_classification = hasattr(butppg_model, 'head') and hasattr(butppg_model.head, 'fc') and butppg_model.head.fc.out_features == 2
+
+            if is_classification:
+                print("\n  ℹ️  Model is classification (quality) - skipping HR/motion tasks")
+                hr_model = None
+                motion_model = None
+            else:
+                # Regression or multi-task model
+                hr_model = butppg_model if 'hr_estimation' in butppg_loaders else None
+                motion_model = butppg_model if 'motion' in butppg_loaders else None
+
             butppg_results = run_all_butppg_tasks(
-                quality_model=butppg_model,
-                hr_model=butppg_model if 'hr_estimation' in butppg_loaders else None,
-                motion_model=butppg_model if 'motion' in butppg_loaders else None,
+                quality_model=butppg_model if is_classification else None,
+                hr_model=hr_model,
+                motion_model=motion_model,
                 quality_loader=butppg_loaders['quality'],
                 hr_loader=butppg_loaders.get('hr_estimation', None),
                 motion_loader=butppg_loaders.get('motion', None),
