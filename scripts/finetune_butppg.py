@@ -59,6 +59,7 @@ from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 
 from src.models.channel_utils import unfreeze_last_n_blocks
 
@@ -344,36 +345,29 @@ def create_dataloaders(
     print(f"\n✓ Found training directory: {train_dir}")
     train_dataset = BUTPPGDataset(train_dir, normalize=True, target_length=target_length)
 
-    # CRITICAL FIX: Add balanced sampling to handle class imbalance
-    # Without balanced sampling, batches are biased toward majority class
-    print(f"  Creating balanced sampler to ensure equal class representation in batches...")
+    # CRITICAL FIX: Use normal shuffling (NOT balanced sampling)
+    # Balanced sampling creates distribution mismatch:
+    #   - Training batches: 50/50 Poor/Good (from balanced sampler)
+    #   - Validation: 80/20 Poor/Good (real distribution)
+    # Model trained on balanced distribution but tested on imbalanced → collapse!
+    # Solution: Let model see real distribution during training
 
-    # Get labels from dataset
+    print(f"  Using normal shuffling (real distribution matching validation)")
+
+    # Get labels for statistics
     train_labels = train_dataset.labels.numpy()
     class_sample_counts = np.bincount(train_labels)
 
-    print(f"  Training set: Poor={class_sample_counts[0]}, Good={class_sample_counts[1]}")
-
-    # Compute sample weights (inverse frequency)
-    class_weights_for_sampling = 1.0 / class_sample_counts
-    sample_weights = class_weights_for_sampling[train_labels]
-
-    # Create balanced sampler
-    from torch.utils.data import WeightedRandomSampler
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True  # Allow sampling with replacement to balance classes
-    )
-
-    print(f"  ✓ Balanced sampler created (will sample ~50% from each class)")
+    print(f"  Training set: Poor={class_sample_counts[0]} ({100*class_sample_counts[0]/len(train_labels):.1f}%), Good={class_sample_counts[1]} ({100*class_sample_counts[1]/len(train_labels):.1f}%)")
+    print(f"  ✓ Normal shuffling (batches match real 80/20 distribution)")
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        sampler=sampler,  # Use sampler instead of shuffle
+        shuffle=True,  # Normal shuffling - let model see real distribution
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True  # Drop incomplete batches for stability
     )
 
     # Create validation loader
@@ -522,50 +516,65 @@ def evaluate(
         Dictionary with evaluation metrics
     """
     model.eval()
-    
+
     total_loss = 0.0
     correct = 0
     total = 0
     all_preds = []
     all_labels = []
-    
+    all_probs = []  # CRITICAL: Collect probabilities for AUROC
+
     pbar = tqdm(loader, desc=f"[{desc}]", leave=False)
-    
-    for signals, labels in pbar:
-        signals = signals.to(device)
-        labels = labels.to(device)
-        
-        with autocast(enabled=use_amp):
-            logits = model(signals)
-            loss = criterion(logits, labels)
-        
-        preds = logits.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
-        total_loss += loss.item()
-        
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
-        
-        pbar.set_postfix({
-            'loss': total_loss / len(loader),
-            'acc': 100.0 * correct / total
-        })
-    
+
+    with torch.no_grad():  # Add no_grad for efficiency
+        for signals, labels in pbar:
+            signals = signals.to(device)
+            labels = labels.to(device)
+
+            with autocast(enabled=use_amp):
+                logits = model(signals)
+                loss = criterion(logits, labels)
+
+            # Get predictions and probabilities
+            preds = logits.argmax(dim=1)
+            probs = torch.softmax(logits, dim=1)[:, 1]  # Probability of Good class (class 1)
+
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+            total_loss += loss.item()
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+
+            pbar.set_postfix({
+                'loss': total_loss / len(loader),
+                'acc': 100.0 * correct / total
+            })
+
     # Compute additional metrics
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
-    
+    all_probs = np.array(all_probs)
+
+    # CRITICAL: Compute AUROC (primary metric for imbalanced data)
+    try:
+        auroc = roc_auc_score(all_labels, all_probs)
+    except ValueError:
+        # Handle case where only one class present in batch
+        auroc = 0.0
+
     # Per-class accuracy (return as fraction 0-1, not percentage)
     class_0_mask = all_labels == 0
     class_1_mask = all_labels == 1
 
     class_0_acc = (all_preds[class_0_mask] == all_labels[class_0_mask]).mean() if class_0_mask.sum() > 0 else 0.0
     class_1_acc = (all_preds[class_1_mask] == all_labels[class_1_mask]).mean() if class_1_mask.sum() > 0 else 0.0
-    
+
     return {
         'loss': total_loss / len(loader),
         'accuracy': 100.0 * correct / total,
+        'auroc': auroc,  # CRITICAL: Primary metric for saving best model
         'class_0_acc': class_0_acc,
         'class_1_acc': class_1_acc
     }
@@ -725,8 +734,8 @@ def parse_args():
     parser.add_argument(
         '--head-only-epochs',
         type=int,
-        default=2,
-        help='Number of epochs for head-only training (Stage 1) - reduced from 5 to 2'
+        default=10,
+        help='Number of epochs for head-only training (Stage 1) - CRITICAL: increased to 10 for proper head initialization'
     )
     parser.add_argument(
         '--unfreeze-last-n',
@@ -966,27 +975,37 @@ def main():
     print(f"  Class 1 (Good): {class_counts[1]} samples, weight: {class_weights[1]:.3f}")
     print(f"  ✓ Using weighted loss to handle {class_counts[0]/class_counts[1]:.1f}:1 imbalance")
 
-    # CRITICAL FIX: Use MODERATE weighted CrossEntropy instead of Focal Loss
-    # Focal Loss (alpha=0.85, gamma=4.0) was TOO AGGRESSIVE and caused model collapse
-    # to predicting minority class for everything (31.5% accuracy)
+    # CRITICAL FIX: Use CORRECT inverse frequency class weights
+    # Previous attempt used [1.0, 2.0] which UNDER-weighted the minority class!
+    # Good class (21.4%) is MINORITY but was getting LESS emphasis than Poor (78.6%)
+    # This caused model to ignore Good class → collapse to predicting only Poor
     #
-    # New strategy: Moderate class weights + balanced sampling + label smoothing
-    imbalance_ratio = class_counts[0] / class_counts[1]
+    # New strategy: Inverse frequency weighting
+    #   - Poor (majority 78.6%): weight = 1.0 (baseline)
+    #   - Good (minority 21.4%): weight = ratio (upweight by ~3.67x)
 
-    print(f"\n  Class imbalance: {imbalance_ratio:.1f}:1 (Poor:Good)")
-    print(f"  ❌ NOT using Focal Loss (caused collapse in previous run)")
-    print(f"  ✅ Using MODERATE weighted CrossEntropy + label smoothing")
+    poor_count = class_counts[0]
+    good_count = class_counts[1]
+    imbalance_ratio = poor_count / good_count
 
-    # Use moderate weights (not as extreme as computed weights)
-    # Computed: [0.43, 1.64], but we'll use [1.0, 2.0] for moderation
-    moderate_weights = torch.tensor([1.0, 2.0]).to(args.device)
+    print(f"\n  Class imbalance: {imbalance_ratio:.2f}:1 (Poor:Good)")
+    print(f"  ❌ NOT using Focal Loss (too aggressive)")
+    print(f"  ✅ Using inverse frequency weighted CrossEntropy")
 
-    print(f"  Moderate weights: Poor={moderate_weights[0]:.1f}, Good={moderate_weights[1]:.1f}")
-    print(f"  Label smoothing: 0.1 (helps with extreme imbalance)")
+    # Calculate proper inverse frequency weights
+    # Poor (majority): normal weight (1.0)
+    # Good (minority): upweight by ratio to balance contribution
+    class_weights = torch.tensor([
+        1.0,              # Poor (majority class) - baseline weight
+        imbalance_ratio   # Good (minority class) - upweight by inverse frequency
+    ], dtype=torch.float32).to(args.device)
+
+    print(f"  Class weights: Poor={class_weights[0]:.3f}, Good={class_weights[1]:.3f}")
+    print(f"  Label smoothing: 0.05 (reduced from 0.1 for better class separation)")
 
     criterion = nn.CrossEntropyLoss(
-        weight=moderate_weights,
-        label_smoothing=0.1  # Regularization for imbalanced data
+        weight=class_weights,
+        label_smoothing=0.05  # Reduced from 0.1 for better class separation
     )
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
@@ -997,10 +1016,13 @@ def main():
         'train_acc': [],
         'val_loss': [],
         'val_acc': [],
+        'val_auroc': [],  # CRITICAL: Track AUROC as primary metric
         'stage': []
     }
-    
-    best_val_acc = 0.0
+
+    # CRITICAL: Use AUROC as primary metric for saving best model
+    # Accuracy is misleading with imbalanced data (80/20 Poor/Good)
+    best_auroc = 0.0
     
     # Save training configuration
     training_config = vars(args)
@@ -1016,11 +1038,13 @@ def main():
     print("Training only the classification head, encoder frozen")
     
     # Create optimizer for head-only
-    # CRITICAL FIX: Use HIGHER learning rate for head
-    # Head needs to learn quickly from scratch, encoder stays frozen
-    head_lr = args.lr * 25  # 25x higher for head (if lr=2e-5, head gets 5e-4)
+    # CRITICAL FIX: Use MUCH HIGHER learning rate for head when encoder frozen
+    # Head needs to learn quickly from scratch (10 epochs), encoder stays frozen
+    # With 10 epochs, head can handle higher LR without instability
+    head_lr = args.lr * 50  # 50x higher for head (if lr=2e-5, head gets 1e-3)
 
-    print(f"  Head learning rate: {head_lr:.2e} (25x base LR)")
+    print(f"  Stage 1 duration: {args.head_only_epochs} epochs")
+    print(f"  Head learning rate: {head_lr:.2e} (50x base LR)")
     print(f"  Encoder learning rate: N/A (frozen)")
 
     optimizer = torch.optim.AdamW(
@@ -1048,31 +1072,34 @@ def main():
         
         epoch_time = time.time() - epoch_start
         
-        # Print epoch summary
+        # Print epoch summary with AUROC and per-class accuracy
         print(f"\nEpoch {epoch+1}/{args.head_only_epochs} ({epoch_time:.1f}s)")
         print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
+        print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
         # Warn if class collapse detected
         if val_metrics['class_1_acc'] < 0.10:  # Class 1 (Good) < 10%
             print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-            print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
-        
+        elif val_metrics['class_0_acc'] < 0.10:  # Class 0 (Poor) < 10%
+            print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+
         # Update history
         history['train_loss'].append(train_metrics['loss'])
         history['train_acc'].append(train_metrics['accuracy'])
         history['val_loss'].append(val_metrics['loss'])
         history['val_acc'].append(val_metrics['accuracy'])
+        history['val_auroc'].append(val_metrics['auroc'])
         history['stage'].append('stage1_head_only')
-        
-        # Save best model
-        if val_metrics['accuracy'] > best_val_acc:
-            best_val_acc = val_metrics['accuracy']
+
+        # CRITICAL: Save best model based on AUROC, not accuracy
+        if val_metrics['auroc'] > best_auroc:
+            best_auroc = val_metrics['auroc']
             save_checkpoint(
                 output_dir / 'best_model.pt',
                 model, optimizer, epoch, val_metrics, training_config
             )
-            print(f"  ✓ Best model saved (val_acc: {val_metrics['accuracy']:.2f}%)")
+            print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
     
     # =========================================================================
     # STAGE 2: PARTIAL UNFREEZING
@@ -1133,31 +1160,34 @@ def main():
             
             epoch_time = time.time() - epoch_start
             
-            # Print epoch summary
+            # Print epoch summary with AUROC and per-class accuracy
             print(f"\nEpoch {args.head_only_epochs + epoch + 1}/{args.epochs} ({epoch_time:.1f}s)")
             print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
+            print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
             # Warn if class collapse detected
             if val_metrics['class_1_acc'] < 0.10:
                 print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-                print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
-            
+            elif val_metrics['class_0_acc'] < 0.10:
+                print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+
             # Update history
             history['train_loss'].append(train_metrics['loss'])
             history['train_acc'].append(train_metrics['accuracy'])
             history['val_loss'].append(val_metrics['loss'])
             history['val_acc'].append(val_metrics['accuracy'])
+            history['val_auroc'].append(val_metrics['auroc'])
             history['stage'].append('stage2_partial_unfreeze')
-            
-            # Save best model
-            if val_metrics['accuracy'] > best_val_acc:
-                best_val_acc = val_metrics['accuracy']
+
+            # CRITICAL: Save best model based on AUROC, not accuracy
+            if val_metrics['auroc'] > best_auroc:
+                best_auroc = val_metrics['auroc']
                 save_checkpoint(
                     output_dir / 'best_model.pt',
                     model, optimizer, epoch, val_metrics, training_config
                 )
-                print(f"  ✓ Best model saved (val_acc: {val_metrics['accuracy']:.2f}%)")
+                print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
     
     # =========================================================================
     # STAGE 3: FULL FINE-TUNING (OPTIONAL)
@@ -1202,31 +1232,34 @@ def main():
             
             epoch_time = time.time() - epoch_start
             
-            # Print epoch summary
+            # Print epoch summary with AUROC and per-class accuracy
             print(f"\nEpoch {args.epochs + epoch + 1}/{args.epochs + args.full_finetune_epochs} ({epoch_time:.1f}s)")
             print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
+            print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
             # Warn if class collapse detected
             if val_metrics['class_1_acc'] < 0.10:
                 print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-                print(f"      Class 0 (Poor): {val_metrics['class_0_acc']*100:.1f}%, Class 1 (Good): {val_metrics['class_1_acc']*100:.1f}%")
-            
+            elif val_metrics['class_0_acc'] < 0.10:
+                print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+
             # Update history
             history['train_loss'].append(train_metrics['loss'])
             history['train_acc'].append(train_metrics['accuracy'])
             history['val_loss'].append(val_metrics['loss'])
             history['val_acc'].append(val_metrics['accuracy'])
+            history['val_auroc'].append(val_metrics['auroc'])
             history['stage'].append('stage3_full_finetune')
-            
-            # Save best model
-            if val_metrics['accuracy'] > best_val_acc:
-                best_val_acc = val_metrics['accuracy']
+
+            # CRITICAL: Save best model based on AUROC, not accuracy
+            if val_metrics['auroc'] > best_auroc:
+                best_auroc = val_metrics['auroc']
                 save_checkpoint(
                     output_dir / 'best_model.pt',
                     model, optimizer, epoch, val_metrics, training_config
                 )
-                print(f"  ✓ Best model saved (val_acc: {val_metrics['accuracy']:.2f}%)")
+                print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
     
     # =========================================================================
     # FINAL EVALUATION
@@ -1273,10 +1306,14 @@ def main():
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
     print("=" * 70)
-    print(f"Best validation accuracy: {best_val_acc:.2f}%")
+    print(f"Best validation AUROC: {best_auroc:.3f}")
     if test_metrics:
-        print(f"Test accuracy: {test_metrics['accuracy']:.2f}%")
-    print(f"Checkpoints saved to: {output_dir}")
+        print(f"\nFinal Test Results:")
+        print(f"  Accuracy: {test_metrics['accuracy']:.2f}%")
+        print(f"  AUROC: {test_metrics['auroc']:.3f}")
+        print(f"  Poor (class 0): {test_metrics['class_0_acc']*100:.1f}%")
+        print(f"  Good (class 1): {test_metrics['class_1_acc']*100:.1f}%")
+    print(f"\nCheckpoints saved to: {output_dir}")
     print("=" * 70)
 
 
