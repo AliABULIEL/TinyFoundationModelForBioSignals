@@ -6,7 +6,8 @@ for PPG quality classification (good vs poor).
 
 Data Format:
 - BUT-PPG data: 2 channels [PPG, ECG] in windowed format
-- Each window: individual NPZ file with shape [2, 1024]
+- Each window: individual NPZ file with shape [2, 1250] (10s @ 125Hz)
+- Resampled to [2, 512] for IBM TTM-Enhanced (8 patches × 64)
 - No channel inflation needed (both SSL and fine-tuning use 2 channels)
 
 Strategy:
@@ -68,7 +69,7 @@ class BUTPPGDataset(Dataset):
     Expected data format (windowed):
     - Directory containing individual window files: window_*.npz
     - Each window NPZ contains:
-      - 'signal': [2, 1024] - 2 channels (PPG, ECG)
+      - 'signal': [2, 1250] - 2 channels (PPG, ECG), 10s @ 125Hz
       - 'quality': float - quality label (0=poor, 1=good)
       - Additional metadata: 'hr', 'motion', 'bp_systolic', 'bp_diastolic', etc.
 
@@ -77,6 +78,7 @@ class BUTPPGDataset(Dataset):
     1: ECG (electrocardiogram)
 
     Note: BUT-PPG dataset does NOT contain accelerometer data.
+    Note: Signals are resampled to target_length (512 for IBM TTM-Enhanced) if specified.
     """
 
     def __init__(self, data_dir: Path, normalize: bool = True, target_length: int = None):
@@ -113,11 +115,11 @@ class BUTPPGDataset(Dataset):
         for window_file in window_files:
             data = np.load(window_file)
 
-            # Load signal [2, 1024]
+            # Load signal [2, T] where T is typically 1250 for BUT-PPG (10s @ 125Hz)
             if 'signal' not in data:
                 raise KeyError(f"Expected 'signal' key in {window_file}, found: {list(data.keys())}")
 
-            signal = data['signal']  # [2, 1024]
+            signal = data['signal']  # [2, T] - will be resampled to target_length if specified
 
             # Load quality label
             if 'quality' in data:
@@ -533,10 +535,12 @@ def verify_data_structure(data_dir: Path):
                     else:
                         status.append(f"⚠️  {C} channels (expected 2)")
 
-                    if T == 1024:
-                        status.append("✅ 1024 timesteps")
+                    if T == 1250:
+                        status.append("✅ 1250 timesteps (10s @ 125Hz)")
+                    elif T == 512:
+                        status.append("✅ 512 timesteps (already resampled for TTM)")
                     else:
-                        status.append(f"⚠️  {T} timesteps (expected 1024)")
+                        status.append(f"⚠️  {T} timesteps (expected 1250 or 512)")
 
                     print(f"      Status: {', '.join(status)}")
             else:
@@ -785,7 +789,8 @@ def main():
     print(f"    (TTM patcher operates per-channel: input_dim = patch_size)")
 
     # STEP 2: Determine context_length
-    # Try to get from checkpoint config, else assume VitalDB standard (1024)
+    # CRITICAL FIX: IBM TTM-Enhanced uses context=512 (not 1024) for processing
+    # First try checkpoint config, then calculate from num_patches
     if 'config' in checkpoint:
         ssl_config = checkpoint['config']
         context_length = ssl_config.get('context_length', None)
@@ -793,13 +798,17 @@ def main():
             print(f"  ✓ Step 2: From checkpoint config:")
             print(f"    → context_length: {context_length}")
         else:
-            context_length = 1024  # VitalDB standard
-            print(f"  ⚠️  Step 2: No context_length in config, assuming VitalDB standard:")
-            print(f"    → context_length: {context_length}")
+            # Calculate from patch architecture
+            # For IBM TTM-Enhanced: 8 patches × 64 patch_size = 512 timesteps
+            context_length = 512 if patch_size == 64 else 1024
+            print(f"  ⚠️  Step 2: No context_length in config, calculating from architecture:")
+            print(f"    → context_length: {context_length} (8 patches × {patch_size} for IBM TTM)")
     else:
-        context_length = 1024  # VitalDB standard
-        print(f"  ⚠️  Step 2: No config in checkpoint, assuming VitalDB standard:")
-        print(f"    → context_length: {context_length}")
+        # No config - calculate from patch_size
+        # IBM TTM-Enhanced with patch=64 processes 512 timesteps (8 patches)
+        context_length = 512 if patch_size == 64 else 1024
+        print(f"  ⚠️  Step 2: No config in checkpoint, calculating from patch_size:")
+        print(f"    → context_length: {context_length} (8 patches × {patch_size})")
 
     # STEP 3: Calculate num_patches
     num_patches = context_length // patch_size
@@ -809,23 +818,27 @@ def main():
     print(f"              = {num_patches}")
 
     # STEP 4: Determine if SSL used IBM pretrained
-    # SSL with patch_size=64, context=1024 likely loaded IBM pretrained first
-    # (IBM pretrained was loaded with patch=128 config, but actually uses patch=64)
-    ssl_used_ibm_pretrained = (context_length == 1024 and patch_size == 64)
+    # CRITICAL FIX: IBM TTM-Enhanced processes 512 timesteps (not 1024)
+    # Detect IBM pretrained by: patch=64, d_model=192, context=512
+    ssl_used_ibm_pretrained = (
+        patch_size == 64 and
+        d_model == 192 and
+        context_length == 512
+    )
 
-    # CRITICAL FIX: For IBM pretrained detection, check d_model=192 as well
-    # IBM TTM-Enhanced has d_model=192, context=1024
-    if context_length == 1024 and d_model == 192:
+    # Legacy support: Also detect old 1024-context checkpoints
+    if context_length == 1024 and patch_size == 64 and d_model == 192:
         ssl_used_ibm_pretrained = True
+        print(f"  ⚠️  Warning: Detected legacy context=1024 checkpoint")
+        print(f"     IBM TTM-Enhanced now uses context=512 for processing")
 
     if ssl_used_ibm_pretrained:
-        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced (946K params)")
+        print(f"\n  ℹ️  SSL checkpoint used IBM pretrained TTM-Enhanced")
         print(f"     Detected: context={context_length}, d_model={d_model}, patch={patch_size}")
-        print(f"     Will load IBM pretrained (patch=128 config), which auto-adapts to patch={patch_size}")
-        # CRITICAL: Use patch_size=128 to load IBM pretrained (same as SSL training)
-        # IBM's TTM will auto-adapt from 8 patches (128) to 16 patches (64)
-        # This ensures we get the SAME architecture (946K params) as SSL checkpoint
-        model_patch_size = 128  # Load IBM pretrained, auto-adapts to actual patch_size
+        print(f"     Will create model matching SSL architecture")
+        # CRITICAL FIX: Use detected patch_size directly (64, not 128)
+        # The SSL checkpoint already has the correct architecture
+        model_patch_size = patch_size  # Use exact architecture from SSL checkpoint
     else:
         print(f"\n  ⚠️  SSL checkpoint used custom architecture (not IBM pretrained)")
         print(f"     Will create fresh TTM with patch={patch_size}")
@@ -838,23 +851,24 @@ def main():
     print(f"  Task: classification (2 classes)")
     print(f"  Input channels: 2 (PPG + ECG)")
     print(f"  Context length: {context_length}")
-    print(f"  Patch size (config): {model_patch_size}")
-    print(f"  Actual patch size (SSL): {patch_size}")
+    print(f"  Patch size: {model_patch_size}")
     print(f"  d_model: {d_model}")
+    print(f"  Num patches: {num_patches}")
     print(f"  Freeze encoder: True (will train head only in Stage 1)")
     if ssl_used_ibm_pretrained:
-        print(f"  Note: Loading IBM pretrained (patch=128), auto-adapts to patch={patch_size}")
-        print(f"        This matches SSL training process → 946K params")
+        print(f"  Note: Architecture matches SSL checkpoint (IBM TTM-Enhanced)")
 
+    # CRITICAL: Don't reload IBM pretrained - we'll load from SSL checkpoint
     model = TTMAdapter(
         variant='ibm-granite/granite-timeseries-ttm-r1',
         task='classification',
         num_classes=2,
         input_channels=2,
         context_length=context_length,
-        patch_size=model_patch_size,  # Use detected patch_size (64) to match SSL checkpoint
+        patch_size=model_patch_size,  # Use detected patch_size to match SSL checkpoint
         d_model=d_model,
-        freeze_encoder=True
+        freeze_encoder=True,
+        use_real_ttm=False  # Don't reload pretrained - we'll load SSL checkpoint weights
     )
 
     # Verify model architecture matches SSL checkpoint
@@ -871,40 +885,27 @@ def main():
             print(f"  ⚠️  Warning: Expected ~{expected_params:,} params (SSL checkpoint)")
             print(f"     Got {total_params:,} - architecture might not match!")
 
-    # Move model to device BEFORE auto-adaptation
+    # Move model to device
     model = model.to(args.device)
 
-    # CRITICAL: Trigger auto-adaptation BEFORE loading SSL weights
-    # IBM TTM auto-adapts patch_size during first forward pass
-    # We need this to happen BEFORE loading SSL weights so architectures match
-    print(f"\n🔧 Triggering TTM auto-adaptation...")
-    print(f"  Current model patch_size: {model.patch_size}")
+    # SKIP auto-adaptation - model already created with correct architecture
+    # (We created TTMAdapter with detected patch_size=64, so no adaptation needed)
 
-    with torch.no_grad():
-        dummy_input = torch.randn(1, 2, context_length).to(args.device)
-        try:
-            _ = model.get_encoder_output(dummy_input)
-            print(f"  ✓ Auto-adaptation complete")
-            print(f"  Updated model patch_size: {model.patch_size}")
-            del dummy_input, _
-            torch.cuda.empty_cache() if args.device == 'cuda' else None
-        except Exception as e:
-            print(f"  ⚠️  Auto-adaptation failed: {e}")
-            print(f"     Proceeding with current patch_size={model.patch_size}")
-
-    # Verify patch_size matches SSL checkpoint
+    # Verify model configuration matches SSL checkpoint
     print(f"\nVerifying model configuration:")
-    print(f"  Model context_length: {model.context_length}")
-    print(f"  Model patch_size: {model.patch_size}")
-    print(f"  Model num_patches: {model.num_patches}")
+    print(f"  Model context_length: {model.context_length if hasattr(model, 'context_length') else 'N/A'}")
+    print(f"  Model patch_size: {model.patch_size if hasattr(model, 'patch_size') else model_patch_size}")
     print(f"  SSL checkpoint patch_size: {patch_size}")
+    print(f"  SSL checkpoint context_length: {context_length}")
 
-    if model.patch_size != patch_size:
-        print(f"  ⚠️  CRITICAL: Model patch_size ({model.patch_size}) != SSL checkpoint ({patch_size})")
-        print(f"     Weight loading will fail!")
-        print(f"     This indicates the auto-adaptation didn't work correctly.")
+    # Get model's actual patch_size (may be stored differently)
+    actual_model_patch_size = getattr(model, 'patch_size', model_patch_size)
+
+    if actual_model_patch_size != patch_size:
+        print(f"\n  ⚠️  WARNING: Model patch_size ({actual_model_patch_size}) != SSL checkpoint ({patch_size})")
+        print(f"     This may cause weight loading issues!")
     else:
-        print(f"  ✅ Patch sizes match - ready to load SSL weights")
+        print(f"  ✅ Architecture matches - ready to load SSL weights")
 
     # Load encoder weights from SSL checkpoint
     # Note: state_dict was already loaded earlier for architecture detection
@@ -1000,7 +1001,7 @@ def main():
         data_dir=Path(args.data_dir),
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        target_length=context_length  # Resize BUT-PPG windows to match SSL model
+        target_length=context_length  # Resize BUT-PPG (1250) to match SSL model (512 for TTM-Enhanced)
     )
     
     # Use test set for validation if no validation set
