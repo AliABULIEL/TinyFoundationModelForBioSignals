@@ -247,6 +247,29 @@ def init_ibm_pretrained(
     print(f"    Num patches: {arch_config['num_patches']}")
     print(f"    Using real TTM: {arch_config['using_real_ttm']}")
 
+    # CRITICAL: Validate num_patches matches expected value
+    expected_patches = context_length // patch_size
+    actual_patches = arch_config['num_patches']
+
+    if actual_patches != expected_patches:
+        print("\n" + "="*80)
+        print("❌ CRITICAL ERROR: Patch count mismatch!")
+        print("="*80)
+        print(f"  Expected patches: {expected_patches} (from {context_length} ÷ {patch_size})")
+        print(f"  Actual patches: {actual_patches}")
+        print(f"  Difference: {actual_patches / expected_patches:.1f}x")
+        print("\nThis will cause dimension mismatches during training!")
+        print("The encoder architecture doesn't match the configuration.")
+        print("\nPossible causes:")
+        print("  1. TTM variant mismatch (wrong pretrained weights loaded)")
+        print("  2. Incorrect patch_size specification")
+        print("  3. TTM using adaptive patching differently than expected")
+        print("\nPlease check the TTM model variant and configuration.")
+        print("="*80)
+        raise ValueError(f"Patch count mismatch: expected {expected_patches}, got {actual_patches}")
+
+    print(f"  ✓ Patch count validated: {actual_patches} matches expected {expected_patches}")
+
     # ⚠️ CRITICAL CHECK: Verify TTM actually loaded (not fallback)
     if not encoder.is_using_real_ttm():
         print("\n" + "="*80)
