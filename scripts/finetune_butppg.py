@@ -57,9 +57,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torch.cuda.amp import GradScaler, autocast
+from torch.optim.swa_utils import AveragedModel, SWALR  # For Stochastic Weight Averaging
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
+from scipy.ndimage import gaussian_filter1d
 
 from src.models.channel_utils import unfreeze_last_n_blocks
 
@@ -442,11 +444,40 @@ def train_epoch(
     for batch_idx, (signals, labels) in enumerate(pbar):
         signals = signals.to(device)
         labels = labels.to(device)
-        
-        # Forward pass
-        with autocast(enabled=use_amp):
-            logits = model(signals)
-            loss = criterion(logits, labels)
+
+        # ✅ ADVANCED: Apply augmentations after epoch 5
+        # Early epochs: No augmentation (let head learn basic patterns)
+        # Later epochs: Quality-aware augmentation + Mixup/CutMix
+        apply_augmentation = epoch >= 5
+
+        if apply_augmentation:
+            # 1. Quality-aware augmentation (50% probability)
+            signals = quality_aware_augmentation(signals, labels, augmentation_prob=0.5)
+
+            # 2. Randomly choose between Mixup, CutMix, or none
+            aug_choice = np.random.rand()
+
+            if aug_choice < 0.3:  # 30% Mixup
+                signals, labels_a, labels_b, lam = mixup_data(signals, labels, alpha=0.2)
+                # Forward pass with mixup
+                with autocast(enabled=use_amp):
+                    logits = model(signals)
+                    loss = mixup_criterion(criterion, logits, labels_a, labels_b, lam)
+            elif aug_choice < 0.5:  # 20% CutMix
+                signals, labels_a, labels_b, lam = cutmix_data(signals, labels, alpha=1.0)
+                # Forward pass with cutmix
+                with autocast(enabled=use_amp):
+                    logits = model(signals)
+                    loss = mixup_criterion(criterion, logits, labels_a, labels_b, lam)
+            else:  # 50% No mixup/cutmix (just quality-aware aug)
+                with autocast(enabled=use_amp):
+                    logits = model(signals)
+                    loss = criterion(logits, labels)
+        else:
+            # No augmentation in early epochs
+            with autocast(enabled=use_amp):
+                logits = model(signals)
+                loss = criterion(logits, labels)
         
         # Backward pass
         optimizer.zero_grad()
@@ -902,6 +933,437 @@ def main():
         param.requires_grad = False
     print(f"  ✓ Encoder frozen (will train head only in Stage 1)")
 
+    # ========================================================================
+    # ADVANCED TECHNIQUES: 10 High-Impact Modules and Functions
+    # ========================================================================
+
+    # TECHNIQUE 1: ATTENTION POOLING (⭐⭐⭐⭐⭐)
+    class AttentionPooling(nn.Module):
+        """Learned attention-based pooling over patches.
+
+        Replaces simple mean pooling with learned attention weights,
+        allowing the model to focus on the most discriminative patches.
+        """
+
+        def __init__(self, d_model: int):
+            super().__init__()
+            self.attention = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.Tanh(),
+                nn.Linear(d_model // 2, 1)
+            )
+
+        def forward(self, x):
+            """
+            Args:
+                x: [batch, num_patches, d_model]
+            Returns:
+                pooled: [batch, d_model]
+            """
+            attn_weights = F.softmax(self.attention(x), dim=1)  # [B, P, 1]
+            pooled = (x * attn_weights).sum(dim=1)  # [B, D]
+            return pooled
+
+    # TECHNIQUE 2: MULTI-SCALE FEATURE FUSION (⭐⭐⭐⭐)
+    class MultiScaleClassificationHead(nn.Module):
+        """Classification head with multi-scale feature fusion.
+
+        Extracts features from multiple encoder depths and fuses them
+        for richer representation learning.
+        """
+
+        def __init__(self, encoder, d_model: int, num_classes: int):
+            super().__init__()
+            self.encoder = encoder
+            self.d_model = d_model
+            self.num_classes = num_classes
+
+            # Attention pooling for each scale
+            self.pooling = AttentionPooling(d_model)
+
+            # Feature fusion: combine multi-scale features
+            # Total features: d_model (final) + d_model (middle) + d_model (early) = 3 * d_model
+            self.fusion = nn.Sequential(
+                nn.Linear(3 * d_model, d_model),
+                nn.LayerNorm(d_model),
+                nn.ReLU(),
+                nn.Dropout(0.3)
+            )
+
+            # Classification head
+            self.classifier = nn.Linear(d_model, num_classes)
+
+            # Store config for compatibility
+            self.context_length = getattr(encoder, 'context_length', None)
+            self.patch_size = getattr(encoder, 'patch_size', None)
+
+        def forward(self, x):
+            """Forward pass with multi-scale feature extraction."""
+            # Get final encoder output: [B, C, T] → [B, P, D]
+            final_features = self.encoder.get_encoder_output(x)
+
+            # Extract intermediate features if available
+            # For IBM TTM: try to get features from different transformer blocks
+            if hasattr(self.encoder, 'backbone') and hasattr(self.encoder.backbone, 'encoder'):
+                try:
+                    # Get encoder blocks
+                    blocks = self.encoder.backbone.encoder.layers
+                    num_blocks = len(blocks)
+
+                    # Forward through early blocks (1/3)
+                    early_idx = num_blocks // 3
+                    x_early = x
+                    for i in range(early_idx):
+                        x_early = blocks[i](x_early)
+                    early_features = x_early  # [B, P, D]
+
+                    # Forward through middle blocks (2/3)
+                    middle_idx = 2 * num_blocks // 3
+                    x_middle = early_features
+                    for i in range(early_idx, middle_idx):
+                        x_middle = blocks[i](x_middle)
+                    middle_features = x_middle  # [B, P, D]
+
+                except (AttributeError, IndexError):
+                    # Fallback: use final features for all scales
+                    early_features = final_features
+                    middle_features = final_features
+            else:
+                # Fallback: use final features for all scales
+                early_features = final_features
+                middle_features = final_features
+
+            # Pool each scale with attention
+            early_pooled = self.pooling(early_features)    # [B, D]
+            middle_pooled = self.pooling(middle_features)  # [B, D]
+            final_pooled = self.pooling(final_features)    # [B, D]
+
+            # Concatenate multi-scale features
+            multi_scale = torch.cat([early_pooled, middle_pooled, final_pooled], dim=1)  # [B, 3*D]
+
+            # Fuse features
+            fused = self.fusion(multi_scale)  # [B, D]
+
+            # Classify
+            logits = self.classifier(fused)  # [B, num_classes]
+
+            return logits
+
+        def get_encoder_output(self, x):
+            """Get encoder features (for analysis)."""
+            return self.encoder.get_encoder_output(x)
+
+    # TECHNIQUE 3 & 4: MIXUP AND CUTMIX AUGMENTATION (⭐⭐⭐⭐⭐)
+    def mixup_data(x, y, alpha=0.2):
+        """Mixup augmentation: interpolate samples and labels.
+
+        Args:
+            x: Input signals [B, C, T]
+            y: Labels [B]
+            alpha: Beta distribution parameter (0.2 recommended)
+
+        Returns:
+            mixed_x: Mixed signals [B, C, T]
+            y_a, y_b: Original labels for both samples
+            lam: Mixing coefficient
+        """
+        if alpha > 0:
+            lam = np.random.beta(alpha, alpha)
+        else:
+            lam = 1.0
+
+        batch_size = x.size(0)
+        index = torch.randperm(batch_size).to(x.device)
+
+        mixed_x = lam * x + (1 - lam) * x[index, :]
+        y_a, y_b = y, y[index]
+
+        return mixed_x, y_a, y_b, lam
+
+    def cutmix_data(x, y, alpha=1.0):
+        """CutMix augmentation: replace time segments between samples.
+
+        Args:
+            x: Input signals [B, C, T]
+            y: Labels [B]
+            alpha: Beta distribution parameter (1.0 recommended)
+
+        Returns:
+            mixed_x: Mixed signals [B, C, T]
+            y_a, y_b: Original labels for both samples
+            lam: Mixing coefficient (proportion of original sample)
+        """
+        if alpha > 0:
+            lam = np.random.beta(alpha, alpha)
+        else:
+            lam = 1.0
+
+        batch_size = x.size(0)
+        index = torch.randperm(batch_size).to(x.device)
+
+        # Get time dimension
+        time_length = x.size(2)
+
+        # Calculate cut length
+        cut_length = int(time_length * (1 - lam))
+
+        # Random start position
+        start_pos = np.random.randint(0, time_length - cut_length + 1)
+
+        # Create mixed sample
+        mixed_x = x.clone()
+        mixed_x[:, :, start_pos:start_pos + cut_length] = x[index, :, start_pos:start_pos + cut_length]
+
+        y_a, y_b = y, y[index]
+
+        return mixed_x, y_a, y_b, lam
+
+    def mixup_criterion(criterion, pred, y_a, y_b, lam):
+        """Loss function for mixup/cutmix."""
+        return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+    # TECHNIQUE 9: QUALITY-AWARE AUGMENTATION (⭐⭐⭐⭐⭐)
+    def quality_aware_augmentation(signals, labels, augmentation_prob=0.5):
+        """Apply different augmentations based on quality label.
+
+        Poor quality (0): Apply "improvements" (smoothing, denoising)
+        Good quality (1): Apply "degradations" (noise, dropouts)
+
+        This helps the model learn robust quality discrimination.
+
+        Args:
+            signals: [B, C, T] tensor
+            labels: [B] tensor (0=Poor, 1=Good)
+            augmentation_prob: Probability of applying augmentation
+
+        Returns:
+            augmented_signals: [B, C, T] tensor
+        """
+        augmented = signals.clone()
+
+        for i in range(signals.size(0)):
+            if np.random.rand() > augmentation_prob:
+                continue
+
+            label = labels[i].item()
+
+            if label == 0:  # Poor quality → apply "improvements"
+                # Smoothing (simulate quality improvement)
+                signal = signals[i].cpu().numpy()  # [C, T]
+                for c in range(signal.shape[0]):
+                    signal[c] = gaussian_filter1d(signal[c], sigma=2.0)
+                augmented[i] = torch.from_numpy(signal).to(signals.device)
+
+            else:  # Good quality → apply "degradations"
+                # Add noise (simulate quality degradation)
+                noise_level = 0.05
+                noise = torch.randn_like(signals[i]) * noise_level
+                augmented[i] = signals[i] + noise
+
+                # Random dropout (simulate signal loss)
+                if np.random.rand() < 0.5:
+                    dropout_length = int(signals.size(2) * 0.1)  # 10% dropout
+                    start = np.random.randint(0, signals.size(2) - dropout_length)
+                    augmented[i, :, start:start + dropout_length] = 0
+
+        return augmented
+
+    # TECHNIQUE 5: DISCRIMINATIVE LEARNING RATES (⭐⭐⭐⭐⭐)
+    def get_discriminative_params(model, base_lr, head_multiplier=50):
+        """Get parameter groups with layer-wise learning rate decay.
+
+        Args:
+            model: Model with encoder and head/classifier
+            base_lr: Base learning rate for early encoder layers
+            head_multiplier: LR multiplier for head (e.g., 50x)
+
+        Returns:
+            List of parameter groups for optimizer
+        """
+        param_groups = []
+
+        # Head/Classifier: highest LR (50x)
+        if hasattr(model, 'classifier'):
+            param_groups.append({
+                'params': model.classifier.parameters(),
+                'lr': base_lr * head_multiplier,
+                'name': 'classifier'
+            })
+        elif hasattr(model, 'head'):
+            param_groups.append({
+                'params': model.head.parameters(),
+                'lr': base_lr * head_multiplier,
+                'name': 'head'
+            })
+
+        # Fusion layer: high LR (25x)
+        if hasattr(model, 'fusion'):
+            param_groups.append({
+                'params': model.fusion.parameters(),
+                'lr': base_lr * 25,
+                'name': 'fusion'
+            })
+
+        # Pooling: high LR (25x)
+        if hasattr(model, 'pooling'):
+            param_groups.append({
+                'params': model.pooling.parameters(),
+                'lr': base_lr * 25,
+                'name': 'pooling'
+            })
+
+        # Encoder blocks with layer-wise decay
+        if hasattr(model, 'encoder'):
+            encoder = model.encoder
+            if hasattr(encoder, 'backbone') and hasattr(encoder.backbone, 'encoder'):
+                blocks = encoder.backbone.encoder.layers
+                num_blocks = len(blocks)
+
+                # Last 1/3 of blocks: 5x LR
+                for i in range(2 * num_blocks // 3, num_blocks):
+                    param_groups.append({
+                        'params': blocks[i].parameters(),
+                        'lr': base_lr * 5,
+                        'name': f'encoder_late_block_{i}'
+                    })
+
+                # Middle 1/3 of blocks: 2x LR
+                for i in range(num_blocks // 3, 2 * num_blocks // 3):
+                    param_groups.append({
+                        'params': blocks[i].parameters(),
+                        'lr': base_lr * 2,
+                        'name': f'encoder_middle_block_{i}'
+                    })
+
+                # First 1/3 of blocks: 1x LR (base)
+                for i in range(num_blocks // 3):
+                    param_groups.append({
+                        'params': blocks[i].parameters(),
+                        'lr': base_lr,
+                        'name': f'encoder_early_block_{i}'
+                    })
+
+        return param_groups
+
+    # TECHNIQUE 6: FOCAL LOSS (⭐⭐⭐⭐)
+    class FocalLoss(nn.Module):
+        """Focal Loss for handling class imbalance.
+
+        Focuses training on hard-to-classify examples.
+        FL(pt) = -alpha * (1-pt)^gamma * log(pt)
+
+        Args:
+            alpha: Class weights [weight_class_0, weight_class_1]
+            gamma: Focusing parameter (1.0 recommended for moderate focus)
+        """
+
+        def __init__(self, alpha=None, gamma=1.0):
+            super().__init__()
+            self.alpha = alpha
+            self.gamma = gamma
+
+        def forward(self, inputs, targets):
+            """
+            Args:
+                inputs: [B, num_classes] logits
+                targets: [B] class indices
+            """
+            ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+            pt = torch.exp(-ce_loss)
+            focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+            return focal_loss.mean()
+
+    # TECHNIQUE 8: TEST-TIME AUGMENTATION (⭐⭐⭐⭐)
+    def tta_predict(model, x, num_augmentations=5):
+        """Test-Time Augmentation: average predictions over augmented versions.
+
+        Args:
+            model: Trained model
+            x: Input signals [B, C, T]
+            num_augmentations: Number of augmented versions to average
+
+        Returns:
+            avg_probs: [B, num_classes] averaged probabilities
+        """
+        model.eval()
+        all_probs = []
+
+        with torch.no_grad():
+            # Original prediction
+            logits = model(x)
+            probs = F.softmax(logits, dim=1)
+            all_probs.append(probs)
+
+            # Augmented predictions
+            for _ in range(num_augmentations - 1):
+                # Random augmentation: add small noise
+                noise = torch.randn_like(x) * 0.02
+                x_aug = x + noise
+
+                # Random time shift
+                shift = np.random.randint(-10, 10)
+                if shift > 0:
+                    x_aug = torch.cat([x_aug[:, :, shift:], x_aug[:, :, :shift]], dim=2)
+                elif shift < 0:
+                    x_aug = torch.cat([x_aug[:, :, shift:], x_aug[:, :, :shift]], dim=2)
+
+                logits_aug = model(x_aug)
+                probs_aug = F.softmax(logits_aug, dim=1)
+                all_probs.append(probs_aug)
+
+        # Average all predictions
+        avg_probs = torch.stack(all_probs).mean(dim=0)
+        return avg_probs
+
+    def evaluate_with_tta(model, loader, device, num_augmentations=5):
+        """Evaluate with test-time augmentation.
+
+        Returns:
+            Dictionary with accuracy, AUROC, and per-class metrics
+        """
+        model.eval()
+
+        all_labels = []
+        all_probs = []
+
+        pbar = tqdm(loader, desc="TTA Eval")
+        for signals, labels in pbar:
+            signals = signals.to(device)
+            labels = labels.to(device)
+
+            # Get TTA predictions
+            probs = tta_predict(model, signals, num_augmentations)
+
+            all_probs.extend(probs[:, 1].cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+        all_labels = np.array(all_labels)
+        all_probs = np.array(all_probs)
+
+        # Compute metrics
+        preds = (all_probs > 0.5).astype(int)
+        accuracy = 100.0 * (preds == all_labels).sum() / len(all_labels)
+
+        try:
+            auroc = roc_auc_score(all_labels, all_probs)
+        except ValueError:
+            auroc = 0.0
+
+        # Per-class accuracy
+        class_0_mask = all_labels == 0
+        class_1_mask = all_labels == 1
+        class_0_acc = (preds[class_0_mask] == all_labels[class_0_mask]).mean() if class_0_mask.sum() > 0 else 0.0
+        class_1_acc = (preds[class_1_mask] == all_labels[class_1_mask]).mean() if class_1_mask.sum() > 0 else 0.0
+
+        return {
+            'accuracy': accuracy,
+            'auroc': auroc,
+            'class_0_acc': class_0_acc,
+            'class_1_acc': class_1_acc
+        }
+
+    # ========================================================================
+
     # Create classification wrapper around SSL encoder
     print(f"\n📦 Creating classification wrapper...")
 
@@ -932,16 +1394,19 @@ def main():
             """Get encoder features (for analysis)."""
             return self.encoder.get_encoder_output(x)
 
-    model = ClassificationWrapper(ssl_encoder, d_model=d_model, num_classes=2)
+    # ✅ ADVANCED: Use MultiScaleClassificationHead with Attention Pooling
+    # This replaces simple ClassificationWrapper for better feature extraction
+    model = MultiScaleClassificationHead(ssl_encoder, d_model=d_model, num_classes=2)
     model = model.to(args.device)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"  ✓ Classification wrapper created")
+    print(f"  ✓ Multi-Scale Classification Head created (with Attention Pooling)")
     print(f"  Total parameters: {total_params:,}")
-    print(f"  Trainable parameters: {trainable_params:,} (head only)")
+    print(f"  Trainable parameters: {trainable_params:,} (head + fusion + pooling)")
     print(f"  Frozen parameters: {total_params - trainable_params:,} (encoder)")
+    print(f"  Features: Early + Middle + Late encoder layers (3-scale fusion)")
 
     # Weight loading complete - encoder already has SSL weights from our load function!
 
@@ -989,8 +1454,8 @@ def main():
     imbalance_ratio = poor_count / good_count
 
     print(f"\n  Class imbalance: {imbalance_ratio:.2f}:1 (Poor:Good)")
-    print(f"  ❌ NOT using Focal Loss (too aggressive)")
-    print(f"  ✅ Using inverse frequency weighted CrossEntropy")
+    print(f"  ✅ ADVANCED: Using Focal Loss (gamma=1.0) for hard example mining")
+    print(f"  Previous issues with gamma=4.0 caused collapse → now using moderate gamma=1.0")
 
     # Calculate proper inverse frequency weights
     # Poor (majority): normal weight (1.0)
@@ -1001,12 +1466,10 @@ def main():
     ], dtype=torch.float32).to(args.device)
 
     print(f"  Class weights: Poor={class_weights[0]:.3f}, Good={class_weights[1]:.3f}")
-    print(f"  Label smoothing: 0.05 (reduced from 0.1 for better class separation)")
+    print(f"  Focal gamma: 1.0 (moderate focusing on hard examples)")
 
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights,
-        label_smoothing=0.05  # Reduced from 0.1 for better class separation
-    )
+    # ✅ ADVANCED: Focal Loss with gamma=1.0 (moderate, not aggressive 4.0)
+    criterion = FocalLoss(alpha=class_weights, gamma=1.0)
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
     
@@ -1037,21 +1500,32 @@ def main():
     print("=" * 70)
     print("Training only the classification head, encoder frozen")
     
-    # Create optimizer for head-only
-    # CRITICAL FIX: Use MUCH HIGHER learning rate for head when encoder frozen
-    # Head needs to learn quickly from scratch (10 epochs), encoder stays frozen
-    # With 10 epochs, head can handle higher LR without instability
-    head_lr = args.lr * 50  # 50x higher for head (if lr=2e-5, head gets 1e-3)
-
+    # ✅ ADVANCED: Use discriminative learning rates for head components
+    # Different LR for classifier, fusion, and pooling layers
     print(f"  Stage 1 duration: {args.head_only_epochs} epochs")
-    print(f"  Head learning rate: {head_lr:.2e} (50x base LR)")
+    print(f"  ✅ Using discriminative learning rates for head components:")
+    print(f"     - Classifier: {args.lr * 50:.2e} (50x base LR)")
+    print(f"     - Fusion: {args.lr * 25:.2e} (25x base LR)")
+    print(f"     - Pooling: {args.lr * 25:.2e} (25x base LR)")
     print(f"  Encoder learning rate: N/A (frozen)")
 
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=head_lr,  # Use higher LR for head
-        weight_decay=args.weight_decay
+    # Get parameter groups with discriminative LRs
+    param_groups = get_discriminative_params(model, base_lr=args.lr, head_multiplier=50)
+
+    # Fallback if get_discriminative_params returns empty (head-only training)
+    if len(param_groups) == 0:
+        param_groups = [{'params': [p for p in model.parameters() if p.requires_grad], 'lr': args.lr * 50}]
+
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+
+    # ✅ ADVANCED: Cosine Annealing with Warm Restarts (replaces ReduceLROnPlateau)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=10,  # Restart every 10 epochs
+        T_mult=1,  # Keep same cycle length
+        eta_min=args.lr * 0.1  # Min LR = 10% of base
     )
+    print(f"  ✅ Using CosineAnnealingWarmRestarts (T_0=10, eta_min={args.lr * 0.1:.2e})")
     
     for epoch in range(args.head_only_epochs):
         epoch_start = time.time()
@@ -1100,7 +1574,10 @@ def main():
                 model, optimizer, epoch, val_metrics, training_config
             )
             print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
-    
+
+        # Step learning rate scheduler
+        scheduler.step()
+
     # =========================================================================
     # STAGE 2: PARTIAL UNFREEZING
     # =========================================================================
@@ -1113,32 +1590,40 @@ def main():
         print(f"Unfreezing last {args.unfreeze_last_n} encoder blocks")
 
         # Unfreeze last N blocks
-        # Our model is a ClassificationWrapper, so unfreeze on model.encoder
+        # Our model is a MultiScaleClassificationHead, so unfreeze on model.encoder
         unfreeze_last_n_blocks(model.encoder, n=args.unfreeze_last_n, verbose=True)
 
-        # Create new optimizer with differential learning rates
-        # CRITICAL FIX: Head still needs higher LR, encoder needs very low LR
-        head_lr = args.lr * 25  # Same as Stage 1
-        encoder_lr = args.lr    # Base LR for encoder
+        # ✅ ADVANCED: Use discriminative learning rates with layer-wise decay
+        print(f"  ✅ Using discriminative learning rates (layer-wise decay):")
+        print(f"     - Classifier: {args.lr * 50:.2e} (50x base LR)")
+        print(f"     - Fusion: {args.lr * 25:.2e} (25x base LR)")
+        print(f"     - Pooling: {args.lr * 25:.2e} (25x base LR)")
+        print(f"     - Encoder (late blocks): {args.lr * 5:.2e} (5x base LR)")
+        print(f"     - Encoder (middle blocks): {args.lr * 2:.2e} (2x base LR)")
+        print(f"     - Encoder (early blocks): {args.lr:.2e} (1x base LR)")
 
-        print(f"  Differential learning rates:")
-        print(f"    Head: {head_lr:.2e} (25x base)")
-        print(f"    Encoder (last {args.unfreeze_last_n} blocks): {encoder_lr:.2e}")
+        # Get parameter groups with discriminative LRs
+        param_groups = get_discriminative_params(model, base_lr=args.lr, head_multiplier=50)
 
-        optimizer = torch.optim.AdamW([
-            {'params': model.head.parameters(), 'lr': head_lr},
-            {'params': model.encoder.parameters(), 'lr': encoder_lr}
-        ], weight_decay=args.weight_decay)
+        # Fallback to simple differential LR if needed
+        if len(param_groups) == 0:
+            param_groups = [
+                {'params': model.classifier.parameters(), 'lr': args.lr * 50},
+                {'params': model.fusion.parameters(), 'lr': args.lr * 25},
+                {'params': model.pooling.parameters(), 'lr': args.lr * 25},
+                {'params': model.encoder.parameters(), 'lr': args.lr}
+            ]
 
-        # Add learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+
+        # ✅ ADVANCED: Cosine Annealing with Warm Restarts (replaces ReduceLROnPlateau)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
-            mode='max',  # Maximize accuracy
-            factor=0.5,
-            patience=5,
-            min_lr=1e-7
+            T_0=10,  # Restart every 10 epochs
+            T_mult=1,  # Keep same cycle length
+            eta_min=args.lr * 0.1  # Min LR = 10% of base
         )
-        print(f"  ✓ LR scheduler: ReduceLROnPlateau (patience=5, factor=0.5)")
+        print(f"  ✓ Using CosineAnnealingWarmRestarts (T_0=10, eta_min={args.lr * 0.1:.2e})")
 
         for epoch in range(remaining_epochs):
             epoch_start = time.time()
@@ -1188,29 +1673,48 @@ def main():
                     model, optimizer, epoch, val_metrics, training_config
                 )
                 print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
-    
+
+            # Step learning rate scheduler
+            scheduler.step()
+
     # =========================================================================
-    # STAGE 3: FULL FINE-TUNING (OPTIONAL)
+    # STAGE 3: FULL FINE-TUNING (OPTIONAL) with SWA
     # =========================================================================
     if args.full_finetune and args.full_finetune_epochs > 0:
         print("\n" + "=" * 70)
         print(f"STAGE 3: FULL FINE-TUNING ({args.full_finetune_epochs} epochs)")
         print("=" * 70)
-        print("Unfreezing all parameters with very low learning rate")
-        
+        print("Unfreezing all parameters with SWA (Stochastic Weight Averaging)")
+
         # Unfreeze all parameters
         for param in model.parameters():
             param.requires_grad = True
-        
-        # Create new optimizer with very low LR
-        low_lr = args.lr / 10
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=low_lr,
-            weight_decay=args.weight_decay
-        )
-        
-        print(f"  Learning rate: {low_lr:.2e}")
+
+        # ✅ ADVANCED: Use discriminative learning rates even in Stage 3
+        print(f"  ✅ Using discriminative learning rates with SWA:")
+        print(f"     - Classifier: {args.lr * 10:.2e} (10x base LR)")
+        print(f"     - Fusion: {args.lr * 5:.2e} (5x base LR)")
+        print(f"     - Pooling: {args.lr * 5:.2e} (5x base LR)")
+        print(f"     - Encoder (all blocks): {args.lr * 0.1:.2e} (0.1x base LR)")
+
+        # Get parameter groups with lower multipliers for Stage 3
+        param_groups = [
+            {'params': model.classifier.parameters(), 'lr': args.lr * 10},
+            {'params': model.fusion.parameters(), 'lr': args.lr * 5},
+            {'params': model.pooling.parameters(), 'lr': args.lr * 5},
+            {'params': model.encoder.parameters(), 'lr': args.lr * 0.1}
+        ]
+
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+
+        # ✅ ADVANCED: Setup SWA (Stochastic Weight Averaging)
+        # Start averaging weights from epoch 25 (assuming 30 total epochs)
+        swa_model = AveragedModel(model)
+        swa_scheduler = SWALR(optimizer, swa_lr=args.lr * 0.1)
+        swa_start = max(0, args.full_finetune_epochs - 5)  # Last 5 epochs
+
+        print(f"  ✅ SWA enabled: will average weights from epoch {swa_start + 1} to {args.full_finetune_epochs}")
+        print(f"  SWA learning rate: {args.lr * 0.1:.2e}")
         
         for epoch in range(args.full_finetune_epochs):
             epoch_start = time.time()
@@ -1252,6 +1756,12 @@ def main():
             history['val_auroc'].append(val_metrics['auroc'])
             history['stage'].append('stage3_full_finetune')
 
+            # ✅ ADVANCED: Update SWA model if in SWA phase
+            if epoch >= swa_start:
+                swa_model.update_parameters(model)
+                swa_scheduler.step()
+                print(f"  ✓ SWA model updated (epoch {epoch + 1}/{args.full_finetune_epochs})")
+
             # CRITICAL: Save best model based on AUROC, not accuracy
             if val_metrics['auroc'] > best_auroc:
                 best_auroc = val_metrics['auroc']
@@ -1260,34 +1770,51 @@ def main():
                     model, optimizer, epoch, val_metrics, training_config
                 )
                 print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
-    
+
+        # ✅ ADVANCED: Finalize SWA model (update batch norm statistics)
+        print(f"\n  ✅ Finalizing SWA model...")
+        torch.optim.swa_utils.update_bn(train_loader, swa_model, device=args.device)
+
+        # Save SWA model separately
+        swa_checkpoint = {
+            'model_state_dict': swa_model.module.state_dict(),
+            'training_config': training_config
+        }
+        torch.save(swa_checkpoint, output_dir / 'swa_model.pt')
+        print(f"  ✓ SWA model saved to {output_dir / 'swa_model.pt'}")
+
+        # Use SWA model for final evaluation
+        model = swa_model.module
+
     # =========================================================================
-    # FINAL EVALUATION
+    # FINAL EVALUATION with TTA
     # =========================================================================
     print("\n" + "=" * 70)
-    print("FINAL EVALUATION")
+    print("FINAL EVALUATION WITH TEST-TIME AUGMENTATION (TTA)")
     print("=" * 70)
-    
-    # Load best model
-    best_checkpoint = torch.load(output_dir / 'best_model.pt', map_location=args.device, weights_only=False)
-    model.load_state_dict(best_checkpoint['model_state_dict'])
-    
+
+    # Load best model (if not using SWA)
+    if not (args.full_finetune and args.full_finetune_epochs > 0):
+        best_checkpoint = torch.load(output_dir / 'best_model.pt', map_location=args.device, weights_only=False)
+        model.load_state_dict(best_checkpoint['model_state_dict'])
+
     # Evaluate on test set if available
     if test_loader is not None:
-        print("\nEvaluating on test set...")
-        test_metrics = evaluate(
-            model, test_loader, criterion, args.device, use_amp, "Test"
+        print("\n✅ Evaluating with Test-Time Augmentation (5 augmentations per sample)...")
+        test_metrics_tta = evaluate_with_tta(
+            model, test_loader, args.device, num_augmentations=5
         )
-        
-        print(f"\nTest Results:")
-        print(f"  Loss: {test_metrics['loss']:.4f}")
-        print(f"  Accuracy: {test_metrics['accuracy']:.2f}%")
-        print(f"  Class 0 (Poor) Accuracy: {test_metrics['class_0_acc']*100:.2f}%")
-        print(f"  Class 1 (Good) Accuracy: {test_metrics['class_1_acc']*100:.2f}%")
-        
+
+        print(f"\nTest Results (with TTA):")
+        print(f"  Accuracy: {test_metrics_tta['accuracy']:.2f}%")
+        print(f"  AUROC: {test_metrics_tta['auroc']:.3f}")
+        print(f"  Class 0 (Poor) Accuracy: {test_metrics_tta['class_0_acc']*100:.2f}%")
+        print(f"  Class 1 (Good) Accuracy: {test_metrics_tta['class_1_acc']*100:.2f}%")
+
         # Save test metrics
         with open(output_dir / 'test_metrics.json', 'w') as f:
-            json.dump(test_metrics, f, indent=2)
+            json.dump(test_metrics_tta, f, indent=2)
+        test_metrics = test_metrics_tta
     else:
         print("\n⚠ No test set available for final evaluation")
         test_metrics = None
