@@ -163,12 +163,40 @@ def load_ssl_encoder_from_checkpoint(checkpoint_path: str, device: str = 'cuda')
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
-    # Get encoder state dict
+    # Get encoder state dict - handle both SSL and fine-tuned checkpoints
     if 'encoder_state_dict' in checkpoint:
+        # SSL checkpoint (from continue_ssl_butppg_quality.py)
         encoder_state = checkpoint['encoder_state_dict']
-        print("  ✓ Found encoder_state_dict")
+        print("  ✓ Found encoder_state_dict (SSL checkpoint)")
+    elif 'model_state_dict' in checkpoint:
+        # Fine-tuned checkpoint (from finetune_butppg.py)
+        # Extract encoder weights from full model
+        print("  ✓ Found model_state_dict (fine-tuned checkpoint)")
+        print("  → Extracting encoder weights from full model...")
+
+        full_model_state = checkpoint['model_state_dict']
+        encoder_state = {}
+
+        # Extract keys starting with 'encoder.'
+        for key, value in full_model_state.items():
+            if key.startswith('encoder.'):
+                # Remove 'encoder.' prefix to match SSL checkpoint format
+                new_key = key[len('encoder.'):]
+                encoder_state[new_key] = value
+
+        if len(encoder_state) == 0:
+            raise ValueError(
+                f"No encoder weights found in model_state_dict. "
+                f"Keys: {list(full_model_state.keys())[:5]}..."
+            )
+
+        print(f"  ✓ Extracted {len(encoder_state)} encoder parameters")
     else:
-        raise ValueError(f"Checkpoint missing encoder_state_dict. Keys: {list(checkpoint.keys())}")
+        raise ValueError(
+            f"Checkpoint missing encoder weights. "
+            f"Expected 'encoder_state_dict' (SSL) or 'model_state_dict' (fine-tuned). "
+            f"Found keys: {list(checkpoint.keys())}"
+        )
 
     # Detect architecture from weights
     patcher_keys = [k for k in encoder_state.keys() if 'patcher.weight' in k]
