@@ -21,6 +21,8 @@ Usage:
 
 import subprocess
 import argparse
+import torch
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -76,11 +78,36 @@ def run_task(task: str, args: argparse.Namespace) -> bool:
 
     try:
         # Run fine-tuning
-        result = subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(result.stdout)  # Print stdout for visibility
         print(f"\n✓ Task '{task}' completed successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"\n✗ Task '{task}' failed with error: {e}")
+
+        # Print error details
+        if e.stderr:
+            print(f"\nError output:\n{e.stderr}")
+
+        # Check for architecture mismatch errors
+        error_text = str(e.stderr) if e.stderr else ""
+        if 'Expected size' in error_text or 'dimension' in error_text.lower():
+            print("\n" + "="*80)
+            print("⚠️  ARCHITECTURE MISMATCH DETECTED")
+            print("="*80)
+            print("This usually means the checkpoint format is incompatible.")
+            print("\nPossible solutions:")
+            print("  1. The checkpoint should have been auto-converted above")
+            print("  2. Check if converted_encoder.pt was created successfully")
+            print("  3. Try using --skip-ssl flag with finetune_butppg.py for simpler architecture")
+            print("  4. Train quality task with finetune_enhanced.py directly:")
+            print("     python3 scripts/finetune_enhanced.py \\")
+            print("         --pretrained <SSL_checkpoint> \\")
+            print("         --task quality \\")
+            print("         --data-dir <data_dir> \\")
+            print("         --output-dir <output_dir>")
+            print("="*80 + "\n")
+
         return False
 
 
@@ -145,6 +172,63 @@ def main():
     print(f"Domain adaptation: {args.adaptation if not args.no_adaptation else 'None'}")
     print(f"Device: {args.device}")
     print("=" * 80)
+
+    # ======================================================================
+    # CHECKPOINT CONVERSION FOR MULTI-TASK COMPATIBILITY
+    # ======================================================================
+    print("\n" + "=" * 80)
+    print("CHECKPOINT CONVERSION")
+    print("=" * 80)
+
+    # Check if checkpoint needs conversion
+    original_checkpoint = args.pretrained
+    converted_checkpoint = None
+
+    # Check if this is a multi-scale checkpoint (from finetune_butppg.py)
+    try:
+        print(f"Checking checkpoint format: {original_checkpoint}")
+        checkpoint = torch.load(original_checkpoint, map_location='cpu', weights_only=False)
+        state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+
+        # Check for multi-scale components
+        has_multi_scale = any('pooling' in key or 'fusion' in key for key in state_dict.keys())
+
+        if has_multi_scale:
+            print("✓ Detected multi-scale checkpoint (from finetune_butppg.py)")
+            print("  Converting to simple encoder format for multi-task evaluation...")
+
+            # Convert checkpoint
+            converted_path = os.path.join(args.output_dir, 'converted_encoder.pt')
+
+            conversion_cmd = [
+                'python3', 'scripts/convert_checkpoint_for_multitask.py',
+                '--input', original_checkpoint,
+                '--output', converted_path,
+                '--quiet'
+            ]
+
+            result = subprocess.run(conversion_cmd, capture_output=True, text=True)
+
+            if result.returncode == 0:
+                print(f"✓ Converted checkpoint saved to: {converted_path}")
+                converted_checkpoint = converted_path
+                args.pretrained = converted_checkpoint
+                print(f"✓ Using converted checkpoint for all tasks")
+            else:
+                print(f"⚠️  Conversion failed: {result.stderr}")
+                print("  Attempting to use original checkpoint...")
+        else:
+            print("✓ Checkpoint is already in simple encoder format")
+
+    except Exception as e:
+        print(f"⚠️  Could not check checkpoint format: {e}")
+        print("  Attempting to use original checkpoint...")
+
+    print("=" * 80)
+
+    # ======================================================================
+    # MULTI-TASK FINE-TUNING
+    # ======================================================================
 
     # Run all tasks
     start_time = datetime.now()
