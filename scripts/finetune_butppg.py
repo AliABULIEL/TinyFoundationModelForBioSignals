@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fine-tuning Script for BUT-PPG Quality Classification.
 
-This script fine-tunes a 2-channel SSL pretrained model on 2-channel BUT-PPG data
-for PPG quality classification (good vs poor).
+This script fine-tunes either an SSL pretrained model OR IBM TTM baseline on 2-channel
+BUT-PPG data for PPG quality classification (good vs poor).
 
 Data Format:
 - BUT-PPG data: 2 channels [PPG, ECG] in windowed format
@@ -11,33 +11,42 @@ Data Format:
 - No channel inflation needed (both SSL and fine-tuning use 2 channels)
 
 Strategy:
-1. Load 2-channel pretrained checkpoint from SSL pre-training
-2. Add classification head for binary quality prediction
+1. Load encoder: either SSL checkpoint OR IBM TTM baseline
+2. Add multi-scale classification head with attention pooling
 3. Staged unfreezing:
-   - Stage 1 (3-5 epochs): Head-only training
+   - Stage 1 (10 epochs): Head-only training with augmentations
    - Stage 2 (remaining epochs): Unfreeze last N encoder blocks
-   - Stage 3 (optional): Full fine-tuning at very low LR
-4. Monitor validation accuracy and save best model
+   - Stage 3 (optional): Full fine-tuning with SWA
+4. Monitor validation AUROC and save best model
 
 Usage:
-    # Quick test (1 epoch)
+    # With SSL pre-training (full pipeline):
     python scripts/finetune_butppg.py \
-        --pretrained artifacts/foundation_model/best_model.pt \
+        --pretrained artifacts/SSL_IMPROVED/best_model.pt \
         --data-dir data/processed/butppg/windows_with_labels \
-        --unfreeze-last-n 2 \
-        --epochs 1 \
-        --lr 2e-5 \
-        --output-dir artifacts/but_ppg_finetuned
-
-    # Full training (30 epochs with staged unfreezing)
-    python scripts/finetune_butppg.py \
-        --pretrained artifacts/foundation_model/best_model.pt \
-        --data-dir data/processed/butppg/windows_with_labels \
+        --output-dir artifacts/FINETUNE_WITH_SSL \
         --epochs 30 \
-        --head-only-epochs 2 \
-        --unfreeze-last-n 2 \
         --batch-size 64 \
-        --output-dir artifacts/but_ppg_finetuned
+        --device cuda
+
+    # IBM baseline (no SSL - for comparison):
+    python scripts/finetune_butppg.py \
+        --skip-ssl \
+        --data-dir data/processed/butppg/windows_with_labels \
+        --output-dir artifacts/IBM_BASELINE_ONLY \
+        --epochs 40 \
+        --batch-size 64 \
+        --device cuda
+
+    # IBM baseline with full fine-tuning + SWA:
+    python scripts/finetune_butppg.py \
+        --skip-ssl \
+        --full-finetune \
+        --full-finetune-epochs 10 \
+        --data-dir data/processed/butppg/windows_with_labels \
+        --output-dir artifacts/IBM_BASELINE_FULL \
+        --epochs 30 \
+        --device cuda
 """
 
 import sys
@@ -992,6 +1001,19 @@ def parse_args():
         help='Verify data structure and exit (useful for debugging)'
     )
 
+    # SSL and baseline options
+    parser.add_argument(
+        '--skip-ssl',
+        action='store_true',
+        help='Skip SSL checkpoint loading and use IBM TTM baseline directly (for testing IBM baseline performance)'
+    )
+    parser.add_argument(
+        '--use-ibm-pretrained',
+        action='store_true',
+        default=True,
+        help='Use IBM pretrained TTM weights when initializing baseline (default: True)'
+    )
+
     return parser.parse_args()
 
 
@@ -1018,7 +1040,14 @@ def main():
     print("\n" + "=" * 70)
     print("BUT-PPG FINE-TUNING CONFIGURATION")
     print("=" * 70)
-    print(f"Pretrained model: {args.pretrained}")
+
+    if args.skip_ssl:
+        print("Mode: IBM TTM BASELINE (No SSL)")
+        print("Pretrained: IBM Granite TTM-r1" if args.use_ibm_pretrained else "Random initialization")
+    else:
+        print(f"Mode: SSL FINE-TUNING")
+        print(f"Pretrained model: {args.pretrained}")
+
     print(f"Data directory: {args.data_dir}")
     print(f"Channels: 2 (PPG + ECG)")
     print(f"Total epochs: {args.epochs}")
@@ -1032,39 +1061,85 @@ def main():
     print(f"AMP: {not args.no_amp and torch.cuda.is_available()}")
     print("=" * 70)
 
-    # Load pretrained SSL encoder (CRITICAL FIX: Use encoder from SSL directly)
+    # Load encoder: either SSL checkpoint or IBM TTM baseline
     print("\n" + "=" * 70)
-    print("LOADING SSL ENCODER")
+    if args.skip_ssl:
+        print("INITIALIZING IBM TTM BASELINE (NO SSL)")
+    else:
+        print("LOADING SSL ENCODER")
     print("=" * 70)
-    print("Using Option 3: Load complete SSL encoder with IBM TTM inside")
-    print("This avoids fallback CNN and preserves all SSL features!")
 
-    # Use our new function to load SSL encoder
-    try:
-        ssl_encoder, ssl_config = load_ssl_encoder_from_checkpoint(
-            checkpoint_path=args.pretrained,
-            device=args.device
-        )
+    if args.skip_ssl:
+        # Initialize encoder directly from IBM TTM pretrained weights
+        from src.models.ttm_encoder import create_ttm_encoder
 
-        context_length = ssl_config['context_length']
-        patch_size = ssl_config['patch_size']
-        d_model = ssl_config['d_model']
-        num_patches = ssl_config['num_patches']
+        print("\n✓ Skipping SSL checkpoint loading")
+        print("✓ Initializing encoder directly from IBM TTM pretrained weights\n")
 
-        print(f"\n✅ SSL encoder loaded successfully!")
-        print(f"  Context length: {context_length}")
-        print(f"  Patch size: {patch_size}")
-        print(f"  d_model: {d_model}")
-        print(f"  Num patches: {num_patches}")
-        print(f"  Total encoder params: {sum(p.numel() for p in ssl_encoder.parameters()):,}")
+        try:
+            ssl_encoder = create_ttm_encoder(
+                context_length=512,
+                patch_size=64,
+                d_model=192,
+                num_input_channels=2,
+                num_layers=3,
+                use_positional_encoding=True,
+                use_real_ttm=True,
+                pretrained_variant='ibm-granite/granite-timeseries-ttm-r1' if args.use_ibm_pretrained else None
+            )
 
-    except Exception as e:
-        print(f"\n❌ FATAL: Failed to load SSL encoder: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nCannot proceed without SSL encoder - exiting")
-        import sys
-        sys.exit(1)
+            # Set config values
+            context_length = 512
+            patch_size = 64
+            d_model = 192
+            num_patches = context_length // patch_size
+
+            print(f"✅ IBM TTM encoder initialized:")
+            print(f"  Context length: {context_length}")
+            print(f"  Patch size: {patch_size}")
+            print(f"  d_model: {d_model}")
+            print(f"  Num patches: {num_patches}")
+            print(f"  Total encoder params: {sum(p.numel() for p in ssl_encoder.parameters()):,}")
+            print(f"  Using pretrained: {args.use_ibm_pretrained}")
+
+        except Exception as e:
+            print(f"\n❌ FATAL: Failed to initialize IBM TTM encoder: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\nCannot proceed without encoder - exiting")
+            import sys
+            sys.exit(1)
+
+    else:
+        # Load SSL pre-trained encoder
+        print("Using Option 3: Load complete SSL encoder with IBM TTM inside")
+        print("This avoids fallback CNN and preserves all SSL features!")
+
+        try:
+            ssl_encoder, ssl_config = load_ssl_encoder_from_checkpoint(
+                checkpoint_path=args.pretrained,
+                device=args.device
+            )
+
+            context_length = ssl_config['context_length']
+            patch_size = ssl_config['patch_size']
+            d_model = ssl_config['d_model']
+            num_patches = ssl_config['num_patches']
+
+            print(f"\n✅ SSL encoder loaded successfully!")
+            print(f"  Context length: {context_length}")
+            print(f"  Patch size: {patch_size}")
+            print(f"  d_model: {d_model}")
+            print(f"  Num patches: {num_patches}")
+            print(f"  Total encoder params: {sum(p.numel() for p in ssl_encoder.parameters()):,}")
+
+        except Exception as e:
+            print(f"\n❌ FATAL: Failed to load SSL encoder: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\nCannot proceed without SSL encoder - exiting")
+            import sys
+            sys.exit(1)
 
     # Freeze SSL encoder for Stage 1
     for param in ssl_encoder.parameters():
