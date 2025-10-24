@@ -776,7 +776,24 @@ def train_epoch(
             with autocast(enabled=use_amp):
                 logits = model(signals)
                 loss = criterion(logits, labels)
-        
+
+        # ✅ DEBUGGING: Check for NaN values
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            print(f"\n⚠️  ERROR: Invalid loss detected at batch {batch_idx} (epoch {epoch})")
+            print(f"  - Loss value: {loss.item()}")
+            print(f"  - Signals contain NaN: {torch.isnan(signals).any().item()}")
+            print(f"  - Signals contain Inf: {torch.isinf(signals).any().item()}")
+            print(f"  - Labels contain NaN: {torch.isnan(labels).any().item()}")
+            print(f"  - Labels contain Inf: {torch.isinf(labels).any().item()}")
+            print(f"  - Logits contain NaN: {torch.isnan(logits).any().item()}")
+            print(f"  - Logits contain Inf: {torch.isinf(logits).any().item()}")
+            if not torch.isnan(logits).all():
+                print(f"  - Logits min/max: {logits[~torch.isnan(logits)].min().item():.3f} / {logits[~torch.isnan(logits)].max().item():.3f}")
+            if not torch.isnan(labels).all():
+                print(f"  - Labels min/max: {labels[~torch.isnan(labels)].min().item():.3f} / {labels[~torch.isnan(labels)].max().item():.3f}")
+            print(f"  - Task type: {task_type}")
+            raise ValueError(f"Invalid loss (NaN/Inf) detected at batch {batch_idx}. See debug info above.")
+
         # Backward pass
         optimizer.zero_grad()
         
@@ -2158,35 +2175,72 @@ def main():
                 val_metrics = {'loss': 0.0, 'accuracy': 0.0}
             
             epoch_time = time.time() - epoch_start
-            
-            # Print epoch summary with AUROC and per-class accuracy
-            print(f"\nEpoch {args.head_only_epochs + epoch + 1}/{args.epochs} ({epoch_time:.1f}s)")
-            print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
-            print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
-            # Warn if class collapse detected
-            if val_metrics['class_1_acc'] < 0.10:
-                print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-            elif val_metrics['class_0_acc'] < 0.10:
-                print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+            # Print epoch summary (different for classification vs regression)
+            print(f"\nEpoch {args.head_only_epochs + epoch + 1}/{args.epochs} ({epoch_time:.1f}s)")
+
+            if task_type == 'classification':
+                print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
+                print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics.get('auroc', 0.0):.3f}")
+
+                # Print per-class accuracy for classification
+                for i in range(task_config.get('num_classes', 2)):
+                    class_acc_key = f'class_{i}_acc'
+                    if class_acc_key in val_metrics:
+                        print(f"          Class {i}: {val_metrics[class_acc_key]*100:.1f}%", end='')
+                        if i < task_config.get('num_classes', 2) - 1:
+                            print(", ", end='')
+                print()  # New line
+
+                # Warn if class collapse detected
+                for i in range(task_config.get('num_classes', 2)):
+                    class_acc_key = f'class_{i}_acc'
+                    if class_acc_key in val_metrics and val_metrics[class_acc_key] < 0.10:
+                        print(f"  ⚠️  WARNING: Class {i} accuracy very low ({val_metrics[class_acc_key]*100:.1f}%) - model collapsing!")
+            else:  # regression
+                print(f"  Train - Loss: {train_metrics['loss']:.4f}, MAE: {train_metrics.get('mae', 0.0):.2f}")
+                print(f"  Val   - Loss: {val_metrics['loss']:.4f}, MAE: {val_metrics.get('mae', 0.0):.2f}, RMSE: {val_metrics.get('rmse', 0.0):.2f}")
 
             # Update history
             history['train_loss'].append(train_metrics['loss'])
-            history['train_acc'].append(train_metrics['accuracy'])
+            if task_type == 'classification':
+                history['train_acc'].append(train_metrics.get('accuracy', 0.0))
+                history['val_acc'].append(val_metrics.get('accuracy', 0.0))
+                history['val_auroc'].append(val_metrics.get('auroc', 0.0))
+            else:
+                history['train_acc'].append(train_metrics.get('mae', 0.0))
+                history['val_acc'].append(val_metrics.get('mae', 0.0))
+                history['val_auroc'].append(val_metrics.get('rmse', 0.0))
             history['val_loss'].append(val_metrics['loss'])
-            history['val_acc'].append(val_metrics['accuracy'])
-            history['val_auroc'].append(val_metrics['auroc'])
             history['stage'].append('stage2_partial_unfreeze')
 
-            # CRITICAL: Save best model based on AUROC, not accuracy
-            if val_metrics['auroc'] > best_auroc:
-                best_auroc = val_metrics['auroc']
-                save_checkpoint(
-                    output_dir / 'best_model.pt',
-                    model, optimizer, epoch, val_metrics, training_config
-                )
-                print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+            # Save best model based on task type
+            if task_type == 'classification':
+                # For classification, higher AUROC is better
+                if val_metrics.get('auroc', 0.0) > best_auroc:
+                    best_auroc = val_metrics['auroc']
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+            else:  # regression
+                # For regression, lower MAE is better
+                current_mae = val_metrics.get('mae', float('inf'))
+                if best_auroc == 0.0:  # First epoch
+                    best_auroc = current_mae
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
+                elif current_mae < best_auroc:
+                    best_auroc = current_mae
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
 
             # Step learning rate scheduler
             scheduler.step()
@@ -2250,25 +2304,43 @@ def main():
                 val_metrics = {'loss': 0.0, 'accuracy': 0.0}
             
             epoch_time = time.time() - epoch_start
-            
-            # Print epoch summary with AUROC and per-class accuracy
-            print(f"\nEpoch {args.epochs + epoch + 1}/{args.epochs + args.full_finetune_epochs} ({epoch_time:.1f}s)")
-            print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
-            print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
-            # Warn if class collapse detected
-            if val_metrics['class_1_acc'] < 0.10:
-                print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-            elif val_metrics['class_0_acc'] < 0.10:
-                print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+            # Print epoch summary (different for classification vs regression)
+            print(f"\nEpoch {args.epochs + epoch + 1}/{args.epochs + args.full_finetune_epochs} ({epoch_time:.1f}s)")
+
+            if task_type == 'classification':
+                print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
+                print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics.get('auroc', 0.0):.3f}")
+
+                # Print per-class accuracy for classification
+                for i in range(task_config.get('num_classes', 2)):
+                    class_acc_key = f'class_{i}_acc'
+                    if class_acc_key in val_metrics:
+                        print(f"          Class {i}: {val_metrics[class_acc_key]*100:.1f}%", end='')
+                        if i < task_config.get('num_classes', 2) - 1:
+                            print(", ", end='')
+                print()  # New line
+
+                # Warn if class collapse detected
+                for i in range(task_config.get('num_classes', 2)):
+                    class_acc_key = f'class_{i}_acc'
+                    if class_acc_key in val_metrics and val_metrics[class_acc_key] < 0.10:
+                        print(f"  ⚠️  WARNING: Class {i} accuracy very low ({val_metrics[class_acc_key]*100:.1f}%) - model collapsing!")
+            else:  # regression
+                print(f"  Train - Loss: {train_metrics['loss']:.4f}, MAE: {train_metrics.get('mae', 0.0):.2f}")
+                print(f"  Val   - Loss: {val_metrics['loss']:.4f}, MAE: {val_metrics.get('mae', 0.0):.2f}, RMSE: {val_metrics.get('rmse', 0.0):.2f}")
 
             # Update history
             history['train_loss'].append(train_metrics['loss'])
-            history['train_acc'].append(train_metrics['accuracy'])
+            if task_type == 'classification':
+                history['train_acc'].append(train_metrics.get('accuracy', 0.0))
+                history['val_acc'].append(val_metrics.get('accuracy', 0.0))
+                history['val_auroc'].append(val_metrics.get('auroc', 0.0))
+            else:
+                history['train_acc'].append(train_metrics.get('mae', 0.0))
+                history['val_acc'].append(val_metrics.get('mae', 0.0))
+                history['val_auroc'].append(val_metrics.get('rmse', 0.0))
             history['val_loss'].append(val_metrics['loss'])
-            history['val_acc'].append(val_metrics['accuracy'])
-            history['val_auroc'].append(val_metrics['auroc'])
             history['stage'].append('stage3_full_finetune')
 
             # ✅ ADVANCED: Update SWA model if in SWA phase
@@ -2277,14 +2349,33 @@ def main():
                 swa_scheduler.step()
                 print(f"  ✓ SWA model updated (epoch {epoch + 1}/{args.full_finetune_epochs})")
 
-            # CRITICAL: Save best model based on AUROC, not accuracy
-            if val_metrics['auroc'] > best_auroc:
-                best_auroc = val_metrics['auroc']
-                save_checkpoint(
-                    output_dir / 'best_model.pt',
-                    model, optimizer, epoch, val_metrics, training_config
-                )
-                print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+            # Save best model based on task type
+            if task_type == 'classification':
+                # For classification, higher AUROC is better
+                if val_metrics.get('auroc', 0.0) > best_auroc:
+                    best_auroc = val_metrics['auroc']
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+            else:  # regression
+                # For regression, lower MAE is better
+                current_mae = val_metrics.get('mae', float('inf'))
+                if best_auroc == 0.0:  # First epoch
+                    best_auroc = current_mae
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
+                elif current_mae < best_auroc:
+                    best_auroc = current_mae
+                    save_checkpoint(
+                        output_dir / 'best_model.pt',
+                        model, optimizer, epoch, val_metrics, training_config
+                    )
+                    print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
 
         # ✅ ADVANCED: Finalize SWA model (update batch norm statistics)
         print(f"\n  ✅ Finalizing SWA model...")
