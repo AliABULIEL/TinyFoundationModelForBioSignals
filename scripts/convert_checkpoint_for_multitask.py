@@ -36,7 +36,12 @@ def convert_checkpoint(input_path, output_path, verbose=True):
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Checkpoint not found: {input_path}")
 
-    checkpoint = torch.load(input_path, map_location='cpu')
+    # PyTorch 2.6+ requires weights_only=False for pickled checkpoints
+    try:
+        checkpoint = torch.load(input_path, map_location='cpu', weights_only=False)
+    except TypeError:
+        # Fallback for older PyTorch versions
+        checkpoint = torch.load(input_path, map_location='cpu')
 
     # Determine checkpoint structure
     if 'model_state_dict' in checkpoint:
