@@ -708,24 +708,26 @@ def train_epoch(
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: str,
+    task_type: str = 'classification',
     use_amp: bool = True,
     scaler: Optional[GradScaler] = None,
     gradient_clip: float = 1.0,
     epoch: int = 0
 ) -> Dict[str, float]:
     """Train for one epoch.
-    
+
     Args:
         model: Model to train
         train_loader: Training dataloader
         criterion: Loss criterion
         optimizer: Optimizer
         device: Device to train on
+        task_type: 'classification' or 'regression'
         use_amp: Use automatic mixed precision
         scaler: GradScaler for AMP
         gradient_clip: Gradient clipping value
         epoch: Current epoch number
-    
+
     Returns:
         Dictionary with training metrics
     """
@@ -801,23 +803,43 @@ def train_epoch(
             
             optimizer.step()
         
-        # Compute accuracy
-        preds = logits.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
-        
+        # Compute metrics based on task type
+        if task_type == 'classification':
+            preds = logits.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+        else:  # regression
+            # For regression, track MAE instead of accuracy
+            mae = torch.abs(logits - labels).mean().item()
+            if batch_idx == 0:
+                total_mae = mae
+            else:
+                total_mae = (total_mae * batch_idx + mae) / (batch_idx + 1)
+
         total_loss += loss.item()
-        
+
         # Update progress bar
-        pbar.set_postfix({
-            'loss': total_loss / (batch_idx + 1),
-            'acc': 100.0 * correct / total
-        })
-    
-    return {
-        'loss': total_loss / len(train_loader),
-        'accuracy': 100.0 * correct / total
-    }
+        if task_type == 'classification':
+            pbar.set_postfix({
+                'loss': total_loss / (batch_idx + 1),
+                'acc': 100.0 * correct / total if total > 0 else 0.0
+            })
+        else:  # regression
+            pbar.set_postfix({
+                'loss': total_loss / (batch_idx + 1),
+                'mae': total_mae
+            })
+
+    if task_type == 'classification':
+        return {
+            'loss': total_loss / len(train_loader),
+            'accuracy': 100.0 * correct / total if total > 0 else 0.0
+        }
+    else:  # regression
+        return {
+            'loss': total_loss / len(train_loader),
+            'mae': total_mae
+        }
 
 
 @torch.no_grad()
@@ -826,85 +848,123 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     device: str,
+    task_type: str = 'classification',
+    num_classes: int = 2,
     use_amp: bool = True,
     desc: str = "Val"
 ) -> Dict[str, float]:
     """Evaluate model on a dataset.
-    
+
     Args:
         model: Model to evaluate
         loader: Dataloader
         criterion: Loss criterion
         device: Device to evaluate on
+        task_type: 'classification' or 'regression'
+        num_classes: Number of classes (for classification only)
         use_amp: Use automatic mixed precision
         desc: Description for progress bar
-    
+
     Returns:
         Dictionary with evaluation metrics
     """
     model.eval()
 
     total_loss = 0.0
-    correct = 0
-    total = 0
     all_preds = []
     all_labels = []
-    all_probs = []  # CRITICAL: Collect probabilities for AUROC
+
+    # Classification-specific
+    if task_type == 'classification':
+        correct = 0
+        total = 0
+        all_probs = []  # Collect probabilities for AUROC
 
     pbar = tqdm(loader, desc=f"[{desc}]", leave=False)
 
-    with torch.no_grad():  # Add no_grad for efficiency
+    with torch.no_grad():
         for signals, labels in pbar:
             signals = signals.to(device)
             labels = labels.to(device)
 
             with autocast(enabled=use_amp):
-                logits = model(signals)
-                loss = criterion(logits, labels)
+                outputs = model(signals)
+                loss = criterion(outputs, labels)
 
-            # Get predictions and probabilities
-            preds = logits.argmax(dim=1)
-            probs = torch.softmax(logits, dim=1)[:, 1]  # Probability of Good class (class 1)
-
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
             total_loss += loss.item()
 
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+            if task_type == 'classification':
+                # Get predictions and probabilities
+                preds = outputs.argmax(dim=1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
 
-            pbar.set_postfix({
-                'loss': total_loss / len(loader),
-                'acc': 100.0 * correct / total
-            })
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
 
-    # Compute additional metrics
+                # For binary classification, get probability of positive class
+                if num_classes == 2:
+                    probs = torch.softmax(outputs, dim=1)[:, 1]
+                    all_probs.extend(probs.cpu().numpy())
+
+                pbar.set_postfix({
+                    'loss': total_loss / (len(all_preds) / labels.size(0)),
+                    'acc': 100.0 * correct / total
+                })
+            else:  # regression
+                # For regression, outputs are predictions directly
+                all_preds.extend(outputs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+                # Compute running MAE
+                mae = np.abs(np.array(all_preds) - np.array(all_labels)).mean()
+                pbar.set_postfix({
+                    'loss': total_loss / (len(all_preds) / labels.size(0)),
+                    'mae': mae
+                })
+
+    # Convert to numpy
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
 
-    # CRITICAL: Compute AUROC (primary metric for imbalanced data)
-    try:
-        auroc = roc_auc_score(all_labels, all_probs)
-    except ValueError:
-        # Handle case where only one class present in batch
-        auroc = 0.0
+    # Compute final metrics based on task type
+    if task_type == 'classification':
+        # Compute AUROC for binary classification
+        if num_classes == 2 and len(all_probs) > 0:
+            all_probs = np.array(all_probs)
+            try:
+                auroc = roc_auc_score(all_labels, all_probs)
+            except ValueError:
+                auroc = 0.0
+        else:
+            auroc = 0.0
 
-    # Per-class accuracy (return as fraction 0-1, not percentage)
-    class_0_mask = all_labels == 0
-    class_1_mask = all_labels == 1
+        # Per-class accuracy (return as fraction 0-1, not percentage)
+        class_accuracies = {}
+        for class_idx in range(num_classes):
+            class_mask = all_labels == class_idx
+            if class_mask.sum() > 0:
+                class_acc = (all_preds[class_mask] == all_labels[class_mask]).mean()
+                class_accuracies[f'class_{class_idx}_acc'] = class_acc
+            else:
+                class_accuracies[f'class_{class_idx}_acc'] = 0.0
 
-    class_0_acc = (all_preds[class_0_mask] == all_labels[class_0_mask]).mean() if class_0_mask.sum() > 0 else 0.0
-    class_1_acc = (all_preds[class_1_mask] == all_labels[class_1_mask]).mean() if class_1_mask.sum() > 0 else 0.0
+        return {
+            'loss': total_loss / len(loader),
+            'accuracy': 100.0 * correct / total if total > 0 else 0.0,
+            'auroc': auroc,
+            **class_accuracies
+        }
+    else:  # regression
+        # Compute regression metrics
+        mae = np.abs(all_preds - all_labels).mean()
+        rmse = np.sqrt(((all_preds - all_labels) ** 2).mean())
 
-    return {
-        'loss': total_loss / len(loader),
-        'accuracy': 100.0 * correct / total,
-        'auroc': auroc,  # CRITICAL: Primary metric for saving best model
-        'class_0_acc': class_0_acc,
-        'class_1_acc': class_1_acc
-    }
+        return {
+            'loss': total_loss / len(loader),
+            'mae': mae,
+            'rmse': rmse
+        }
 
 
 def save_checkpoint(
@@ -1947,47 +2007,86 @@ def main():
         # Train
         train_metrics = train_epoch(
             model, train_loader, criterion, optimizer,
-            args.device, use_amp, scaler, args.gradient_clip, epoch
+            args.device, task_type, use_amp, scaler, args.gradient_clip, epoch
         )
-        
+
         # Validate
         if val_loader is not None:
             val_metrics = evaluate(
-                model, val_loader, criterion, args.device, use_amp, "Val"
+                model, val_loader, criterion, args.device, task_type,
+                task_config.get('num_classes', 2), use_amp, "Val"
             )
         else:
             val_metrics = {'loss': 0.0, 'accuracy': 0.0}
         
         epoch_time = time.time() - epoch_start
         
-        # Print epoch summary with AUROC and per-class accuracy
+        # Print epoch summary (different for classification vs regression)
         print(f"\nEpoch {epoch+1}/{args.head_only_epochs} ({epoch_time:.1f}s)")
-        print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics['auroc']:.3f}")
-        print(f"          Poor: {val_metrics['class_0_acc']*100:.1f}%, Good: {val_metrics['class_1_acc']*100:.1f}%")
 
-        # Warn if class collapse detected
-        if val_metrics['class_1_acc'] < 0.10:  # Class 1 (Good) < 10%
-            print(f"  ⚠️  WARNING: Class 1 accuracy very low ({val_metrics['class_1_acc']*100:.1f}%) - model collapsing to majority class!")
-        elif val_metrics['class_0_acc'] < 0.10:  # Class 0 (Poor) < 10%
-            print(f"  ⚠️  WARNING: Class 0 accuracy very low ({val_metrics['class_0_acc']*100:.1f}%) - model collapsing to minority class!")
+        if task_type == 'classification':
+            print(f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
+            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, AUROC: {val_metrics.get('auroc', 0.0):.3f}")
+
+            # Print per-class accuracy for classification
+            for i in range(task_config.get('num_classes', 2)):
+                class_acc_key = f'class_{i}_acc'
+                if class_acc_key in val_metrics:
+                    print(f"          Class {i}: {val_metrics[class_acc_key]*100:.1f}%", end='')
+                    if i < task_config.get('num_classes', 2) - 1:
+                        print(", ", end='')
+            print()  # New line
+
+            # Warn if class collapse detected
+            for i in range(task_config.get('num_classes', 2)):
+                class_acc_key = f'class_{i}_acc'
+                if class_acc_key in val_metrics and val_metrics[class_acc_key] < 0.10:
+                    print(f"  ⚠️  WARNING: Class {i} accuracy very low ({val_metrics[class_acc_key]*100:.1f}%) - model collapsing!")
+        else:  # regression
+            print(f"  Train - Loss: {train_metrics['loss']:.4f}, MAE: {train_metrics.get('mae', 0.0):.2f}")
+            print(f"  Val   - Loss: {val_metrics['loss']:.4f}, MAE: {val_metrics.get('mae', 0.0):.2f}, RMSE: {val_metrics.get('rmse', 0.0):.2f}")
 
         # Update history
         history['train_loss'].append(train_metrics['loss'])
-        history['train_acc'].append(train_metrics['accuracy'])
+        if task_type == 'classification':
+            history['train_acc'].append(train_metrics.get('accuracy', 0.0))
+            history['val_acc'].append(val_metrics.get('accuracy', 0.0))
+            history['val_auroc'].append(val_metrics.get('auroc', 0.0))
+        else:
+            history['train_acc'].append(train_metrics.get('mae', 0.0))
+            history['val_acc'].append(val_metrics.get('mae', 0.0))
+            history['val_auroc'].append(val_metrics.get('rmse', 0.0))
         history['val_loss'].append(val_metrics['loss'])
-        history['val_acc'].append(val_metrics['accuracy'])
-        history['val_auroc'].append(val_metrics['auroc'])
         history['stage'].append('stage1_head_only')
 
-        # CRITICAL: Save best model based on AUROC, not accuracy
-        if val_metrics['auroc'] > best_auroc:
-            best_auroc = val_metrics['auroc']
-            save_checkpoint(
-                output_dir / 'best_model.pt',
-                model, optimizer, epoch, val_metrics, training_config
-            )
-            print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+        # Save best model based on primary metric
+        primary_metric = task_config['metric']
+        if task_type == 'classification':
+            # For classification, higher AUROC is better
+            if val_metrics.get('auroc', 0.0) > best_auroc:
+                best_auroc = val_metrics['auroc']
+                save_checkpoint(
+                    output_dir / 'best_model.pt',
+                    model, optimizer, epoch, val_metrics, training_config
+                )
+                print(f"  ✓ Best model saved (AUROC: {val_metrics['auroc']:.3f})")
+        else:  # regression
+            # For regression, lower MAE is better
+            current_mae = val_metrics.get('mae', float('inf'))
+            if best_auroc == 0.0:  # First epoch
+                best_auroc = current_mae
+                save_checkpoint(
+                    output_dir / 'best_model.pt',
+                    model, optimizer, epoch, val_metrics, training_config
+                )
+                print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
+            elif current_mae < best_auroc:
+                best_auroc = current_mae
+                save_checkpoint(
+                    output_dir / 'best_model.pt',
+                    model, optimizer, epoch, val_metrics, training_config
+                )
+                print(f"  ✓ Best model saved (MAE: {current_mae:.3f})")
 
         # Step learning rate scheduler
         scheduler.step()
@@ -2045,14 +2144,15 @@ def main():
             # Train
             train_metrics = train_epoch(
                 model, train_loader, criterion, optimizer,
-                args.device, use_amp, scaler, args.gradient_clip,
+                args.device, task_type, use_amp, scaler, args.gradient_clip,
                 args.head_only_epochs + epoch
             )
-            
+
             # Validate
             if val_loader is not None:
                 val_metrics = evaluate(
-                    model, val_loader, criterion, args.device, use_amp, "Val"
+                    model, val_loader, criterion, args.device, task_type,
+                    task_config.get('num_classes', 2), use_amp, "Val"
                 )
             else:
                 val_metrics = {'loss': 0.0, 'accuracy': 0.0}
@@ -2136,14 +2236,15 @@ def main():
             # Train
             train_metrics = train_epoch(
                 model, train_loader, criterion, optimizer,
-                args.device, use_amp, scaler, args.gradient_clip,
+                args.device, task_type, use_amp, scaler, args.gradient_clip,
                 args.epochs + epoch
             )
-            
+
             # Validate
             if val_loader is not None:
                 val_metrics = evaluate(
-                    model, val_loader, criterion, args.device, use_amp, "Val"
+                    model, val_loader, criterion, args.device, task_type,
+                    task_config.get('num_classes', 2), use_amp, "Val"
                 )
             else:
                 val_metrics = {'loss': 0.0, 'accuracy': 0.0}
@@ -2214,16 +2315,29 @@ def main():
 
     # Evaluate on test set if available
     if test_loader is not None:
-        print("\n✅ Evaluating with Test-Time Augmentation (5 augmentations per sample)...")
-        test_metrics_tta = evaluate_with_tta(
-            model, test_loader, args.device, num_augmentations=5
-        )
+        if task_type == 'classification':
+            print("\n✅ Evaluating with Test-Time Augmentation (5 augmentations per sample)...")
+            test_metrics_tta = evaluate_with_tta(
+                model, test_loader, args.device, num_augmentations=5
+            )
 
-        print(f"\nTest Results (with TTA):")
-        print(f"  Accuracy: {test_metrics_tta['accuracy']:.2f}%")
-        print(f"  AUROC: {test_metrics_tta['auroc']:.3f}")
-        print(f"  Class 0 (Poor) Accuracy: {test_metrics_tta['class_0_acc']*100:.2f}%")
-        print(f"  Class 1 (Good) Accuracy: {test_metrics_tta['class_1_acc']*100:.2f}%")
+            print(f"\nTest Results (with TTA):")
+            print(f"  Accuracy: {test_metrics_tta['accuracy']:.2f}%")
+            print(f"  AUROC: {test_metrics_tta['auroc']:.3f}")
+            for i in range(task_config.get('num_classes', 2)):
+                class_acc_key = f'class_{i}_acc'
+                if class_acc_key in test_metrics_tta:
+                    print(f"  Class {i} Accuracy: {test_metrics_tta[class_acc_key]*100:.2f}%")
+        else:  # regression
+            print("\n✅ Evaluating on test set...")
+            test_metrics_tta = evaluate(
+                model, test_loader, criterion, args.device, task_type,
+                task_config.get('num_classes', 2), use_amp, "Test"
+            )
+
+            print(f"\nTest Results:")
+            print(f"  MAE: {test_metrics_tta['mae']:.3f}")
+            print(f"  RMSE: {test_metrics_tta['rmse']:.3f}")
 
         # Save test metrics
         with open(output_dir / 'test_metrics.json', 'w') as f:
@@ -2247,13 +2361,24 @@ def main():
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
     print("=" * 70)
-    print(f"Best validation AUROC: {best_auroc:.3f}")
-    if test_metrics:
-        print(f"\nFinal Test Results:")
-        print(f"  Accuracy: {test_metrics['accuracy']:.2f}%")
-        print(f"  AUROC: {test_metrics['auroc']:.3f}")
-        print(f"  Poor (class 0): {test_metrics['class_0_acc']*100:.1f}%")
-        print(f"  Good (class 1): {test_metrics['class_1_acc']*100:.1f}%")
+
+    if task_type == 'classification':
+        print(f"Best validation AUROC: {best_auroc:.3f}")
+        if test_metrics:
+            print(f"\nFinal Test Results:")
+            print(f"  Accuracy: {test_metrics.get('accuracy', 0.0):.2f}%")
+            print(f"  AUROC: {test_metrics.get('auroc', 0.0):.3f}")
+            for i in range(task_config.get('num_classes', 2)):
+                class_acc_key = f'class_{i}_acc'
+                if class_acc_key in test_metrics:
+                    print(f"  Class {i}: {test_metrics[class_acc_key]*100:.1f}%")
+    else:  # regression
+        print(f"Best validation MAE: {best_auroc:.3f}")
+        if test_metrics:
+            print(f"\nFinal Test Results:")
+            print(f"  MAE: {test_metrics.get('mae', 0.0):.3f}")
+            print(f"  RMSE: {test_metrics.get('rmse', 0.0):.3f}")
+
     print(f"\nCheckpoints saved to: {output_dir}")
     print("=" * 70)
 
