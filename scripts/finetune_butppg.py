@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""Fine-tuning Script for BUT-PPG Quality Classification.
+"""Fine-tuning Script for BUT-PPG Multi-Task Learning.
 
 This script fine-tunes either an SSL pretrained model OR IBM TTM baseline on 2-channel
-BUT-PPG data for PPG quality classification (good vs poor).
+BUT-PPG data for multiple clinical tasks:
+
+Tasks (7 total):
+- quality: Signal quality classification (2 classes: Poor/Good)
+- motion: Motion artifact classification (8 classes)
+- hr_estimation: Heart rate regression (bpm)
+- bp_systolic: Systolic blood pressure regression (mmHg)
+- bp_diastolic: Diastolic blood pressure regression (mmHg)
+- spo2: SpO2 regression (%)
+- glycaemia: Blood glucose regression (mg/dL)
 
 Data Format:
 - BUT-PPG data: 2 channels [PPG, ECG] in windowed format
@@ -12,40 +21,39 @@ Data Format:
 
 Strategy:
 1. Load encoder: either SSL checkpoint OR IBM TTM baseline
-2. Add multi-scale classification head with attention pooling
+2. Add task-specific head (classification or regression) with multi-scale features
 3. Staged unfreezing:
    - Stage 1 (10 epochs): Head-only training with augmentations
    - Stage 2 (remaining epochs): Unfreeze last N encoder blocks
    - Stage 3 (optional): Full fine-tuning with SWA
-4. Monitor validation AUROC and save best model
+4. Monitor validation metric (AUROC for classification, MAE for regression)
 
 Usage:
-    # With SSL pre-training (full pipeline):
+    # Quality classification (default):
     python scripts/finetune_butppg.py \
         --pretrained artifacts/SSL_IMPROVED/best_model.pt \
+        --task quality \
         --data-dir data/processed/butppg/windows_with_labels \
-        --output-dir artifacts/FINETUNE_WITH_SSL \
+        --output-dir artifacts/FINETUNE_QUALITY \
         --epochs 30 \
-        --batch-size 64 \
         --device cuda
 
-    # IBM baseline (no SSL - for comparison):
+    # Heart rate regression:
+    python scripts/finetune_butppg.py \
+        --pretrained artifacts/SSL_IMPROVED/best_model.pt \
+        --task hr_estimation \
+        --data-dir data/processed/butppg/windows_with_labels \
+        --output-dir artifacts/FINETUNE_HR \
+        --epochs 30 \
+        --device cuda
+
+    # IBM baseline (no SSL):
     python scripts/finetune_butppg.py \
         --skip-ssl \
+        --task quality \
         --data-dir data/processed/butppg/windows_with_labels \
-        --output-dir artifacts/IBM_BASELINE_ONLY \
+        --output-dir artifacts/IBM_BASELINE_QUALITY \
         --epochs 40 \
-        --batch-size 64 \
-        --device cuda
-
-    # IBM baseline with full fine-tuning + SWA:
-    python scripts/finetune_butppg.py \
-        --skip-ssl \
-        --full-finetune \
-        --full-finetune-epochs 10 \
-        --data-dir data/processed/butppg/windows_with_labels \
-        --output-dir artifacts/IBM_BASELINE_FULL \
-        --epochs 30 \
         --device cuda
 """
 
@@ -73,6 +81,61 @@ from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 from scipy.ndimage import gaussian_filter1d
 
 from src.models.channel_utils import unfreeze_last_n_blocks
+
+
+# ============================================================================
+# TASK CONFIGURATIONS
+# ============================================================================
+
+TASK_CONFIGS = {
+    # Classification tasks
+    'quality': {
+        'type': 'classification',
+        'num_classes': 2,
+        'label_key': 'quality',
+        'metric': 'auroc',
+        'description': 'Signal quality (Poor/Good)'
+    },
+    'motion': {
+        'type': 'classification',
+        'num_classes': 8,
+        'label_key': 'motion',
+        'metric': 'auroc',
+        'description': 'Motion artifact (8 classes)'
+    },
+
+    # Regression tasks
+    'hr_estimation': {
+        'type': 'regression',
+        'label_key': 'hr',
+        'metric': 'mae',
+        'description': 'Heart rate (bpm)'
+    },
+    'bp_systolic': {
+        'type': 'regression',
+        'label_key': 'bp_sys',
+        'metric': 'mae',
+        'description': 'Systolic BP (mmHg)'
+    },
+    'bp_diastolic': {
+        'type': 'regression',
+        'label_key': 'bp_dia',
+        'metric': 'mae',
+        'description': 'Diastolic BP (mmHg)'
+    },
+    'spo2': {
+        'type': 'regression',
+        'label_key': 'spo2',
+        'metric': 'mae',
+        'description': 'SpO2 (%)'
+    },
+    'glycaemia': {
+        'type': 'regression',
+        'label_key': 'glucose',
+        'metric': 'mae',
+        'description': 'Blood glucose (mg/dL)'
+    }
+}
 
 
 def load_ssl_encoder_from_checkpoint(checkpoint_path: str, device: str = 'cuda'):
@@ -194,15 +257,32 @@ class BUTPPGDataset(Dataset):
     Note: Signals are resampled to target_length (512 for IBM TTM-Enhanced) if specified.
     """
 
-    def __init__(self, data_dir: Path, normalize: bool = True, target_length: int = None):
+    def __init__(
+        self,
+        data_dir: Path,
+        task: str = 'quality',
+        normalize: bool = True,
+        target_length: int = None
+    ):
         """Initialize BUT-PPG dataset from windowed format.
 
         Args:
             data_dir: Path to directory containing window_*.npz files
+            task: Task name (quality, motion, hr_estimation, etc.)
             normalize: Whether to apply z-score normalization per channel
             target_length: If specified, resize signals to this length (for SSL model compatibility)
         """
-        print(f"Loading BUT-PPG data from: {data_dir}")
+        if task not in TASK_CONFIGS:
+            raise ValueError(f"Unknown task: {task}. Available: {list(TASK_CONFIGS.keys())}")
+
+        self.task = task
+        self.task_config = TASK_CONFIGS[task]
+        self.task_type = self.task_config['type']
+        self.label_key = self.task_config['label_key']
+
+        print(f"Loading BUT-PPG data for task: {task} ({self.task_config['description']})")
+        print(f"  Task type: {self.task_type}")
+        print(f"  Label key: {self.label_key}")
 
         data_dir = Path(data_dir)
         if not data_dir.exists():
@@ -224,6 +304,7 @@ class BUTPPGDataset(Dataset):
         # Load all windows
         signals_list = []
         labels_list = []
+        skipped = 0
 
         for window_file in window_files:
             data = np.load(window_file)
@@ -234,21 +315,41 @@ class BUTPPGDataset(Dataset):
 
             signal = data['signal']  # [2, T] - will be resampled to target_length if specified
 
-            # Load quality label
-            if 'quality' in data:
-                quality = data['quality']
-                # Convert to binary: assume quality is already 0/1 or convert threshold
-                label = int(quality) if not np.isnan(quality) else 0
-            else:
-                # If no quality label, default to 0 (poor)
-                label = 0
+            # Load task-specific label
+            if self.label_key not in data:
+                # Skip samples without the required label
+                skipped += 1
+                continue
+
+            label_value = data[self.label_key]
+
+            # Skip NaN labels
+            if np.isnan(label_value).any() if hasattr(label_value, '__iter__') else np.isnan(label_value):
+                skipped += 1
+                continue
+
+            # Convert label based on task type
+            if self.task_type == 'classification':
+                label = int(label_value)
+            else:  # regression
+                label = float(label_value)
 
             signals_list.append(signal)
             labels_list.append(label)
 
+        if len(signals_list) == 0:
+            raise ValueError(
+                f"No valid samples found for task '{task}' (label key: '{self.label_key}').\n"
+                f"Checked {len(window_files)} files, all were missing the label or had NaN values."
+            )
+
         # Stack into tensors
         self.signals = torch.from_numpy(np.stack(signals_list, axis=0)).float()  # [N, 2, T]
-        self.labels = torch.tensor(labels_list, dtype=torch.long)  # [N]
+
+        if self.task_type == 'classification':
+            self.labels = torch.tensor(labels_list, dtype=torch.long)  # [N]
+        else:  # regression
+            self.labels = torch.tensor(labels_list, dtype=torch.float32)  # [N]
 
         # Validate shapes
         N, C, T = self.signals.shape
@@ -280,11 +381,21 @@ class BUTPPGDataset(Dataset):
                     self.signals[:, c, :] = (channel_data - mean) / std
 
         # Print dataset info
-        n_good = (self.labels == 1).sum().item()
-        n_poor = (self.labels == 0).sum().item()
-        print(f"  Loaded {N} samples from {len(window_files)} windows:")
-        print(f"    - Good quality: {n_good} ({n_good/N*100:.1f}%)")
-        print(f"    - Poor quality: {n_poor} ({n_poor/N*100:.1f}%)")
+        print(f"  Loaded {N} samples from {len(window_files)} windows (skipped {skipped} without {self.label_key}):")
+
+        if self.task_type == 'classification':
+            # Print class distribution
+            for class_idx in range(self.task_config['num_classes']):
+                n_class = (self.labels == class_idx).sum().item()
+                print(f"    - Class {class_idx}: {n_class} ({n_class/N*100:.1f}%)")
+        else:
+            # Print regression statistics
+            labels_np = self.labels.numpy()
+            print(f"    - Mean: {labels_np.mean():.2f}")
+            print(f"    - Std: {labels_np.std():.2f}")
+            print(f"    - Min: {labels_np.min():.2f}")
+            print(f"    - Max: {labels_np.max():.2f}")
+
         print(f"    - Shape: {self.signals.shape}")
     
     def __len__(self):
@@ -296,6 +407,7 @@ class BUTPPGDataset(Dataset):
 
 def create_dataloaders(
     data_dir: Path,
+    task: str = 'quality',
     batch_size: int = 32,
     num_workers: int = 4,
     use_val: bool = True,
@@ -316,6 +428,7 @@ def create_dataloaders(
 
     Args:
         data_dir: Directory containing train/val/test subdirectories
+        task: Task name (quality, motion, hr_estimation, etc.)
         batch_size: Batch size for dataloaders
         num_workers: Number of data loading workers
         use_val: Whether to create validation loader
@@ -354,7 +467,7 @@ def create_dataloaders(
 
     # Create training loader
     print(f"\n✓ Found training directory: {train_dir}")
-    train_dataset = BUTPPGDataset(train_dir, normalize=True, target_length=target_length)
+    train_dataset = BUTPPGDataset(train_dir, task=task, normalize=True, target_length=target_length)
 
     # CRITICAL FIX: Use normal shuffling (NOT balanced sampling)
     # Balanced sampling creates distribution mismatch:
@@ -365,12 +478,20 @@ def create_dataloaders(
 
     print(f"  Using normal shuffling (real distribution matching validation)")
 
-    # Get labels for statistics
-    train_labels = train_dataset.labels.numpy()
-    class_sample_counts = np.bincount(train_labels)
+    # Get labels for statistics (only for classification tasks)
+    task_type = TASK_CONFIGS[task]['type']
+    if task_type == 'classification':
+        train_labels = train_dataset.labels.numpy()
+        class_sample_counts = np.bincount(train_labels)
 
-    print(f"  Training set: Poor={class_sample_counts[0]} ({100*class_sample_counts[0]/len(train_labels):.1f}%), Good={class_sample_counts[1]} ({100*class_sample_counts[1]/len(train_labels):.1f}%)")
-    print(f"  ✓ Normal shuffling (batches match real 80/20 distribution)")
+        # Print distribution based on number of classes
+        num_classes = TASK_CONFIGS[task]['num_classes']
+        class_dist_str = ", ".join([
+            f"Class {i}={class_sample_counts[i] if i < len(class_sample_counts) else 0} ({100*(class_sample_counts[i] if i < len(class_sample_counts) else 0)/len(train_labels):.1f}%)"
+            for i in range(num_classes)
+        ])
+        print(f"  Training set: {class_dist_str}")
+        print(f"  ✓ Normal shuffling (batches match real distribution)")
 
     train_loader = DataLoader(
         train_dataset,
@@ -385,7 +506,7 @@ def create_dataloaders(
     val_loader = None
     if use_val and val_dir.exists():
         print(f"✓ Found validation directory: {val_dir}")
-        val_dataset = BUTPPGDataset(val_dir, normalize=True, target_length=target_length)
+        val_dataset = BUTPPGDataset(val_dir, task=task, normalize=True, target_length=target_length)
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -400,7 +521,7 @@ def create_dataloaders(
     test_loader = None
     if test_dir.exists():
         print(f"✓ Found test directory: {test_dir}")
-        test_dataset = BUTPPGDataset(test_dir, normalize=True, target_length=target_length)
+        test_dataset = BUTPPGDataset(test_dir, task=task, normalize=True, target_length=target_length)
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -994,6 +1115,15 @@ def parse_args():
         help='Random seed'
     )
 
+    # Task selection
+    parser.add_argument(
+        '--task',
+        type=str,
+        default='quality',
+        choices=list(TASK_CONFIGS.keys()),
+        help='Task to fine-tune on (default: quality)'
+    )
+
     # Debugging
     parser.add_argument(
         '--verify-data',
@@ -1036,19 +1166,32 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Get task configuration
+    task_config = TASK_CONFIGS[args.task]
+    task_type = task_config['type']
+    task_description = task_config['description']
+
     # Print configuration
     print("\n" + "=" * 70)
-    print("BUT-PPG FINE-TUNING CONFIGURATION")
+    print("BUT-PPG MULTI-TASK FINE-TUNING CONFIGURATION")
     print("=" * 70)
 
+    print(f"Task: {args.task} ({task_description})")
+    print(f"  Type: {task_type}")
+    if task_type == 'classification':
+        print(f"  Classes: {task_config['num_classes']}")
+        print(f"  Metric: {task_config['metric'].upper()}")
+    else:
+        print(f"  Metric: {task_config['metric'].upper()} (lower is better)")
+
     if args.skip_ssl:
-        print("Mode: IBM TTM BASELINE (No SSL)")
+        print("\nMode: IBM TTM BASELINE (No SSL)")
         print("Pretrained: IBM Granite TTM-r1" if args.use_ibm_pretrained else "Random initialization")
     else:
-        print(f"Mode: SSL FINE-TUNING")
+        print(f"\nMode: SSL FINE-TUNING")
         print(f"Pretrained model: {args.pretrained}")
 
-    print(f"Data directory: {args.data_dir}")
+    print(f"\nData directory: {args.data_dir}")
     print(f"Channels: 2 (PPG + ECG)")
     print(f"Total epochs: {args.epochs}")
     print(f"  Stage 1 (head-only): {args.head_only_epochs} epochs")
@@ -1261,6 +1404,106 @@ def main():
             logits = self.classifier(fused)  # [B, num_classes]
 
             return logits
+
+        def get_encoder_output(self, x):
+            """Get encoder features (for analysis)."""
+            return self.encoder.get_encoder_output(x)
+
+    # TECHNIQUE 2.5: MULTI-SCALE REGRESSION HEAD (⭐⭐⭐⭐⭐)
+    class MultiScaleRegressionHead(nn.Module):
+        """Regression head with multi-scale feature fusion.
+
+        Similar to MultiScaleClassificationHead but for continuous targets.
+        Extracts features from multiple encoder depths and fuses them.
+        """
+
+        def __init__(self, encoder, d_model: int):
+            super().__init__()
+            self.encoder = encoder
+            self.d_model = d_model
+
+            # Attention pooling for each scale
+            self.pooling = AttentionPooling(d_model)
+
+            # Feature fusion: combine multi-scale features
+            # Total features: d_model (final) + d_model (middle) + d_model (early) = 3 * d_model
+            self.fusion = nn.Sequential(
+                nn.Linear(3 * d_model, d_model),
+                nn.LayerNorm(d_model),
+                nn.ReLU(),
+                nn.Dropout(0.3)
+            )
+
+            # Regression head (single output)
+            self.regressor = nn.Linear(d_model, 1)
+
+            # Store config for compatibility
+            self.context_length = getattr(encoder, 'context_length', None)
+            self.patch_size = getattr(encoder, 'patch_size', None)
+
+        def forward(self, x):
+            """Forward pass with multi-scale feature extraction."""
+            # Get final encoder output: [B, C, T] → [B, P, D]
+            final_features = self.encoder.get_encoder_output(x)
+
+            # Extract intermediate features if available
+            # For IBM TTM: try to get features from different transformer blocks
+            if hasattr(self.encoder, 'backbone') and hasattr(self.encoder.backbone, 'encoder'):
+                try:
+                    # Get encoder blocks (use mixers for TTM)
+                    if hasattr(self.encoder.backbone.encoder, 'mixers'):
+                        # TTM architecture uses mixers
+                        blocks = self.encoder.backbone.encoder.mixers
+                    elif hasattr(self.encoder.backbone.encoder, 'layers'):
+                        # Transformer architecture uses layers
+                        blocks = self.encoder.backbone.encoder.layers
+                    else:
+                        # Fallback
+                        raise AttributeError("No blocks found")
+
+                    num_blocks = len(blocks)
+
+                    # Get patch embeddings
+                    x_patches = self.encoder.backbone.patcher(x)  # [B, P, D]
+
+                    # Forward through early blocks (1/3)
+                    early_idx = max(1, num_blocks // 3)
+                    x_early = x_patches
+                    for i in range(early_idx):
+                        x_early = blocks[i](x_early)
+                    early_features = x_early  # [B, P, D]
+
+                    # Forward through middle blocks (2/3)
+                    middle_idx = max(early_idx + 1, 2 * num_blocks // 3)
+                    x_middle = early_features
+                    for i in range(early_idx, middle_idx):
+                        x_middle = blocks[i](x_middle)
+                    middle_features = x_middle  # [B, P, D]
+
+                except (AttributeError, IndexError):
+                    # Fallback: use final features for all scales
+                    early_features = final_features
+                    middle_features = final_features
+            else:
+                # Fallback: use final features for all scales
+                early_features = final_features
+                middle_features = final_features
+
+            # Pool each scale with attention
+            early_pooled = self.pooling(early_features)    # [B, D]
+            middle_pooled = self.pooling(middle_features)  # [B, D]
+            final_pooled = self.pooling(final_features)    # [B, D]
+
+            # Concatenate multi-scale features
+            multi_scale = torch.cat([early_pooled, middle_pooled, final_pooled], dim=1)  # [B, 3*D]
+
+            # Fuse features
+            fused = self.fusion(multi_scale)  # [B, D]
+
+            # Regress (returns [B, 1], squeeze to [B] for compatibility)
+            output = self.regressor(fused).squeeze(-1)  # [B]
+
+            return output
 
         def get_encoder_output(self, x):
             """Get encoder features (for analysis)."""
@@ -1535,15 +1778,23 @@ def main():
             """Get encoder features (for analysis)."""
             return self.encoder.get_encoder_output(x)
 
-    # ✅ ADVANCED: Use MultiScaleClassificationHead with Attention Pooling
-    # This replaces simple ClassificationWrapper for better feature extraction
-    model = MultiScaleClassificationHead(ssl_encoder, d_model=d_model, num_classes=2)
+    # ✅ ADVANCED: Use Multi-Scale Head with Attention Pooling
+    # Choose classification or regression head based on task type
+    if task_type == 'classification':
+        num_classes = task_config['num_classes']
+        model = MultiScaleClassificationHead(ssl_encoder, d_model=d_model, num_classes=num_classes)
+        print(f"  ✓ Multi-Scale Classification Head created (with Attention Pooling)")
+        print(f"  Number of classes: {num_classes}")
+    else:  # regression
+        model = MultiScaleRegressionHead(ssl_encoder, d_model=d_model)
+        print(f"  ✓ Multi-Scale Regression Head created (with Attention Pooling)")
+        print(f"  Output: Continuous value ({task_description})")
+
     model = model.to(args.device)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"  ✓ Multi-Scale Classification Head created (with Attention Pooling)")
     print(f"  Total parameters: {total_params:,}")
     print(f"  Trainable parameters: {trainable_params:,} (head + fusion + pooling)")
     print(f"  Frozen parameters: {total_params - trainable_params:,} (encoder)")
@@ -1555,6 +1806,7 @@ def main():
     print(f"\n📊 Creating dataloaders (resizing windows to {context_length} samples if needed)...")
     train_loader, val_loader, test_loader = create_dataloaders(
         data_dir=Path(args.data_dir),
+        task=args.task,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         target_length=context_length  # Resize BUT-PPG (1250) to match SSL model (512 for TTM-Enhanced)
@@ -1565,52 +1817,45 @@ def main():
         val_loader = test_loader
         print("\n⚠ Using test set for validation (no separate val set)")
 
-    # Calculate class weights to handle imbalance
-    print("\n⚙️  Computing class weights for imbalanced data...")
-    all_labels = []
-    for _, labels in train_loader:
-        all_labels.extend(labels.numpy())
-    all_labels = np.array(all_labels)
+    # Setup loss function based on task type
+    print("\n⚙️  Setting up loss function...")
 
-    class_counts = np.bincount(all_labels)
-    total_samples = len(all_labels)
-    class_weights = total_samples / (len(class_counts) * class_counts)
-    class_weights = torch.FloatTensor(class_weights).to(args.device)
+    if task_type == 'classification':
+        # Calculate class weights to handle imbalance
+        print("  Computing class weights for imbalanced data...")
+        all_labels = []
+        for _, labels in train_loader:
+            all_labels.extend(labels.numpy())
+        all_labels = np.array(all_labels)
 
-    print(f"  Class 0 (Poor): {class_counts[0]} samples, weight: {class_weights[0]:.3f}")
-    print(f"  Class 1 (Good): {class_counts[1]} samples, weight: {class_weights[1]:.3f}")
-    print(f"  ✓ Using weighted loss to handle {class_counts[0]/class_counts[1]:.1f}:1 imbalance")
+        class_counts = np.bincount(all_labels)
+        num_classes = task_config['num_classes']
 
-    # CRITICAL FIX: Use CORRECT inverse frequency class weights
-    # Previous attempt used [1.0, 2.0] which UNDER-weighted the minority class!
-    # Good class (21.4%) is MINORITY but was getting LESS emphasis than Poor (78.6%)
-    # This caused model to ignore Good class → collapse to predicting only Poor
-    #
-    # New strategy: Inverse frequency weighting
-    #   - Poor (majority 78.6%): weight = 1.0 (baseline)
-    #   - Good (minority 21.4%): weight = ratio (upweight by ~3.67x)
+        # CRITICAL FIX: Use CORRECT inverse frequency class weights
+        # For binary: [1.0, ratio] where ratio = majority_count / minority_count
+        # For multi-class: inverse frequency for each class
+        total_samples = len(all_labels)
+        class_weights = total_samples / (num_classes * class_counts)
+        class_weights = torch.FloatTensor(class_weights).to(args.device)
 
-    poor_count = class_counts[0]
-    good_count = class_counts[1]
-    imbalance_ratio = poor_count / good_count
+        # Print class distribution
+        for i in range(num_classes):
+            print(f"  Class {i}: {class_counts[i]} samples, weight: {class_weights[i]:.3f}")
 
-    print(f"\n  Class imbalance: {imbalance_ratio:.2f}:1 (Poor:Good)")
-    print(f"  ✅ ADVANCED: Using Focal Loss (gamma=1.0) for hard example mining")
-    print(f"  Previous issues with gamma=4.0 caused collapse → now using moderate gamma=1.0")
+        if num_classes == 2:
+            imbalance_ratio = class_counts[0] / class_counts[1]
+            print(f"  ✓ Using weighted loss to handle {imbalance_ratio:.1f}:1 imbalance")
+            print(f"  ✅ ADVANCED: Using Focal Loss (gamma=1.0) for hard example mining")
 
-    # Calculate proper inverse frequency weights
-    # Poor (majority): normal weight (1.0)
-    # Good (minority): upweight by ratio to balance contribution
-    class_weights = torch.tensor([
-        1.0,              # Poor (majority class) - baseline weight
-        imbalance_ratio   # Good (minority class) - upweight by inverse frequency
-    ], dtype=torch.float32).to(args.device)
+        # Use Focal Loss for classification (moderate gamma to avoid collapse)
+        criterion = FocalLoss(alpha=class_weights, gamma=1.0)
+        print(f"  Loss: Focal Loss (gamma=1.0, weighted)")
 
-    print(f"  Class weights: Poor={class_weights[0]:.3f}, Good={class_weights[1]:.3f}")
-    print(f"  Focal gamma: 1.0 (moderate focusing on hard examples)")
-
-    # ✅ ADVANCED: Focal Loss with gamma=1.0 (moderate, not aggressive 4.0)
-    criterion = FocalLoss(alpha=class_weights, gamma=1.0)
+    else:  # regression
+        # For regression, use MAE loss (more robust than MSE for outliers)
+        criterion = nn.L1Loss()  # MAE
+        print(f"  Loss: MAE (L1 Loss) - robust to outliers")
+        print(f"  Metric: MAE (Mean Absolute Error) - lower is better")
     use_amp = not args.no_amp and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
     

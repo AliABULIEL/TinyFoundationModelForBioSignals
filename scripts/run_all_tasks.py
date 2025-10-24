@@ -55,9 +55,9 @@ def run_task(task: str, args: argparse.Namespace) -> bool:
     # Create task-specific output directory
     task_output_dir = Path(args.output_dir) / f'task_{task}'
 
-    # Build command
+    # Build command - use finetune_butppg.py which supports all tasks
     cmd = [
-        'python3', 'scripts/finetune_enhanced.py',
+        'python3', 'scripts/finetune_butppg.py',
         '--pretrained', args.pretrained,
         '--data-dir', args.data_dir,
         '--task', task,
@@ -89,21 +89,20 @@ def run_task(task: str, args: argparse.Namespace) -> bool:
         if e.stderr:
             print(f"\nError output:\n{e.stderr}")
 
-        # Check for architecture mismatch errors
+        # Check for common errors
         error_text = str(e.stderr) if e.stderr else ""
         if 'Expected size' in error_text or 'dimension' in error_text.lower():
             print("\n" + "="*80)
-            print("⚠️  ARCHITECTURE MISMATCH DETECTED")
+            print("⚠️  DIMENSION MISMATCH DETECTED")
             print("="*80)
-            print("This usually means the checkpoint format is incompatible.")
+            print("This usually means the checkpoint is incompatible with the task.")
             print("\nPossible solutions:")
-            print("  1. The checkpoint should have been auto-converted above")
-            print("  2. Check if converted_encoder.pt was created successfully")
-            print("  3. Try using --skip-ssl flag with finetune_butppg.py for simpler architecture")
-            print("  4. Train quality task with finetune_enhanced.py directly:")
-            print("     python3 scripts/finetune_enhanced.py \\")
-            print("         --pretrained <SSL_checkpoint> \\")
-            print("         --task quality \\")
+            print("  1. Verify checkpoint is from SSL pre-training (not a fine-tuned model)")
+            print("  2. Check if task labels exist in the data files")
+            print("  3. Try with --skip-ssl flag to test IBM baseline:")
+            print("     python3 scripts/finetune_butppg.py \\")
+            print("         --skip-ssl \\")
+            print("         --task <task_name> \\")
             print("         --data-dir <data_dir> \\")
             print("         --output-dir <output_dir>")
             print("="*80 + "\n")
@@ -174,56 +173,20 @@ def main():
     print("=" * 80)
 
     # ======================================================================
-    # CHECKPOINT CONVERSION FOR MULTI-TASK COMPATIBILITY
+    # CHECKPOINT VALIDATION
     # ======================================================================
     print("\n" + "=" * 80)
-    print("CHECKPOINT CONVERSION")
+    print("CHECKPOINT VALIDATION")
     print("=" * 80)
 
-    # Check if checkpoint needs conversion
-    original_checkpoint = args.pretrained
-    converted_checkpoint = None
+    # Validate checkpoint exists
+    if not os.path.exists(args.pretrained):
+        print(f"❌ ERROR: Checkpoint not found: {args.pretrained}")
+        exit(1)
 
-    # Check if this is a multi-scale checkpoint (from finetune_butppg.py)
-    try:
-        print(f"Checking checkpoint format: {original_checkpoint}")
-        checkpoint = torch.load(original_checkpoint, map_location='cpu', weights_only=False)
-        state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
-
-        # Check for multi-scale components
-        has_multi_scale = any('pooling' in key or 'fusion' in key for key in state_dict.keys())
-
-        if has_multi_scale:
-            print("✓ Detected multi-scale checkpoint (from finetune_butppg.py)")
-            print("  Converting to simple encoder format for multi-task evaluation...")
-
-            # Convert checkpoint
-            converted_path = os.path.join(args.output_dir, 'converted_encoder.pt')
-
-            conversion_cmd = [
-                'python3', 'scripts/convert_checkpoint_for_multitask.py',
-                '--input', original_checkpoint,
-                '--output', converted_path,
-                '--quiet'
-            ]
-
-            result = subprocess.run(conversion_cmd, capture_output=True, text=True)
-
-            if result.returncode == 0:
-                print(f"✓ Converted checkpoint saved to: {converted_path}")
-                converted_checkpoint = converted_path
-                args.pretrained = converted_checkpoint
-                print(f"✓ Using converted checkpoint for all tasks")
-            else:
-                print(f"⚠️  Conversion failed: {result.stderr}")
-                print("  Attempting to use original checkpoint...")
-        else:
-            print("✓ Checkpoint is already in simple encoder format")
-
-    except Exception as e:
-        print(f"⚠️  Could not check checkpoint format: {e}")
-        print("  Attempting to use original checkpoint...")
-
+    print(f"✓ Using checkpoint: {args.pretrained}")
+    print(f"✓ All {len(tasks_to_run)} tasks will use finetune_butppg.py (unified script)")
+    print(f"  → No checkpoint conversion needed (same architecture for all tasks)")
     print("=" * 80)
 
     # ======================================================================
