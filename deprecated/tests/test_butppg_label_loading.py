@@ -60,7 +60,7 @@ def test_csv_loading():
         quality_hr_path, subject_info_path = create_mock_csv_files(tmp_path)
 
         # Test loading
-        from scripts.create_butppg_windows_with_labels import load_csv_annotations
+        from deprecated.scripts.create_butppg_windows_with_labels import load_csv_annotations
 
         quality_hr_df, subject_info_df = load_csv_annotations(tmp_path)
 
@@ -86,7 +86,7 @@ def test_record_id_matching():
         tmp_path = Path(tmpdir)
         create_mock_csv_files(tmp_path)
 
-        from scripts.create_butppg_windows_with_labels import (
+        from deprecated.scripts.create_butppg_windows_with_labels import (
             load_csv_annotations,
             get_recording_labels
         )
@@ -140,7 +140,7 @@ def test_record_id_format():
             }
         ]
 
-        from scripts.create_butppg_windows_with_labels import get_recording_labels
+        from deprecated.scripts.create_butppg_windows_with_labels import get_recording_labels
 
         for case in test_cases:
             print(f"\nTesting: {case['description']}")

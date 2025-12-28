@@ -15,7 +15,7 @@ def test_butppg_loader():
     print("Testing BUT-PPG Loader")
     print("=" * 70)
 
-    data_dir = Path("../data/but_ppg/dataset")
+    data_dir = Path("../../data/but_ppg/dataset")
 
     if not data_dir.exists():
         print(f"❌ Data directory not found: {data_dir}")

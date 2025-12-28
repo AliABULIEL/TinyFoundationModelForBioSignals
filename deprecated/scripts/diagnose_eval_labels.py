@@ -23,7 +23,7 @@ print("="*80)
 print("DIAGNOSTIC: Evaluation Label Loading and Metric Computation")
 print("="*80)
 
-data_dir = Path('../data/processed/butppg/windows_with_labels/test')
+data_dir = Path('../../data/processed/butppg/windows_with_labels/test')
 window_files = sorted(data_dir.glob('*.npz'))
 
 print(f"\nFound {len(window_files)} test windows")

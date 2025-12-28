@@ -12,5 +12,5 @@ artifacts/
 # Allow src/data/ (source code)
 !src/data/
 !src
-!scripts
+!deprecated/scripts
 

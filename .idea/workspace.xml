@@ -5,7 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="17b8176f-e524-4d4d-b395-aeb00d6dc7cd" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -36,9 +36,9 @@
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 8
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 8
+}</component>
   <component name="ProjectId" id="33McjIUu6QEOJIlZWZLLhXPXMQL" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -53,7 +53,7 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "Shell Script.quickstart_demo.sh.executor": "Run",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "/Users/aliab/Desktop/TinyFoundationModelForBioSignals",
+    "last_opened_file_path": "/Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -163,6 +163,7 @@
       <option name="presentableId" value="Default" />
       <updated>1759130514788</updated>
       <workItem from="1759130515869" duration="166635000" />
+      <workItem from="1766956031092" duration="2043000" />
     </task>
     <servers />
   </component>

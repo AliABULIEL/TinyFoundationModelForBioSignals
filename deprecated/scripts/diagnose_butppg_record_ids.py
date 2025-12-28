@@ -238,7 +238,7 @@ def test_actual_lookup():
     print("4. TESTING ACTUAL LOOKUP LOGIC")
     print("="*80)
 
-    from scripts.create_butppg_windows_with_labels import (
+    from deprecated.scripts.create_butppg_windows_with_labels import (
         load_csv_annotations,
         get_recording_labels
     )
