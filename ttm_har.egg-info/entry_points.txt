@@ -1,0 +1,4 @@
+[console_scripts]
+ttm-har-evaluate = scripts.evaluate:main
+ttm-har-preprocess = scripts.preprocess_dataset:main
+ttm-har-train = scripts.train:main

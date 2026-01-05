@@ -1,0 +1,156 @@
+# Default configuration for TTM-HAR
+# This file contains all default settings for the project
+
+# Experiment metadata
+experiment:
+  name: "ttm_har_default"
+  description: "Human Activity Recognition using Tiny Time Mixers"
+  seed: 42
+  output_dir: "outputs"
+
+# Preprocessing configuration
+preprocessing:
+  # Sampling rates
+  sampling_rate_original: 100  # Hz (CAPTURE-24 default)
+  sampling_rate_target: 30     # Hz (resampled for efficiency)
+
+  # Windowing
+  context_length: 512          # Number of timesteps per window
+  patch_length: 16             # Patch size for TTM
+  window_stride_train: 256     # Training stride (50% overlap)
+  window_stride_eval: 512      # Evaluation stride (no overlap)
+
+  # Resampling
+  resampling_method: "polyphase"  # scipy.signal.resample_poly
+
+  # Normalization
+  normalization:
+    method: "revin"             # Reversible Instance Normalization
+    epsilon: 1.0e-8
+    affine: false               # Learnable scale/shift
+
+  # Gravity removal (optional)
+  gravity_removal:
+    enabled: false
+    method: "highpass"          # "highpass" or "none"
+    cutoff_freq: 0.5            # Hz
+
+# Dataset configuration
+dataset:
+  name: "capture24"
+  data_path: "data/capture24"
+  num_classes: 5
+
+  # 5-class taxonomy mapping
+  label_map:
+    0: "Sleep"
+    1: "Sedentary"
+    2: "Light"
+    3: "Moderate"
+    4: "Vigorous"
+
+  # Data splits
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+
+  # Class weights for imbalanced data (auto-computed if null)
+  class_weights: null
+
+# Model configuration
+model:
+  backbone: "ttm"
+  checkpoint: "ibm-granite/granite-timeseries-ttm-r2"
+
+  # Input/output dimensions
+  num_channels: 3              # X, Y, Z acceleration
+  num_classes: 5               # Must match dataset.num_classes
+  context_length: 512          # Must match preprocessing.context_length
+  patch_length: 16             # Must match preprocessing.patch_length
+
+  # Classification head
+  head:
+    pooling: "mean"            # "mean", "max", "first", "attention"
+    hidden_dims: null          # e.g., [256, 128] for MLP head
+    dropout: 0.1
+    activation: "gelu"         # "gelu", "relu", "silu"
+
+  # Freezing strategy
+  freeze_strategy: "all"       # "none", "all", "embeddings", "time_mixing", "channel_mixing"
+
+# Training configuration
+training:
+  # Strategy
+  strategy: "linear_probe"     # "linear_probe", "full_finetune", "lp_then_ft"
+
+  # Optimization
+  optimizer: "adamw"
+  lr_head: 1.0e-3             # Learning rate for classification head
+  lr_backbone: 1.0e-5         # Learning rate for backbone (when unfrozen)
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+
+  # Learning rate schedule
+  scheduler: "cosine"          # "cosine", "linear", "constant"
+  warmup_ratio: 0.1            # Fraction of steps for warmup
+
+  # Training duration
+  epochs: 20                   # Total epochs
+  batch_size: 64
+
+  # Validation
+  eval_every_n_epochs: 1
+  early_stopping_patience: 10
+
+  # Loss function
+  loss:
+    type: "weighted_ce"        # "weighted_ce", "focal", "label_smoothing_ce"
+    label_smoothing: 0.1       # For label_smoothing_ce
+    focal_gamma: 2.0           # For focal loss
+    focal_alpha: null          # Auto-computed if null
+
+  # Checkpointing
+  checkpoint:
+    save_every_n_epochs: 5
+    keep_last_n: 3
+    save_best: true
+    monitor_metric: "balanced_accuracy"
+    mode: "max"                # "max" or "min"
+
+# Evaluation configuration
+evaluation:
+  # Splitting strategy
+  splitter: "group_kfold"      # "loso" (Leave-One-Subject-Out), "group_kfold"
+  n_folds: 5                   # For group_kfold
+
+  # Metrics to compute
+  metrics:
+    - "balanced_accuracy"      # Primary metric
+    - "macro_f1"
+    - "weighted_f1"
+    - "per_class_precision"
+    - "per_class_recall"
+    - "confusion_matrix"
+    - "cohen_kappa"
+
+  # Per-class evaluation
+  compute_per_class: true
+
+# Logging configuration
+logging:
+  level: "INFO"                # "DEBUG", "INFO", "WARNING", "ERROR"
+  log_file: null               # Path to log file (null = console only)
+  use_tensorboard: true
+  tensorboard_dir: "runs"
+
+  # What to log
+  log_frequency: 10            # Steps between logging
+  log_gradients: false
+  log_weights: false
+
+# Hardware configuration
+hardware:
+  device: null                 # "cpu", "cuda", "cuda:0", or null (auto-select)
+  num_workers: 4               # DataLoader workers
+  pin_memory: true             # Pin memory for faster GPU transfer
+  mixed_precision: false       # Use automatic mixed precision (AMP)

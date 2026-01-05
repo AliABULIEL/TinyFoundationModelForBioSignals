@@ -1,0 +1,55 @@
+# TTM (Tiny Time Mixers) Model Configuration
+
+model:
+  backbone: "ttm"
+
+  # Checkpoint configuration
+  checkpoint: "ibm-granite/granite-timeseries-ttm-r2"
+
+  # Alternative checkpoints (for reference):
+  # - "ibm/ttm-research-r1" (research version)
+  # - "ibm-granite/granite-timeseries-ttm-v1" (older version)
+
+  # Model architecture
+  num_channels: 3              # Input channels (X, Y, Z)
+  context_length: 512          # Sequence length
+  patch_length: 16             # Patch size (context_length must be divisible)
+
+  # Freezing strategies
+  freeze_strategy: "all"       # Options:
+                               # - "none": No freezing (full fine-tuning)
+                               # - "all": Freeze entire backbone (linear probe)
+                               # - "embeddings": Freeze only patch embeddings
+                               # - "time_mixing": Freeze time-mixing MLPs
+                               # - "channel_mixing": Freeze channel-mixing MLPs
+
+  # Classification head configuration
+  head:
+    type: "mlp"                # "linear" or "mlp"
+    pooling: "mean"            # Pooling strategy:
+                               # - "mean": Average pooling over patches
+                               # - "max": Max pooling over patches
+                               # - "first": Use first patch only
+                               # - "attention": Learned attention pooling
+
+    # MLP head configuration (if type="mlp")
+    hidden_dims: null          # List of hidden dimensions, e.g., [256, 128]
+                               # If null, uses single linear layer
+
+    dropout: 0.1               # Dropout rate
+    activation: "gelu"         # Activation function: "gelu", "relu", "silu"
+    use_batch_norm: false      # Use batch normalization
+
+  # Output configuration
+  num_classes: 5               # Number of activity classes
+
+  # Model-specific parameters (advanced)
+  advanced:
+    # TTM typically outputs either:
+    # 1. Sequence of patch embeddings: (B, num_patches, hidden_dim)
+    # 2. Single embedding: (B, hidden_dim)
+    # The pooling strategy handles case 1
+
+    # If TTM checkpoint has specific requirements, set them here
+    load_pretrained_weights: true
+    strict_load: false         # Set false to allow missing keys (e.g., head)

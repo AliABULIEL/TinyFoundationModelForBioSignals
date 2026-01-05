@@ -1,0 +1,39 @@
+Metadata-Version: 2.4
+Name: ttm-har
+Version: 0.1.0
+Summary: Human Activity Recognition using Tiny Time Mixers foundation model
+Home-page: https://github.com/yourusername/ttm-har
+Author: TTM HAR Team
+Author-email: TTM HAR Team <team@example.com>
+License: MIT
+Keywords: deep-learning,time-series,activity-recognition,foundation-models,ttm
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: scikit-learn>=1.3.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: tqdm>=4.65.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tensorboard>=2.13.0
+Requires-Dist: transformers>=4.30.0
+Requires-Dist: huggingface-hub>=0.16.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: isort>=5.12.0; extra == "dev"
+Requires-Dist: mypy>=1.4.0; extra == "dev"
+Provides-Extra: ttm
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python

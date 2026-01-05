@@ -1,0 +1,102 @@
+# LP-then-FT (Linear Probe then Fine-Tune) Strategy
+# Two-phase training:
+#   Phase 1: Linear probe (freeze backbone, train head)
+#   Phase 2: Full fine-tuning (unfreeze backbone, continue training)
+
+training:
+  strategy: "lp_then_ft"
+
+  # Phase 1: Linear Probe
+  phase1:
+    name: "linear_probe"
+    epochs: 20
+    freeze_backbone: true
+    freeze_strategy: "all"
+
+    # Optimization
+    optimizer: "adamw"
+    lr_head: 1.0e-3
+    lr_backbone: 0.0           # Not used
+    weight_decay: 0.01
+    gradient_clip_norm: 1.0
+
+    # LR schedule
+    scheduler: "cosine"
+    warmup_ratio: 0.1
+    min_lr: 1.0e-6
+
+    # Loss
+    loss:
+      type: "weighted_ce"
+      class_weights: "auto"
+
+    # Augmentation
+    augmentation:
+      enabled: false
+
+  # Transition between phases
+  transition:
+    reset_head_weights: false  # Keep trained head weights
+    reset_optimizer: true      # Reset optimizer state
+    reduce_head_lr: true       # Reduce head LR in phase 2
+    head_lr_reduction: 0.1     # Multiply head LR by this factor
+
+  # Phase 2: Fine-Tuning
+  phase2:
+    name: "fine_tuning"
+    epochs: 30                 # Additional epochs after phase 1
+    freeze_backbone: false
+    freeze_strategy: "none"
+
+    # Optimization (differential learning rates)
+    optimizer: "adamw"
+    lr_head: 1.0e-4            # Reduced from phase 1 (1e-3 * 0.1)
+    lr_backbone: 1.0e-5        # Lower LR for pre-trained weights
+    weight_decay: 0.01
+    gradient_clip_norm: 1.0
+
+    # LR schedule
+    scheduler: "cosine"
+    warmup_ratio: 0.05         # Shorter warmup in phase 2
+    min_lr: 1.0e-7
+
+    # Loss
+    loss:
+      type: "label_smoothing_ce"
+      label_smoothing: 0.1
+      class_weights: "auto"
+
+    # Augmentation
+    augmentation:
+      enabled: true
+      transforms:
+        - type: "scale"
+          range: [0.9, 1.1]
+        - type: "time_shift"
+          max_shift: 10
+        - type: "noise"
+          std: 0.01
+
+  # Global settings (apply to both phases)
+  batch_size: 64
+  eval_every_n_epochs: 1
+  early_stopping_patience: 15
+
+  # Checkpointing
+  checkpoint:
+    save_every_n_epochs: 5
+    keep_last_n: 3
+    save_best: true
+    save_phase1_best: true     # Save best checkpoint from phase 1
+    monitor_metric: "balanced_accuracy"
+    mode: "max"
+
+# Typical results to expect:
+# - Best balance between speed and performance
+# - Phase 1 quickly learns a good head (~10-20 minutes)
+# - Phase 2 fine-tunes for maximum performance (~30-60 minutes)
+# - Often achieves similar performance to full fine-tuning but:
+#   1. More stable training (head is already trained)
+#   2. Faster convergence (head initialization is good)
+#   3. Less prone to overfitting small datasets
+# - Recommended as default strategy for most HAR tasks

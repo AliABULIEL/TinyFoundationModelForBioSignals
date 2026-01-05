@@ -1,0 +1,68 @@
+# Full Fine-Tuning Strategy
+# Train both backbone and classification head
+
+training:
+  strategy: "full_finetune"
+
+  # Model freezing
+  freeze_backbone: false
+  freeze_strategy: "none"      # No freezing
+
+  # Optimization (differential learning rates)
+  optimizer: "adamw"
+  lr_head: 1.0e-3             # Higher LR for head
+  lr_backbone: 1.0e-5         # Lower LR for backbone (pre-trained weights)
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+
+  # Learning rate schedule
+  scheduler: "cosine"
+  warmup_ratio: 0.1           # 10% of steps for warmup
+  min_lr: 1.0e-7              # Minimum LR for cosine annealing
+
+  # Training duration
+  epochs: 50                   # More epochs than linear probe
+  batch_size: 64
+
+  # Validation
+  eval_every_n_epochs: 1
+  early_stopping_patience: 15  # More patience for convergence
+
+  # Loss function
+  loss:
+    type: "label_smoothing_ce" # Label smoothing helps with overfitting
+    label_smoothing: 0.1
+    class_weights: "auto"
+
+  # Data augmentation (more aggressive for full fine-tuning)
+  augmentation:
+    enabled: true
+    transforms:
+      - type: "scale"
+        range: [0.9, 1.1]
+      - type: "time_shift"
+        max_shift: 10           # timesteps
+      - type: "noise"
+        std: 0.01
+
+  # Checkpointing
+  checkpoint:
+    save_every_n_epochs: 5
+    keep_last_n: 3
+    save_best: true
+    monitor_metric: "balanced_accuracy"
+    mode: "max"
+
+  # Regularization (prevent overfitting)
+  regularization:
+    dropout: 0.1
+    weight_decay: 0.01
+
+# Typical results to expect:
+# - Slower training than linear probe
+# - Best performance (70-90% balanced accuracy on HAR tasks)
+# - Risk of overfitting if dataset is small
+# - Recommended when:
+#   1. Large labeled dataset available
+#   2. Maximum performance is required
+#   3. Sufficient compute resources available

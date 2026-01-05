@@ -1,0 +1,54 @@
+# Linear Probe Training Strategy
+# Freeze backbone, train only classification head
+
+training:
+  strategy: "linear_probe"
+
+  # Model freezing
+  freeze_backbone: true
+  freeze_strategy: "all"       # Freeze entire backbone
+
+  # Optimization
+  optimizer: "adamw"
+  lr_head: 1.0e-3             # Higher LR for head since it's training from scratch
+  lr_backbone: 0.0            # Not used (backbone frozen)
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+
+  # Learning rate schedule
+  scheduler: "cosine"
+  warmup_ratio: 0.1           # 10% of steps for warmup
+  min_lr: 1.0e-6              # Minimum LR for cosine annealing
+
+  # Training duration
+  epochs: 20
+  batch_size: 64
+
+  # Validation
+  eval_every_n_epochs: 1
+  early_stopping_patience: 10
+
+  # Loss function
+  loss:
+    type: "weighted_ce"        # Weighted Cross-Entropy for class imbalance
+    class_weights: "auto"      # Auto-compute from dataset
+
+  # Data augmentation (typically minimal for linear probe)
+  augmentation:
+    enabled: false
+
+  # Checkpointing
+  checkpoint:
+    save_every_n_epochs: 5
+    keep_last_n: 3
+    save_best: true
+    monitor_metric: "balanced_accuracy"
+    mode: "max"
+
+# Typical results to expect:
+# - Fast training (few minutes to hours depending on dataset size)
+# - Good baseline performance (60-80% balanced accuracy on HAR tasks)
+# - Lower performance than full fine-tuning but useful for:
+#   1. Rapid prototyping
+#   2. Understanding representation quality
+#   3. Low-resource scenarios

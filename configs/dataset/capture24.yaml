@@ -1,0 +1,65 @@
+# CAPTURE-24 Dataset Configuration
+# Wrist-worn accelerometry for 24-hour activity recognition
+
+dataset:
+  name: "capture24"
+  data_path: "data/capture24"
+
+  # Dataset characteristics
+  num_participants: 151
+  sampling_rate: 100           # Hz
+  sensor: "Axivity AX3"
+  wear_location: "dominant_wrist"
+  dynamic_range: 8             # ±8g
+
+  # Classes (5-class taxonomy based on MET ranges)
+  num_classes: 5
+  label_map:
+    0: "Sleep"                 # MET < 1.0
+    1: "Sedentary"             # MET 1.0 - 1.5
+    2: "Light"                 # MET 1.5 - 3.0
+    3: "Moderate"              # MET 3.0 - 6.0
+    4: "Vigorous"              # MET >= 6.0
+
+  # Alternative: 8-class taxonomy (uncomment to use)
+  # num_classes: 8
+  # label_map:
+  #   0: "Sleep"
+  #   1: "Sedentary"
+  #   2: "Light intensity"
+  #   3: "Moderate intensity"
+  #   4: "Vigorous intensity"
+  #   5: "Bicycling"
+  #   6: "Walking"
+  #   7: "Mixed activity"
+
+  # Data splits (subject-independent)
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+
+  # Class imbalance information (approximate)
+  class_distribution:
+    Sleep: 0.35
+    Sedentary: 0.45
+    Light: 0.15
+    Moderate: 0.04
+    Vigorous: 0.01
+
+  # Class weights (computed from inverse frequency)
+  # Will be auto-computed if null
+  class_weights: null
+
+  # Data loading
+  file_format: "csv"           # or "parquet", "npy"
+  annotation_file: "annotations.csv"
+
+  # Quality control
+  min_wear_time_hours: 20      # Minimum hours of valid data
+  remove_nonwear: true
+
+  # Subject-level filters (optional)
+  filter_subjects:
+    min_age: null
+    max_age: null
+    valid_only: true           # Use only validated annotations
