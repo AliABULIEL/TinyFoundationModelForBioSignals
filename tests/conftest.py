@@ -17,38 +17,56 @@ def sample_config() -> Dict[str, Any]:
         "experiment": {
             "name": "test_experiment",
             "seed": 42,
+            "output_dir": "outputs",
         },
         "dataset": {
             "name": "capture24",
-            "data_dir": "data/capture24",
-            "target_sample_rate": 30,
+            "data_path": "data/capture24",  # Fixed: use data_path, not data_dir
             "num_classes": 5,
-            "label_map": {
-                0: "Sleep",
-                1: "Sedentary",
-                2: "Light",
-                3: "Moderate",
-                4: "Vigorous",
-            },
+            "use_synthetic": True,  # Fixed: Enable synthetic data for tests
+            "train_split": 0.7,
+            "val_split": 0.15,
+            "test_split": 0.15,
         },
         "preprocessing": {
-            "window_size_sec": 10,
-            "stride_sec": 5,
-            "normalization": "zscore",
-            "remove_gravity": True,
+            # Fixed: Use the correct structure matching PreprocessingPipeline
+            "sampling_rate_original": 100,
+            "sampling_rate_target": 30,
+            "context_length": 512,  # Must be divisible by patch_length
+            "patch_length": 16,
+            "window_stride_train": 256,
+            "window_stride_eval": 512,
+            "resampling_method": "polyphase",
+            "normalization": {
+                "method": "zscore",
+                "epsilon": 1e-8,
+            },
+            "gravity_removal": {
+                "enabled": False,  # Disable for faster tests
+                "method": "highpass",
+                "cutoff_freq": 0.5,
+            },
         },
         "model": {
             "backbone": "ttm",
+            "checkpoint": "ibm-granite/granite-timeseries-ttm-r2",
+            "num_channels": 3,
             "num_classes": 5,
-            "head_type": "linear",
-            "head_config": {
+            "context_length": 512,  # Must be divisible by patch_length (512 / 16 = 32)
+            "patch_length": 16,
+            "freeze_strategy": "all",
+            "head": {
+                "type": "linear",
+                "pooling": "mean",
+                "hidden_dims": None,
                 "dropout": 0.1,
+                "activation": "gelu",
             },
         },
         "training": {
             "strategy": "linear_probe",
             "epochs": 20,
-            "batch_size": 32,
+            "batch_size": 8,  # Reduced for faster tests
             "lr_head": 1e-3,
             "lr_backbone": 1e-5,
             "weight_decay": 0.01,
@@ -61,6 +79,44 @@ def sample_config() -> Dict[str, Any]:
                 "label_smoothing": 0.1,
             },
         },
+        "hardware": {
+            "device": None,  # Auto-select
+            "num_workers": 0,  # Use 0 for tests to avoid multiprocessing issues
+            "pin_memory": False,
+            "mixed_precision": False,
+        },
+    }
+
+
+@pytest.fixture
+def minimal_config() -> Dict[str, Any]:
+    """Minimal config for sanity tests."""
+    return {
+        "experiment": {"name": "test", "seed": 42},
+        "dataset": {"num_classes": 5, "use_synthetic": True},
+        "preprocessing": {
+            "sampling_rate_original": 100,
+            "sampling_rate_target": 30,
+            "context_length": 512,
+            "patch_length": 16,
+            "window_stride_train": 256,
+            "normalization": {"method": "zscore"},
+        },
+        "model": {
+            "backbone": "ttm",
+            "num_channels": 3,
+            "num_classes": 5,
+            "context_length": 512,
+            "patch_length": 16,
+            "freeze_strategy": "all",
+            "head": {"type": "linear", "dropout": 0.0},
+        },
+        "training": {
+            "strategy": "linear_probe",
+            "batch_size": 4,
+            "lr_head": 1e-3,
+        },
+        "hardware": {"num_workers": 0, "mixed_precision": False},
     }
 
 
@@ -113,6 +169,7 @@ def sample_batch() -> Dict[str, torch.Tensor]:
     batch = {
         "signal": torch.randn(4, 512, 3),  # (B, L, C)
         "label": torch.randint(0, 5, (4,)),  # (B,)
+        "participant_id": ["P001", "P002", "P003", "P004"],  # Added for completeness
     }
     return batch
 

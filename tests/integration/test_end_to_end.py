@@ -20,7 +20,7 @@ class TestEndToEndTraining:
         # Modify config for quick test
         sample_config["training"]["epochs"] = 2
         sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         # Create data module (will use synthetic data)
         data_module = HARDataModule(config=sample_config)
@@ -66,7 +66,7 @@ class TestEndToEndTraining:
         # Setup quick training
         sample_config["training"]["epochs"] = 1
         sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         # Create data module
         data_module = HARDataModule(config=sample_config)
@@ -114,7 +114,7 @@ class TestEndToEndTraining:
         # Setup
         sample_config["training"]["epochs"] = 1
         sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         # Create data
         data_module = HARDataModule(config=sample_config)
@@ -136,7 +136,7 @@ class TestEndToEndTraining:
         evaluator = Evaluator(
             model=model,
             device=device,
-            label_names=list(data_module.label_map.values()),
+            label_names=list(data_module.get_label_map().values()),
         )
 
         results = evaluator.evaluate(
@@ -163,7 +163,7 @@ class TestDataPipeline:
 
     def test_data_module_setup(self, sample_config, temp_dir):
         """Test data module setup and data loading."""
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         data_module = HARDataModule(config=sample_config)
         data_module.setup()
@@ -179,7 +179,7 @@ class TestDataPipeline:
 
     def test_data_module_batch_format(self, sample_config, temp_dir):
         """Test that batches have correct format."""
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
         sample_config["training"]["batch_size"] = 4
 
         data_module = HARDataModule(config=sample_config)
@@ -201,7 +201,7 @@ class TestDataPipeline:
 
     def test_no_subject_leakage(self, sample_config, temp_dir):
         """Test that there's no subject leakage across splits."""
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         data_module = HARDataModule(config=sample_config)
         data_module.setup()
@@ -211,10 +211,10 @@ class TestDataPipeline:
         val_dataset = data_module.val_dataset
         test_dataset = data_module.test_dataset
 
-        # Get subject IDs
-        train_subjects = set(train_dataset.subject_ids)
-        val_subjects = set(val_dataset.subject_ids)
-        test_subjects = set(test_dataset.subject_ids)
+        # Get participant IDs from each dataset
+        train_subjects = set(train_dataset.participant_ids)
+        val_subjects = set(val_dataset.participant_ids)
+        test_subjects = set(test_dataset.participant_ids)
 
         # Check no overlap
         assert len(train_subjects & val_subjects) == 0
@@ -298,7 +298,7 @@ class TestFullWorkflow:
         # Configure for quick test
         sample_config["training"]["epochs"] = 2
         sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_dir"] = str(temp_dir)
+        sample_config["dataset"]["data_path"] = str(temp_dir)
 
         # 1. Setup data
         data_module = HARDataModule(config=sample_config)
@@ -327,7 +327,7 @@ class TestFullWorkflow:
         evaluator = Evaluator(
             model=model,
             device=device,
-            label_names=list(data_module.label_map.values()),
+            label_names=list(data_module.get_label_map().values()),
         )
 
         results = evaluator.evaluate(data_module.test_dataloader())

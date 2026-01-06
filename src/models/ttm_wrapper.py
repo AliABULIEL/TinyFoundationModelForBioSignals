@@ -1,4 +1,12 @@
-"""TTM (Tiny Time Mixers) backbone wrapper for time series classification."""
+"""TTM (Tiny Time Mixers) backbone wrapper for time series classification.
+
+⚠️  CRITICAL REQUIREMENT ⚠️
+This module REQUIRES the real IBM TTM model from granite-tsfm.
+Mock models are NOT supported in production.
+
+Install with:
+    pip install git+https://github.com/ibm-granite/granite-tsfm.git
+"""
 
 import logging
 from typing import Optional, Tuple
@@ -9,6 +17,92 @@ import torch.nn as nn
 from src.models.backbone_base import BackboneBase
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# MODULE-LEVEL TTM AVAILABILITY CHECK
+# ============================================================================
+
+_TTM_AVAILABLE = False
+_TTM_IMPORT_ERROR = None
+
+try:
+    from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction as _TTM_Primary
+    _TTM_AVAILABLE = True
+    _TTM_CLASS = _TTM_Primary
+    _TTM_SOURCE = "tsfm_public"
+    logger.debug("✓ TTM available via tsfm_public")
+except ImportError as e:
+    _TTM_IMPORT_ERROR = e
+    try:
+        from granite_tsfm.models import TinyTimeMixerForPrediction as _TTM_Fallback
+        _TTM_AVAILABLE = True
+        _TTM_CLASS = _TTM_Fallback
+        _TTM_SOURCE = "granite_tsfm"
+        logger.debug("✓ TTM available via granite_tsfm")
+    except ImportError as e2:
+        _TTM_IMPORT_ERROR = e2
+        _TTM_CLASS = None
+        _TTM_SOURCE = None
+
+
+def is_ttm_available() -> bool:
+    """
+    Check if real TTM model is available.
+
+    Returns:
+        True if TTM can be imported, False otherwise
+
+    Example:
+        >>> if is_ttm_available():
+        >>>     model = TTMWrapper(...)
+        >>> else:
+        >>>     print("Install TTM first!")
+    """
+    return _TTM_AVAILABLE
+
+
+def validate_ttm_available() -> None:
+    """
+    Validate that real TTM model is available.
+
+    Raises:
+        ImportError: If TTM is not available, with detailed installation instructions
+
+    This function MUST be called before attempting to use TTM.
+    """
+    if not _TTM_AVAILABLE:
+        raise ImportError(
+            f"\n{'=' * 80}\n"
+            f"❌ CRITICAL ERROR: IBM TTM Model Not Available\n"
+            f"{'=' * 80}\n\n"
+            f"This repository REQUIRES the real IBM Tiny Time Mixer (TTM) model.\n"
+            f"Mock models are NOT supported for production use.\n\n"
+            f"INSTALLATION INSTRUCTIONS:\n"
+            f"─────────────────────────────────────────────────────────────────────────────\n"
+            f"Option 1 (Recommended): Install from requirements.txt\n"
+            f"  pip install -r requirements.txt\n\n"
+            f"Option 2: Install TTM directly\n"
+            f"  pip install git+https://github.com/ibm-granite/granite-tsfm.git\n\n"
+            f"Option 3: Install in editable mode\n"
+            f"  git clone https://github.com/ibm-granite/granite-tsfm.git\n"
+            f"  cd granite-tsfm\n"
+            f"  pip install -e .\n"
+            f"─────────────────────────────────────────────────────────────────────────────\n\n"
+            f"TROUBLESHOOTING:\n"
+            f"  • Ensure you have internet connection (downloads from HuggingFace)\n"
+            f"  • Try upgrading pip: python -m pip install --upgrade pip\n"
+            f"  • Check PyTorch is installed: pip install torch>=2.0.0\n"
+            f"  • If behind proxy, configure git: git config --global http.proxy <proxy>\n\n"
+            f"IMPORT ERROR DETAILS:\n"
+            f"  {_TTM_IMPORT_ERROR}\n\n"
+            f"For more help, see: https://github.com/ibm-granite/granite-tsfm\n"
+            f"{'=' * 80}\n"
+        )
+
+
+# ============================================================================
+# TTM WRAPPER CLASS
+# ============================================================================
 
 
 class TTMWrapper(BackboneBase):
@@ -32,6 +126,9 @@ class TTMWrapper(BackboneBase):
         freeze_strategy: Freezing strategy ("none", "all", "embeddings", etc.)
         use_pretrained: If True, load pre-trained weights; else random init
 
+    Raises:
+        ImportError: If TTM library is not installed
+
     Example:
         >>> backbone = TTMWrapper(
         >>>     checkpoint="ibm-granite/granite-timeseries-ttm-r2",
@@ -53,6 +150,9 @@ class TTMWrapper(BackboneBase):
         use_pretrained: bool = True,
     ) -> None:
         """Initialize TTM wrapper."""
+        # ⚠️ CRITICAL: Validate TTM is available BEFORE anything else
+        validate_ttm_available()
+
         # Initialize base class
         super().__init__(
             checkpoint=checkpoint,
@@ -97,7 +197,9 @@ class TTMWrapper(BackboneBase):
 
         # Log configuration
         logger.info(
-            f"TTM initialized:\n"
+            f"✓ TTM initialized successfully:\n"
+            f"  Source: {_TTM_SOURCE}\n"
+            f"  Checkpoint: {checkpoint}\n"
             f"  Model channels: {self.model_channels}\n"
             f"  Num patches: {self.num_patches}\n"
             f"  Output dim: {self._output_dim}\n"
@@ -113,67 +215,57 @@ class TTMWrapper(BackboneBase):
 
         Raises:
             RuntimeError: If model loading fails
+
+        Note:
+            This method will NEVER fall back to mock models.
+            If TTM cannot be loaded, it raises an error.
         """
         if not self.use_pretrained:
             logger.warning(
                 "use_pretrained=False: Random initialization not yet implemented.\n"
-                "  Falling back to trying to load pre-trained model."
+                "  Falling back to loading pre-trained model."
             )
 
-        # Try primary import path
         try:
-            from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction
+            # Use the globally imported TTM class
+            logger.info(f"Loading TTM from: {self.checkpoint} (via {_TTM_SOURCE})")
 
-            logger.info(f"Loading TTM from: {self.checkpoint} (tsfm_public)")
-
-            model = TinyTimeMixerForPrediction.from_pretrained(self.checkpoint)
+            model = _TTM_CLASS.from_pretrained(self.checkpoint)
 
             # Extract number of channels from model config
             num_channels = getattr(model.config, "num_input_channels", 1)
 
-            logger.info(f"✓ Successfully loaded TTM checkpoint")
+            logger.info(
+                f"✓ Successfully loaded TTM checkpoint\n"
+                f"  Model type: {type(model).__name__}\n"
+                f"  Input channels: {num_channels}\n"
+                f"  Parameters: {sum(p.numel() for p in model.parameters()):,}"
+            )
 
             return model, num_channels
 
-        except ImportError as e:
-            logger.warning(f"Primary import failed: {e}")
-
-            # Try fallback import path
-            try:
-                from granite_tsfm.models import TinyTimeMixerForPrediction
-
-                logger.info(f"Loading TTM from: {self.checkpoint} (granite_tsfm)")
-
-                model = TinyTimeMixerForPrediction.from_pretrained(self.checkpoint)
-                num_channels = getattr(model.config, "num_input_channels", 1)
-
-                logger.info(f"✓ Successfully loaded TTM checkpoint (fallback)")
-
-                return model, num_channels
-
-            except ImportError as e2:
-                # Use mock model for testing
-                logger.warning(
-                    f"Failed to import TTM model. Using mock model for testing.\n"
-                    f"  Primary error: {e}\n"
-                    f"  Fallback error: {e2}\n"
-                    f"  Hint: For production, install TTM dependencies:\n"
-                    f"    pip install git+https://github.com/ibm-granite/granite-tsfm.git"
-                )
-
-                from src.models.mock_ttm import MockTTMModel
-
-                logger.info(f"Loading MockTTM (testing mode)")
-                model = MockTTMModel.from_pretrained(self.checkpoint)
-                num_channels = getattr(model.config, "num_input_channels", 1)
-
-                return model, num_channels
-
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load TTM checkpoint: {self.checkpoint}\n"
-                f"  Error: {e}\n"
-                f"  Hint: Check checkpoint ID and internet connection"
+                f"\n{'=' * 80}\n"
+                f"❌ FAILED TO LOAD TTM MODEL\n"
+                f"{'=' * 80}\n\n"
+                f"Could not load TTM model from checkpoint: {self.checkpoint}\n\n"
+                f"ERROR DETAILS:\n"
+                f"  {type(e).__name__}: {e}\n\n"
+                f"TROUBLESHOOTING STEPS:\n"
+                f"  1. Verify checkpoint ID is correct:\n"
+                f"     • Try: 'ibm-granite/granite-timeseries-ttm-r2'\n"
+                f"     • Check HuggingFace Hub: https://huggingface.co/{self.checkpoint}\n\n"
+                f"  2. Check internet connection (downloads from HuggingFace)\n\n"
+                f"  3. Clear HuggingFace cache and retry:\n"
+                f"     rm -rf ~/.cache/huggingface/\n\n"
+                f"  4. Verify TTM installation:\n"
+                f"     python -c 'from {_TTM_SOURCE}.models import TinyTimeMixerForPrediction'\n\n"
+                f"  5. Try re-installing TTM:\n"
+                f"     pip uninstall tsfm_public granite_tsfm -y\n"
+                f"     pip install git+https://github.com/ibm-granite/granite-tsfm.git\n\n"
+                f"If issues persist, check: https://github.com/ibm-granite/granite-tsfm/issues\n"
+                f"{'=' * 80}\n"
             ) from e
 
     def _infer_output_dim(self) -> int:
@@ -220,7 +312,34 @@ class TTMWrapper(BackboneBase):
                 logger.error(f"Failed to infer output dimension: {e}")
                 # Fallback to common dimension
                 fallback_dim = 192  # TTM-r2 typical dimension
-                logger.warning(f"Using fallback output dimension: {fallback_dim}")
+                logger.warning(
+                    f"\n{'=' * 80}\n"
+                    f"⚠️  WARNING: USING FALLBACK OUTPUT DIMENSION: {fallback_dim}\n"
+                    f"{'=' * 80}\n"
+                    f"Failed to automatically infer TTM output dimension.\n"
+                    f"Using fallback dimension of {fallback_dim} (common for TTM-r2).\n\n"
+                    f"⚠️  THIS MAY CAUSE DIMENSION MISMATCHES if your TTM variant has\n"
+                    f"    different dimensions. Training may fail with shape errors.\n\n"
+                    f"TROUBLESHOOTING STEPS:\n"
+                    f"─────────────────────────────────────────────────────────────────────\n"
+                    f"1. Ensure TTM model loaded correctly (check logs above)\n\n"
+                    f"2. Verify input shape matches model expectations:\n"
+                    f"   • Expected: (batch=1, seq_len={self.context_length}, channels={self.model_channels})\n"
+                    f"   • Got: {dummy_input.shape}\n\n"
+                    f"3. Verify checkpoint is valid TTM model:\n"
+                    f"   • Checkpoint: {self.checkpoint}\n"
+                    f"   • Try default: 'ibm-granite/granite-timeseries-ttm-r2'\n\n"
+                    f"4. Check model forward pass manually:\n"
+                    f"   >>> import torch\n"
+                    f"   >>> x = torch.randn(1, {self.context_length}, {self.model_channels})\n"
+                    f"   >>> out = model(x)\n"
+                    f"   >>> print(out.shape)\n\n"
+                    f"5. If dimension mismatch persists, specify output_dim manually in config\n"
+                    f"─────────────────────────────────────────────────────────────────────\n\n"
+                    f"ERROR DETAILS:\n"
+                    f"  {type(e).__name__}: {e}\n"
+                    f"{'=' * 80}\n"
+                )
                 return fallback_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

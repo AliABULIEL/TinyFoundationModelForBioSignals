@@ -16,6 +16,22 @@ from src.preprocessing.pipeline import PreprocessingPipeline
 logger = logging.getLogger(__name__)
 
 
+def worker_init_fn(worker_id: int) -> None:
+    """
+    Initialize each DataLoader worker with a unique random seed.
+
+    This ensures reproducibility while allowing different workers
+    to generate different random augmentations.
+
+    Args:
+        worker_id: Worker process ID
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    import random
+    random.seed(worker_seed)
+
+
 class WindowedDataset(Dataset):
     """
     Dataset that pre-windows continuous accelerometry data.
@@ -252,12 +268,13 @@ class HARDataModule:
         """Create base dataset based on dataset_name."""
         data_path = self.dataset_config.get("data_path", "data/capture24")
         num_classes = self.dataset_config.get("num_classes", 5)
+        use_synthetic = self.dataset_config.get("use_synthetic", False)
 
         if self.dataset_name.lower() == "capture24":
             dataset = CAPTURE24Dataset(
                 data_path=data_path,
                 num_classes=num_classes,
-                use_synthetic=True,  # Enable synthetic data for testing
+                use_synthetic=use_synthetic,
             )
         else:
             raise ValueError(
@@ -399,6 +416,7 @@ class HARDataModule:
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=True,  # Drop incomplete batches for stable training
+            worker_init_fn=worker_init_fn,  # Reproducible worker seeding
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -416,6 +434,7 @@ class HARDataModule:
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            worker_init_fn=worker_init_fn,  # Reproducible worker seeding
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -433,6 +452,7 @@ class HARDataModule:
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            worker_init_fn=worker_init_fn,  # Reproducible worker seeding
         )
 
     def get_num_classes(self) -> int:

@@ -1,0 +1,244 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Code quality checks
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort flake8 mypy pydocstyle bandit
+          pip install types-PyYAML types-tqdm
+
+      - name: Check code formatting with Black
+        run: black --check --line-length=100 src/ scripts/ tests/
+
+      - name: Check import sorting with isort
+        run: isort --check-only --profile=black --line-length=100 src/ scripts/ tests/
+
+      - name: Lint with flake8
+        run: |
+          flake8 src/ scripts/ tests/ \
+            --max-line-length=100 \
+            --extend-ignore=E203,W503,E501 \
+            --per-file-ignores=__init__.py:F401 \
+            --count --statistics
+
+      - name: Type check with mypy
+        run: mypy src/ --config-file=mypy.ini
+        continue-on-error: true  # Don't fail on type errors yet
+
+      - name: Security check with bandit
+        run: bandit -r src/ -ll
+        continue-on-error: true
+
+  # Job 2: Run tests
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-cov pytest-xdist
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=term
+
+      - name: Run sanity tests
+        run: pytest tests/sanity/ -v -m sanity
+
+      - name: Run integration tests
+        run: pytest tests/integration/ -v
+        continue-on-error: true  # Integration tests may need real data
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.9'
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  # Job 3: GPU tests (if available)
+  test-gpu:
+    name: GPU Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run GPU tests
+        run: pytest tests/ -v -m requires_gpu
+        continue-on-error: true
+
+  # Job 4: Build and test entry points
+  entry-points:
+    name: Test Entry Points
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Test train entry point
+        run: ttm-har-train --help
+
+      - name: Test evaluate entry point
+        run: ttm-har-evaluate --help
+
+      - name: Test preprocess entry point
+        run: ttm-har-preprocess --help
+
+  # Job 5: Documentation build
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install sphinx sphinx-rtd-theme
+
+      - name: Check README
+        run: |
+          python -c "import pathlib; content = pathlib.Path('README.md').read_text(); assert len(content) > 1000, 'README too short'"
+
+  # Job 6: Performance profiling
+  profile:
+    name: Performance Profiling
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-benchmark
+
+      - name: Run performance tests
+        run: |
+          echo "Performance profiling would run here"
+          # pytest tests/ -v -m benchmark
+        continue-on-error: true
+
+  # Job 7: Security scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Job 8: Dependency check
+  dependencies:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit safety
+
+      - name: Check for known vulnerabilities
+        run: pip-audit
+        continue-on-error: true
+
+  # Job 9: Notify on failure
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [code-quality, test, entry-points]
+    if: failure()
+    steps:
+      - name: Notify failure
+        run: |
+          echo "CI pipeline failed. Please check the logs."
+          # Add notification logic here (Slack, email, etc.)

@@ -104,6 +104,22 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
                     f"  Expected structure: {self.data_path}/P001/, P002/, ..."
                 )
 
+        # Check if directory is empty
+        if participant_dir.is_dir():
+            dir_contents = list(participant_dir.iterdir())
+            if len(dir_contents) == 0:
+                error_msg = (
+                    f"Participant directory is empty: {participant_dir}\n"
+                    f"  Expected files: accelerometry.npy/.csv and labels.npy/.csv\n"
+                    f"  This may indicate incomplete data download or extraction.\n"
+                    f"  Hint: Check data preparation pipeline or re-download data."
+                )
+                if self.use_synthetic:
+                    logger.warning(f"{error_msg}\n  Generating synthetic data for testing.")
+                    return self._generate_synthetic_data()
+                else:
+                    raise ValueError(error_msg)
+
         # Try loading accelerometry data
         signal = self._load_accelerometry(participant_dir)
 

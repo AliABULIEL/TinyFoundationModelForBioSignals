@@ -1,7 +1,22 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(UserWarning)",
+      "Bash(FutureWarning)",
+      "Bash(repo_type\"\")",
+      "Bash(chmod:*)",
+      "Bash(/dev/null)",
+      "Bash(cat:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(ttm-har-train:*)",
+      "Bash(ttm-har-evaluate:*)",
+      "Bash(ttm-har-preprocess:*)",
+      "Bash(python -c \"from src.models.mock_ttm import MockTTMModel; MockTTMModel.from_pretrained(''''test'''')\")",
+      "Bash(TTM_HAR_ALLOW_MOCK=1 pytest:*)",
+      "Bash(pytest:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

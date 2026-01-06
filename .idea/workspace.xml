@@ -5,7 +5,49 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="17b8176f-e524-4d4d-b395-aeb00d6dc7cd" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.github/workflows/ci.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.pre-commit-config.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mypy.ini" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/scripts/export_model.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/utils/export.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/utils/profiling.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58637.XbcqWwQx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58652.XFvxclax" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58653.XLteOtDx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58654.XJGReNix" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58656.XgLFSkSx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58665.XtOgkIAx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58717.XQbFuzpx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58718.XTvaXGEx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58720.XlFGlolx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58721.XsTdhOBx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58731.XZLaBlgx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58734.XvJhcOdx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58735.XeUkVPWx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58737.XpvyMkbx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/sanity/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.coverage" beforeDir="false" afterPath="$PROJECT_DIR$/.coverage" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/default.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/default.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/coverage.xml" beforeDir="false" afterPath="$PROJECT_DIR$/coverage.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/notebooks/ttm_reproduction_visual.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/notebooks/ttm_reproduction_visual.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pytest.ini" beforeDir="false" afterPath="$PROJECT_DIR$/pytest.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/capture24_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/capture24_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/datamodule.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/datamodule.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/mock_ttm.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/mock_ttm.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/model_factory.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/model_factory.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/ttm_wrapper.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/ttm_wrapper.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/training/callbacks.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/callbacks.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/training/strategies.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/strategies.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/training/trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/trainer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/unit/test_preprocessing.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/unit/test_preprocessing.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -40,12 +82,16 @@
   &quot;associatedIndex&quot;: 8
 }</component>
   <component name="ProjectId" id="33McjIUu6QEOJIlZWZLLhXPXMQL" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "ASKED_ADD_EXTERNAL_FILES": "true",
     "Python tests.Python tests in test_datasets.py.executor": "Run",
     "Python tests.Python tests in test_metrics.py.executor": "Run",
     "Python.verify_vitaldb.executor": "Run",
@@ -64,6 +110,8 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/deprecated" />
+      <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/tests" />
     </key>
   </component>
@@ -112,13 +160,13 @@
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/tests" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/deprecated/tests" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
       <option name="_new_additionalArguments" value="&quot;&quot;" />
-      <option name="_new_target" value="&quot;$PROJECT_DIR$/tests/test_datasets.py&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/deprecated/tests/test_datasets.py&quot;" />
       <option name="_new_targetType" value="&quot;PATH&quot;" />
       <method v="2" />
     </configuration>
@@ -128,13 +176,13 @@
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/tests" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/deprecated/tests" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
       <option name="_new_additionalArguments" value="&quot;&quot;" />
-      <option name="_new_target" value="&quot;$PROJECT_DIR$/tests/test_metrics.py&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/deprecated/tests/test_metrics.py&quot;" />
       <option name="_new_targetType" value="&quot;PATH&quot;" />
       <method v="2" />
     </configuration>
@@ -163,48 +211,52 @@
       <option name="presentableId" value="Default" />
       <updated>1759130514788</updated>
       <workItem from="1759130515869" duration="166635000" />
-      <workItem from="1766956031092" duration="2043000" />
+      <workItem from="1766956031092" duration="9863000" />
+      <workItem from="1767627189119" duration="5058000" />
     </task>
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="VcsManagerConfiguration">
+    <option name="ADD_EXTERNAL_FILES_SILENTLY" value="true" />
+  </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
       <breakpoints>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/tests/test_ttm_adapter.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/tests/test_ttm_adapter.py</url>
           <line>3</line>
           <option name="timeStamp" value="2" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/models/datasets.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/models/datasets.py</url>
           <line>20</line>
           <option name="timeStamp" value="3" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/data/windows.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/data/windows.py</url>
           <line>19</line>
           <option name="timeStamp" value="5" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/tests/test_splits.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/tests/test_splits.py</url>
           <line>4</line>
           <option name="timeStamp" value="6" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/tests/test_butppg_dataset.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/tests/test_butppg_dataset.py</url>
           <line>11</line>
           <option name="timeStamp" value="7" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/data/unified_biosignal_data.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/data/unified_biosignal_data.py</url>
           <line>740</line>
           <option name="timeStamp" value="8" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/data/unified_biosignal_data.py</url>
+          <url>file://$PROJECT_DIR$/deprecated/data/unified_biosignal_data.py</url>
           <line>745</line>
           <option name="timeStamp" value="9" />
         </line-breakpoint>

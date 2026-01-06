@@ -69,8 +69,13 @@ class Trainer:
 
         # Training configuration
         training_config = config.get("training", {})
+        hardware_config = config.get("hardware", {})
         self.batch_size = training_config.get("batch_size", 64)
         self.gradient_clip_norm = training_config.get("gradient_clip_norm", 1.0)
+
+        # Mixed precision training
+        self.use_amp = hardware_config.get("mixed_precision", False) and device.type == "cuda"
+        self.scaler = torch.cuda.amp.GradScaler() if self.use_amp else None
 
         # Get training strategy
         strategy_name = training_config.get("strategy", "linear_probe")
@@ -120,6 +125,7 @@ class Trainer:
             f"  Loss: {self.criterion.__class__.__name__}\n"
             f"  Device: {device}\n"
             f"  Batch size: {self.batch_size}\n"
+            f"  Mixed precision: {self.use_amp}\n"
             f"  Training steps: {num_training_steps}"
         )
 
@@ -229,23 +235,46 @@ class Trainer:
         inputs = batch["signal"].to(self.device)
         labels = batch["label"].to(self.device)
 
-        # Forward pass
+        # Forward pass with mixed precision
         self.optimizer.zero_grad()
-        outputs = self.model(inputs)
-        loss = self.criterion(outputs, labels)
 
-        # Backward pass
-        loss.backward()
+        if self.use_amp:
+            # Mixed precision forward pass
+            with torch.cuda.amp.autocast():
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, labels)
 
-        # Gradient clipping
-        if self.gradient_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.gradient_clip_norm
-            )
+            # Backward pass with gradient scaling
+            self.scaler.scale(loss).backward()
 
-        # Optimizer step
-        self.optimizer.step()
+            # Gradient clipping (unscale first)
+            if self.gradient_clip_norm > 0:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.gradient_clip_norm
+                )
+
+            # Optimizer step with scaler
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            # Standard full precision training
+            outputs = self.model(inputs)
+            loss = self.criterion(outputs, labels)
+
+            # Backward pass
+            loss.backward()
+
+            # Gradient clipping
+            if self.gradient_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.gradient_clip_norm
+                )
+
+            # Optimizer step
+            self.optimizer.step()
 
         # Scheduler step (per-step scheduling)
         if self.scheduler is not None:

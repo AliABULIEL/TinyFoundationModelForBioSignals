@@ -1,35 +1,28 @@
 # Core dependencies
 torch>=2.0.0
-scipy>=1.9.0
-pandas>=1.5.0
-numpy<2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
 
-# VitalDB and biosignal processing
-vitaldb>=1.3.0
-neurokit2>=0.2.0
-
-# Utilities
-pyyaml>=6.0
+# ML and data processing
+scikit-learn>=1.3.0
+pandas>=2.0.0
 tqdm>=4.65.0
-pyarrow>=10.0.0
 
-# ML and evaluation
-scikit-learn>=1.2.0
-matplotlib>=3.6.0
-seaborn>=0.12.0  # NEW: For visualization in benchmarks
+# Configuration and logging
+pyyaml>=6.0
+tensorboard>=2.13.0
 
-# Time Series Foundation Models (IBM TTM)
-tsfm[notebooks]>=0.1.0
-transformers>=4.30.0  # Required for tsfm
+# TTM model dependencies
+transformers>=4.30.0
+huggingface-hub>=0.16.0
 
-# NEW: Downstream Tasks & Benchmarking
-# (All dependencies already covered above, but listed here for clarity)
-# - pandas: For benchmark comparison tables
-# - matplotlib + seaborn: For plots
-# - scikit-learn: For evaluation metrics (AUROC, AUPRC, etc.)
+# Granite Time Series Foundation Model (IBM TTM) - REQUIRED
+# This is a HARD dependency - the repository will NOT work without it
+tsfm_public @ git+https://github.com/ibm-granite/granite-tsfm.git
 
-# Optional: Development tools (install with pip install -e .[dev])
-# ruff>=0.1.0
-# black>=23.0.0
-# pytest>=7.2.0
-# pytest-cov>=4.0.0  # NEW: For test coverage
+# Development dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.4.0

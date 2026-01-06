@@ -13,6 +13,61 @@ from src.models.ttm_wrapper import TTMWrapper
 logger = logging.getLogger(__name__)
 
 
+def _validate_not_mock(model: nn.Module) -> None:
+    """
+    Validate that model does not contain any mock components.
+
+    This is a critical safety check to prevent silent degradation to mock models
+    in production environments.
+
+    Args:
+        model: Model to validate
+
+    Raises:
+        RuntimeError: If any mock components are detected
+
+    Example:
+        >>> model = create_model(config)
+        >>> _validate_not_mock(model)  # Raises if mock detected
+    """
+    # Check all modules in the model
+    mock_components = []
+
+    for name, module in model.named_modules():
+        # Check if module type name contains "Mock"
+        module_type = type(module).__name__
+        if "Mock" in module_type:
+            mock_components.append((name, module_type))
+
+    if mock_components:
+        mock_list = "\n".join([f"  • {name}: {mtype}" for name, mtype in mock_components])
+
+        raise RuntimeError(
+            f"\n{'=' * 80}\n"
+            f"❌ CRITICAL ERROR: MOCK MODEL DETECTED IN PRODUCTION\n"
+            f"{'=' * 80}\n\n"
+            f"The model contains MOCK components that should NOT be used in production:\n\n"
+            f"{mock_list}\n\n"
+            f"Mock models:\n"
+            f"  • Do NOT use pre-trained weights\n"
+            f"  • Do NOT replicate real model behavior\n"
+            f"  • Produce MEANINGLESS results for research\n"
+            f"  • Are ONLY for testing without dependencies\n\n"
+            f"ROOT CAUSE:\n"
+            f"  The real IBM TTM model is not installed or failed to load.\n\n"
+            f"SOLUTION:\n"
+            f"  Install the REAL TTM model:\n"
+            f"    pip install git+https://github.com/ibm-granite/granite-tsfm.git\n\n"
+            f"  Or install from requirements.txt:\n"
+            f"    pip install -r requirements.txt\n\n"
+            f"TESTING NOTE:\n"
+            f"  If you're running tests that intentionally use mocks,\n"
+            f"  set environment variable: TTM_HAR_ALLOW_MOCK=1\n"
+            f"  This error prevents accidental production use of mocks.\n"
+            f"{'=' * 80}\n"
+        )
+
+
 class HARModel(nn.Module):
     """
     Complete Human Activity Recognition model.
@@ -192,7 +247,10 @@ def create_model(config: Dict[str, Any]) -> HARModel:
     # Create complete model
     model = HARModel(backbone=backbone, head=head)
 
-    logger.info(f"Model created successfully")
+    # ⚠️ CRITICAL: Validate no mock components (safety check)
+    _validate_not_mock(model)
+
+    logger.info(f"✓ Model created successfully (validated: no mocks)")
     logger.info(f"  Backbone params: {backbone.get_num_parameters():,}")
     logger.info(f"  Head params: {sum(p.numel() for p in head.parameters()):,}")
     logger.info(f"  Total params: {model.get_num_parameters():,}")

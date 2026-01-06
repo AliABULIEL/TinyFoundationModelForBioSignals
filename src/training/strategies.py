@@ -227,10 +227,49 @@ class LPThenFTStrategy(TrainingStrategy):
             logger.info("Phase 2: Unfroze backbone for fine-tuning")
 
     def _reset_head(self) -> None:
-        """Reset classification head parameters."""
-        for module in self.model.head.modules():
-            if hasattr(module, 'reset_parameters'):
-                module.reset_parameters()
+        """
+        Reset classification head parameters.
+
+        Safely reinitializes the classification head. If the model doesn't
+        have a head attribute or reset fails, logs a warning but continues training.
+        """
+        try:
+            # Check if model has head attribute
+            if not hasattr(self.model, 'head'):
+                logger.warning(
+                    "Cannot reset head: model has no 'head' attribute.\n"
+                    "  Model type: {type(self.model).__name__}\n"
+                    "  Skipping head reset."
+                )
+                return
+
+            # Reset parameters for all modules in head
+            reset_count = 0
+            for module in self.model.head.modules():
+                if hasattr(module, 'reset_parameters'):
+                    try:
+                        module.reset_parameters()
+                        reset_count += 1
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to reset {type(module).__name__}: {e}\n"
+                            f"  Continuing with other modules..."
+                        )
+
+            if reset_count == 0:
+                logger.warning(
+                    "No modules with reset_parameters() found in head.\n"
+                    "  Head may not have been reset. Consider manual initialization."
+                )
+            else:
+                logger.info(f"Successfully reset {reset_count} modules in classification head")
+
+        except Exception as e:
+            logger.error(
+                f"Unexpected error during head reset: {e}\n"
+                f"  Continuing training without resetting head.\n"
+                f"  This may affect model performance in Phase 2."
+            )
 
     def get_num_epochs(self) -> int:
         """Get total epochs."""

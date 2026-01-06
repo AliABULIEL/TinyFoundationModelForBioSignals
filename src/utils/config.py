@@ -218,3 +218,130 @@ def get_nested_value(config: Dict[str, Any], key_path: str, default: Any = None)
             return default
 
     return value
+
+
+def set_nested_value(config: Dict[str, Any], key_path: str, value: Any) -> None:
+    """
+    Set value in nested dictionary using dot-separated key path.
+
+    Creates intermediate dictionaries as needed.
+
+    Args:
+        config: Configuration dictionary to modify
+        key_path: Dot-separated path to value (e.g., "model.num_classes")
+        value: Value to set
+
+    Example:
+        >>> config = {}
+        >>> set_nested_value(config, "model.num_classes", 5)
+        >>> config
+        {'model': {'num_classes': 5}}
+    """
+    keys = key_path.split(".")
+
+    # Navigate to parent dictionary
+    current = config
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        elif not isinstance(current[key], dict):
+            # Overwrite non-dict value with dict
+            current[key] = {}
+        current = current[key]
+
+    # Set value
+    current[keys[-1]] = value
+
+
+def parse_override_value(value_str: str) -> Any:
+    """
+    Parse value string from command-line override.
+
+    Attempts to parse as:
+    1. Boolean (true/false, True/False)
+    2. Integer
+    3. Float
+    4. List (comma-separated)
+    5. String (fallback)
+
+    Args:
+        value_str: String value to parse
+
+    Returns:
+        Parsed value
+
+    Example:
+        >>> parse_override_value("true")
+        True
+        >>> parse_override_value("42")
+        42
+        >>> parse_override_value("3.14")
+        3.14
+        >>> parse_override_value("1,2,3")
+        [1, 2, 3]
+    """
+    value_str = value_str.strip()
+
+    # Boolean
+    if value_str.lower() in ("true", "false"):
+        return value_str.lower() == "true"
+
+    # Try integer
+    try:
+        return int(value_str)
+    except ValueError:
+        pass
+
+    # Try float
+    try:
+        return float(value_str)
+    except ValueError:
+        pass
+
+    # Try list (comma-separated)
+    if "," in value_str:
+        items = [parse_override_value(item.strip()) for item in value_str.split(",")]
+        return items
+
+    # String
+    return value_str
+
+
+def merge_config_overrides(config: Dict[str, Any], overrides: list) -> Dict[str, Any]:
+    """
+    Merge command-line overrides into configuration.
+
+    Overrides should be in format "key.path=value".
+
+    Args:
+        config: Base configuration dictionary
+        overrides: List of override strings
+
+    Returns:
+        Configuration with overrides applied
+
+    Example:
+        >>> config = {"training": {"epochs": 10, "lr": 0.001}}
+        >>> overrides = ["training.epochs=100", "training.lr=0.0001"]
+        >>> merged = merge_config_overrides(config, overrides)
+        >>> merged["training"]["epochs"]
+        100
+    """
+    # Create copy to avoid modifying original
+    result = dict(config)
+
+    for override in overrides:
+        if "=" not in override:
+            logger.warning(
+                f"Invalid override format '{override}' (expected key=value), skipping"
+            )
+            continue
+
+        key_path, value_str = override.split("=", 1)
+        key_path = key_path.strip()
+        value = parse_override_value(value_str)
+
+        set_nested_value(result, key_path, value)
+        logger.info(f"Override: {key_path} = {value}")
+
+    return result

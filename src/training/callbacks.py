@@ -312,18 +312,108 @@ class TensorBoardCallback(Callback):
         self,
         log_dir: str,
         log_every_n_steps: int = 10,
+        log_hparams: bool = True,
     ) -> None:
         """Initialize TensorBoard callback."""
         self.log_dir = Path(log_dir)
         self.log_every_n_steps = log_every_n_steps
+        self.log_hparams = log_hparams
         self.writer: Optional[SummaryWriter] = None
+        self.hparams_logged = False
 
-        logger.info(f"Initialized TensorBoardCallback: log_dir={log_dir}")
+        logger.info(f"Initialized TensorBoardCallback: log_dir={log_dir}, log_hparams={log_hparams}")
 
     def on_train_begin(self, trainer: Any) -> None:
-        """Create TensorBoard writer."""
+        """Create TensorBoard writer and log hyperparameters."""
         self.writer = SummaryWriter(log_dir=str(self.log_dir))
         logger.info(f"TensorBoard logging to: {self.log_dir}")
+
+        # Log hyperparameters
+        if self.log_hparams and not self.hparams_logged:
+            self._log_hparams(trainer)
+            self.hparams_logged = True
+
+    def _log_hparams(self, trainer: Any) -> None:
+        """
+        Log hyperparameters to TensorBoard.
+
+        Extracts key hyperparameters from config and logs them using
+        TensorBoard's hparams API for experiment tracking and comparison.
+        """
+        if self.writer is None:
+            return
+
+        try:
+            config = trainer.config
+
+            # Extract key hyperparameters
+            hparams = {}
+
+            # Training config
+            training_config = config.get("training", {})
+            hparams.update({
+                "strategy": training_config.get("strategy", "unknown"),
+                "optimizer": training_config.get("optimizer", "unknown"),
+                "batch_size": training_config.get("batch_size", 0),
+                "lr_head": training_config.get("lr_head", 0.0),
+                "lr_backbone": training_config.get("lr_backbone", 0.0),
+                "weight_decay": training_config.get("weight_decay", 0.0),
+                "gradient_clip_norm": training_config.get("gradient_clip_norm", 0.0),
+                "epochs": training_config.get("epochs", 0),
+            })
+
+            # Model config
+            model_config = config.get("model", {})
+            hparams.update({
+                "backbone": model_config.get("backbone", "unknown"),
+                "num_channels": model_config.get("num_channels", 0),
+                "context_length": model_config.get("context_length", 0),
+                "patch_length": model_config.get("patch_length", 0),
+                "head_type": model_config.get("head", {}).get("pooling", "unknown"),
+                "head_dropout": model_config.get("head", {}).get("dropout", 0.0),
+            })
+
+            # Dataset config
+            dataset_config = config.get("dataset", {})
+            hparams.update({
+                "dataset": dataset_config.get("name", "unknown"),
+                "num_classes": dataset_config.get("num_classes", 0),
+                "train_split": dataset_config.get("train_split", 0.0),
+            })
+
+            # Hardware config
+            hardware_config = config.get("hardware", {})
+            hparams.update({
+                "mixed_precision": hardware_config.get("mixed_precision", False),
+                "num_workers": hardware_config.get("num_workers", 0),
+            })
+
+            # Experiment config
+            experiment_config = config.get("experiment", {})
+            hparams.update({
+                "seed": experiment_config.get("seed", 0),
+            })
+
+            # Define metrics that will be tracked
+            # These will be populated as training progresses
+            metrics = {
+                "best_val_accuracy": 0.0,
+                "best_val_f1": 0.0,
+                "best_val_balanced_accuracy": 0.0,
+                "final_train_loss": 0.0,
+            }
+
+            # Log to TensorBoard HParams
+            self.writer.add_hparams(
+                hparam_dict=hparams,
+                metric_dict=metrics,
+                run_name=".",  # Use current run
+            )
+
+            logger.info(f"Logged {len(hparams)} hyperparameters to TensorBoard")
+
+        except Exception as e:
+            logger.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
 
     def on_train_end(self, trainer: Any) -> None:
         """Close TensorBoard writer."""
@@ -350,6 +440,15 @@ class TensorBoardCallback(Callback):
 
         for metric_name, metric_value in metrics.items():
             self.writer.add_scalar(f"val/{metric_name}", metric_value, trainer.global_step)
+
+    def on_epoch_end(self, epoch: int, metrics: Dict[str, float], trainer: Any) -> None:
+        """Log epoch-level training loss."""
+        if self.writer is None or not trainer.train_losses:
+            return
+
+        # Log epoch training loss
+        epoch_train_loss = trainer.train_losses[-1]
+        self.writer.add_scalar("train/epoch_loss", epoch_train_loss, epoch)
 
 
 class LearningRateLoggerCallback(Callback):

@@ -23,11 +23,12 @@ preprocessing:
   # Resampling
   resampling_method: "polyphase"  # scipy.signal.resample_poly
 
-  # Normalization
+  # Normalization (per-window)
+  # Note: RevIN is applied as a model layer, not here
   normalization:
-    method: "revin"             # Reversible Instance Normalization
+    method: "zscore"            # Z-score normalization per window
     epsilon: 1.0e-8
-    affine: false               # Learnable scale/shift
+    affine: false               # Not used for zscore
 
   # Gravity removal (optional)
   gravity_removal:
@@ -40,6 +41,7 @@ dataset:
   name: "capture24"
   data_path: "data/capture24"
   num_classes: 5
+  use_synthetic: false         # Use synthetic data for testing (no real data required)
 
   # 5-class taxonomy mapping
   label_map:
