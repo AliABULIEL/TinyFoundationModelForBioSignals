@@ -193,7 +193,8 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         logger.debug(f"Loading data from {csv_path}")
         
         # Read CSV (pandas handles .gz automatically)
-        df = pd.read_csv(csv_path)
+        # FIX: Use low_memory=False to avoid mixed type warnings on large files
+        df = pd.read_csv(csv_path, low_memory=False)
         
         # Find accelerometer columns
         accel_cols = self._find_accel_columns(df)
@@ -326,7 +327,12 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         original_rate: int,
         target_rate: int
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Resample signal and labels to target sampling rate."""
+        """
+        Resample signal and labels to target sampling rate.
+        
+        Uses scipy's resample_poly for high-quality resampling.
+        FIX: Uses actual resample_poly output length to avoid shape mismatch.
+        """
         from scipy.signal import resample_poly
         from math import gcd
         
@@ -334,13 +340,25 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         up = target_rate // g
         down = original_rate // g
         
-        n_samples_new = int(len(signal) * target_rate / original_rate)
+        # FIX: Resample first channel to get the ACTUAL output length
+        # (resample_poly can produce length that differs by 1 from calculated)
+        resampled_ch0 = resample_poly(signal[:, 0], up, down)
+        n_samples_new = len(resampled_ch0)
+        
+        # Allocate output array with correct size
         resampled_signal = np.zeros((n_samples_new, signal.shape[1]), dtype=np.float32)
+        resampled_signal[:, 0] = resampled_ch0
         
-        for ch in range(signal.shape[1]):
-            resampled_signal[:, ch] = resample_poly(signal[:, ch], up, down)
+        # Resample remaining channels
+        for ch in range(1, signal.shape[1]):
+            resampled_ch = resample_poly(signal[:, ch], up, down)
+            # Truncate or pad to match first channel length (handles off-by-one)
+            if len(resampled_ch) >= n_samples_new:
+                resampled_signal[:, ch] = resampled_ch[:n_samples_new]
+            else:
+                resampled_signal[:len(resampled_ch), ch] = resampled_ch
         
-        # Resample labels with nearest neighbor
+        # Resample labels with nearest neighbor to EXACT same length as signal
         new_indices = np.linspace(0, len(labels) - 1, n_samples_new)
         resampled_labels = labels[np.round(new_indices).astype(int)]
         
