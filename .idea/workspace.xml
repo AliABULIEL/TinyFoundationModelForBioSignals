@@ -5,26 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="17b8176f-e524-4d4d-b395-aeb00d6dc7cd" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/configs/smoke_synthetic.yaml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/final_smoke_test.log" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/smoke_test_full_system.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/testing/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/testing/synthetic_capture24.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_smoke_full_system.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.coverage" beforeDir="false" afterPath="$PROJECT_DIR$/.coverage" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/configs/default.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/default.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/coverage.xml" beforeDir="false" afterPath="$PROJECT_DIR$/coverage.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/evaluate.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/evaluate.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/train.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/train.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/data/capture24_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/capture24_adapter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/data/datamodule.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/datamodule.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/mock_ttm.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/mock_ttm.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/model_factory.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/model_factory.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -190,7 +171,7 @@
       <workItem from="1759130515869" duration="166635000" />
       <workItem from="1766956031092" duration="9863000" />
       <workItem from="1767627189119" duration="10284000" />
-      <workItem from="1768206689155" duration="2512000" />
+      <workItem from="1768206689155" duration="6849000" />
     </task>
     <servers />
   </component>
