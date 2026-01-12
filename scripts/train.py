@@ -209,7 +209,7 @@ def main():
     # Setup logging
     log_file = Path(args.output_dir) / "logs" / "train.log"
     setup_logging(
-        log_level=args.log_level,
+        level=args.log_level,
         log_file=str(log_file),
     )
 
@@ -298,6 +298,13 @@ def main():
     logger.info(f"Total epochs: {history['num_epochs']}")
     logger.info(f"Total steps: {history['total_steps']}")
 
+    # Save training history to JSON
+    import json
+    history_path = paths["output_dir"] / "training_history.json"
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    logger.info(f"Saved training history to {history_path}")
+
     # Save final model
     if not args.no_checkpointing:
         final_checkpoint_path = paths["checkpoints"] / "final_model.pt"
@@ -319,6 +326,26 @@ def main():
         logger.info(f"  Weighted F1: {best_metrics['weighted_f1']:.4f}")
         logger.info(f"  Loss: {best_metrics['loss']:.4f}")
         logger.info("=" * 80)
+
+        # Save results summary
+        results_summary = {
+            "best_epoch": best_epoch + 1,
+            "best_metrics": best_metrics,
+            "final_metrics": history['val_metrics'][-1] if history['val_metrics'] else None,
+            "total_epochs": history['num_epochs'],
+            "total_steps": history['total_steps'],
+            "config": {
+                "model": config.get("model", {}),
+                "training": config.get("training", {}),
+                "dataset": config.get("dataset", {}),
+            },
+            "checkpoint_path": str(paths["checkpoints"] / "best_model.pt"),
+        }
+        
+        results_path = paths["output_dir"] / "results_summary.json"
+        with open(results_path, 'w') as f:
+            json.dump(results_summary, f, indent=2)
+        logger.info(f"Saved results summary to {results_path}")
 
     logger.info(f"All outputs saved to {args.output_dir}")
 

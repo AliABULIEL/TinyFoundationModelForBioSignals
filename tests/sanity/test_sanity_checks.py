@@ -11,13 +11,12 @@ These tests catch common ML bugs by verifying expected behavior:
 - Batch size → invariant
 - End-to-end → pipeline works
 
-All tests complete in <5 seconds on CPU using synthetic data only.
+REQUIREMENTS:
+- Real IBM TTM model must be installed
+- pip install git+https://github.com/ibm-granite/granite-tsfm.git
+
+Tests will be skipped if TTM is not available.
 """
-
-import os
-
-# ⚠️ CRITICAL: Allow mock models for testing ONLY
-os.environ["TTM_HAR_ALLOW_MOCK"] = "1"
 
 import pytest
 import torch
@@ -25,8 +24,33 @@ import torch.nn as nn
 import numpy as np
 from sklearn.metrics import balanced_accuracy_score, f1_score
 
-from src.models.model_factory import create_model
 from src.utils.reproducibility import set_seed
+
+
+# ==============================================================================
+# TTM AVAILABILITY CHECK
+# ==============================================================================
+
+def _check_ttm_available():
+    """Check if real TTM is available."""
+    try:
+        from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction
+        return True
+    except ImportError:
+        try:
+            from granite_tsfm.models import TinyTimeMixerForPrediction
+            return True
+        except ImportError:
+            return False
+
+
+TTM_AVAILABLE = _check_ttm_available()
+
+# Skip all tests in this module if TTM is not available
+pytestmark = pytest.mark.skipif(
+    not TTM_AVAILABLE,
+    reason="Requires real IBM TTM model (pip install git+https://github.com/ibm-granite/granite-tsfm.git)"
+)
 
 
 # ==============================================================================
@@ -71,8 +95,8 @@ def minimal_config():
 
 
 @pytest.fixture
-def synthetic_batch():
-    """Generate synthetic batch data."""
+def test_batch():
+    """Generate test batch data with realistic shapes."""
     batch_size = 8
     context_length = 512
     num_channels = 3
@@ -95,6 +119,8 @@ class TestRandomLabels:
 
     def test_random_labels_low_accuracy(self, minimal_config):
         """Verify that model performs poorly on random labels (data leakage check)."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model
@@ -150,6 +176,8 @@ class TestConstantPredictions:
 
     def test_constant_predictions_zero_balanced_accuracy(self, minimal_config):
         """Verify model produces varied predictions, not always the same class."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model
@@ -190,6 +218,8 @@ class TestOverfitMicroBatch:
 
     def test_overfit_single_batch(self, minimal_config):
         """Verify model can memorize a tiny batch (proves it has capacity to learn)."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model
@@ -253,6 +283,8 @@ class TestGradientFlow:
 
     def test_head_receives_gradients(self, minimal_config):
         """Verify classification head receives gradients when backbone is frozen."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model with frozen backbone
@@ -286,6 +318,8 @@ class TestGradientFlow:
 
     def test_backbone_gradients_when_unfrozen(self, minimal_config):
         """Verify backbone receives gradients when unfrozen."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model with unfrozen backbone
@@ -319,6 +353,8 @@ class TestGradientFlow:
 
     def test_backbone_frozen_no_gradients(self, minimal_config):
         """Verify frozen backbone does NOT receive gradients."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model with frozen backbone
@@ -358,6 +394,8 @@ class TestLossDecreases:
 
     def test_loss_decreases(self, minimal_config):
         """Verify loss goes down when training on same batch repeatedly."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model
@@ -404,6 +442,8 @@ class TestOutputShapes:
 
     def test_output_shape(self, minimal_config):
         """Verify model output is (batch_size, num_classes)."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         model = create_model(minimal_config)
@@ -423,6 +463,8 @@ class TestOutputShapes:
 
     def test_backbone_output_shape(self, minimal_config):
         """Verify backbone output is (batch_size, hidden_dim)."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         model = create_model(minimal_config)
@@ -453,6 +495,8 @@ class TestDeterminism:
 
     def test_deterministic_forward(self, minimal_config):
         """Verify same seed produces identical outputs."""
+        from src.models.model_factory import create_model
+        
         # Run 1
         set_seed(42)
         model1 = create_model(minimal_config)
@@ -492,6 +536,8 @@ class TestBatchSizeInvariance:
 
     def test_batch_size_1(self, minimal_config):
         """Verify model works with batch size 1."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         model = create_model(minimal_config)
@@ -508,6 +554,8 @@ class TestBatchSizeInvariance:
 
     def test_varying_batch_sizes(self, minimal_config):
         """Verify same sample gives same output regardless of batch composition."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         model = create_model(minimal_config)
@@ -546,6 +594,8 @@ class TestEndToEndSmoke:
 
     def test_full_pipeline_smoke(self, minimal_config):
         """Verify entire pipeline works: data → model → loss → backward → metrics."""
+        from src.models.model_factory import create_model
+        
         set_seed(42)
 
         # Create model

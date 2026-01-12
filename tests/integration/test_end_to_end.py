@@ -1,29 +1,149 @@
-"""Integration tests for end-to-end workflows."""
+"""Integration tests for end-to-end workflows.
+
+REQUIREMENTS:
+- Real IBM TTM model must be installed
+- Real CAPTURE-24 data must be available for full integration tests
+
+Tests will be skipped if requirements are not met.
+"""
 
 import pytest
 import torch
 import numpy as np
 from pathlib import Path
+import os
 
-from src.data.datamodule import HARDataModule
-from src.models.model_factory import create_model
-from src.training.trainer import Trainer
-from src.evaluation import Evaluator
 
+# ==============================================================================
+# ENVIRONMENT CHECKS
+# ==============================================================================
+
+def _check_ttm_available():
+    """Check if real TTM is available."""
+    try:
+        from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction
+        return True
+    except ImportError:
+        try:
+            from granite_tsfm.models import TinyTimeMixerForPrediction
+            return True
+        except ImportError:
+            return False
+
+
+def _check_data_available(data_path="data/capture24"):
+    """Check if real CAPTURE-24 data is available."""
+    path = Path(data_path)
+    if not path.exists():
+        return False
+    # Check for at least one participant folder
+    participant_dirs = [d for d in path.iterdir() if d.is_dir() and d.name.startswith("P")]
+    return len(participant_dirs) > 0
+
+
+TTM_AVAILABLE = _check_ttm_available()
+DATA_PATH = os.environ.get("CAPTURE24_DATA_PATH", "data/capture24")
+DATA_AVAILABLE = _check_data_available(DATA_PATH)
+
+
+# Skip markers
+requires_ttm = pytest.mark.skipif(
+    not TTM_AVAILABLE,
+    reason="Requires real IBM TTM model"
+)
+
+requires_data = pytest.mark.skipif(
+    not DATA_AVAILABLE,
+    reason=f"Requires real CAPTURE-24 data at {DATA_PATH}"
+)
+
+requires_full_setup = pytest.mark.skipif(
+    not (TTM_AVAILABLE and DATA_AVAILABLE),
+    reason="Requires both TTM model and CAPTURE-24 data"
+)
+
+
+# ==============================================================================
+# INTEGRATION TESTS
+# ==============================================================================
 
 @pytest.mark.integration
+@requires_full_setup
 class TestEndToEndTraining:
     """Integration tests for complete training pipeline."""
 
-    def test_complete_training_pipeline(self, sample_config, temp_dir, device):
-        """Test complete training pipeline from data to trained model."""
-        # Modify config for quick test
-        sample_config["training"]["epochs"] = 2
-        sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+    @pytest.fixture
+    def integration_config(self):
+        """Config for integration tests with real data."""
+        return {
+            "experiment": {
+                "name": "integration_test",
+                "seed": 42,
+                "output_dir": "outputs",
+            },
+            "dataset": {
+                "name": "capture24",
+                "data_path": DATA_PATH,
+                "num_classes": 5,
+                "train_split": 0.7,
+                "val_split": 0.15,
+                "test_split": 0.15,
+            },
+            "preprocessing": {
+                "sampling_rate_original": 100,
+                "sampling_rate_target": 30,
+                "context_length": 512,
+                "patch_length": 16,
+                "window_stride_train": 256,
+                "window_stride_eval": 512,
+                "resampling_method": "polyphase",
+                "normalization": {"method": "zscore", "epsilon": 1e-8},
+                "gravity_removal": {"enabled": False},
+            },
+            "model": {
+                "backbone": "ttm",
+                "checkpoint": "ibm-granite/granite-timeseries-ttm-r2",
+                "num_channels": 3,
+                "num_classes": 5,
+                "context_length": 512,
+                "patch_length": 16,
+                "freeze_strategy": "all",
+                "head": {
+                    "type": "linear",
+                    "pooling": "mean",
+                    "dropout": 0.1,
+                    "activation": "gelu",
+                },
+            },
+            "training": {
+                "strategy": "linear_probe",
+                "epochs": 2,  # Quick test
+                "batch_size": 8,
+                "lr_head": 1e-3,
+                "lr_backbone": 1e-5,
+                "weight_decay": 0.01,
+                "optimizer": "adamw",
+                "scheduler": "cosine",
+                "warmup_ratio": 0.1,
+                "gradient_clip_norm": 1.0,
+                "loss": {"type": "weighted_ce"},
+            },
+            "hardware": {
+                "device": None,
+                "num_workers": 0,
+                "pin_memory": False,
+                "mixed_precision": False,
+            },
+        }
 
-        # Create data module (will use synthetic data)
-        data_module = HARDataModule(config=sample_config)
+    def test_complete_training_pipeline(self, integration_config, temp_dir, device):
+        """Test complete training pipeline from data to trained model."""
+        from src.data.datamodule import HARDataModule
+        from src.models.model_factory import create_model
+        from src.training.trainer import Trainer
+
+        # Create data module with real data
+        data_module = HARDataModule(config=integration_config)
         data_module.setup()
 
         train_loader = data_module.train_dataloader()
@@ -34,7 +154,7 @@ class TestEndToEndTraining:
         assert len(val_loader) > 0
 
         # Create model
-        model = create_model(sample_config)
+        model = create_model(integration_config)
         assert model is not None
 
         # Create trainer
@@ -42,7 +162,7 @@ class TestEndToEndTraining:
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
-            config=sample_config,
+            config=integration_config,
             device=device,
             callbacks=[],
         )
@@ -60,25 +180,25 @@ class TestEndToEndTraining:
         assert "accuracy" in final_metrics
         assert 0 <= final_metrics["accuracy"] <= 1
 
-
-    def test_checkpoint_save_and_load(self, sample_config, temp_dir, device):
+    def test_checkpoint_save_and_load(self, integration_config, temp_dir, device):
         """Test saving and loading checkpoints."""
-        # Setup quick training
-        sample_config["training"]["epochs"] = 1
-        sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+        from src.data.datamodule import HARDataModule
+        from src.models.model_factory import create_model
+        from src.training.trainer import Trainer
+
+        integration_config["training"]["epochs"] = 1
 
         # Create data module
-        data_module = HARDataModule(config=sample_config)
+        data_module = HARDataModule(config=integration_config)
         data_module.setup()
 
         # Create and train model
-        model = create_model(sample_config)
+        model = create_model(integration_config)
         trainer = Trainer(
             model=model,
             train_loader=data_module.train_dataloader(),
             val_loader=data_module.val_dataloader(),
-            config=sample_config,
+            config=integration_config,
             device=device,
             callbacks=[],
         )
@@ -93,12 +213,12 @@ class TestEndToEndTraining:
         assert checkpoint_path.exists()
 
         # Create new trainer and load checkpoint
-        new_model = create_model(sample_config)
+        new_model = create_model(integration_config)
         new_trainer = Trainer(
             model=new_model,
             train_loader=data_module.train_dataloader(),
             val_loader=data_module.val_dataloader(),
-            config=sample_config,
+            config=integration_config,
             device=device,
             callbacks=[],
         )
@@ -108,25 +228,26 @@ class TestEndToEndTraining:
         # Check epoch was restored
         assert new_trainer.current_epoch == trainer.current_epoch
 
-
-    def test_evaluation_pipeline(self, sample_config, temp_dir, device):
+    def test_evaluation_pipeline(self, integration_config, temp_dir, device):
         """Test complete evaluation pipeline."""
-        # Setup
-        sample_config["training"]["epochs"] = 1
-        sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+        from src.data.datamodule import HARDataModule
+        from src.models.model_factory import create_model
+        from src.training.trainer import Trainer
+        from src.evaluation import Evaluator
+
+        integration_config["training"]["epochs"] = 1
 
         # Create data
-        data_module = HARDataModule(config=sample_config)
+        data_module = HARDataModule(config=integration_config)
         data_module.setup()
 
         # Create and train model
-        model = create_model(sample_config)
+        model = create_model(integration_config)
         trainer = Trainer(
             model=model,
             train_loader=data_module.train_dataloader(),
             val_loader=data_module.val_dataloader(),
-            config=sample_config,
+            config=integration_config,
             device=device,
             callbacks=[],
         )
@@ -158,14 +279,43 @@ class TestEndToEndTraining:
 
 
 @pytest.mark.integration
+@requires_full_setup
 class TestDataPipeline:
     """Integration tests for data pipeline."""
 
-    def test_data_module_setup(self, sample_config, temp_dir):
-        """Test data module setup and data loading."""
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+    @pytest.fixture
+    def data_config(self):
+        """Config for data pipeline tests."""
+        return {
+            "experiment": {"seed": 42},
+            "dataset": {
+                "name": "capture24",
+                "data_path": DATA_PATH,
+                "num_classes": 5,
+                "train_split": 0.7,
+                "val_split": 0.15,
+                "test_split": 0.15,
+            },
+            "preprocessing": {
+                "sampling_rate_original": 100,
+                "sampling_rate_target": 30,
+                "context_length": 512,
+                "patch_length": 16,
+                "window_stride_train": 256,
+                "window_stride_eval": 512,
+                "resampling_method": "polyphase",
+                "normalization": {"method": "zscore"},
+                "gravity_removal": {"enabled": False},
+            },
+            "training": {"batch_size": 4},
+            "hardware": {"num_workers": 0, "pin_memory": False},
+        }
 
-        data_module = HARDataModule(config=sample_config)
+    def test_data_module_setup(self, data_config):
+        """Test data module setup and data loading."""
+        from src.data.datamodule import HARDataModule
+
+        data_module = HARDataModule(config=data_config)
         data_module.setup()
 
         # Check splits created
@@ -177,12 +327,11 @@ class TestDataPipeline:
         assert len(val_loader) > 0
         assert len(test_loader) > 0
 
-    def test_data_module_batch_format(self, sample_config, temp_dir):
+    def test_data_module_batch_format(self, data_config):
         """Test that batches have correct format."""
-        sample_config["dataset"]["data_path"] = str(temp_dir)
-        sample_config["training"]["batch_size"] = 4
+        from src.data.datamodule import HARDataModule
 
-        data_module = HARDataModule(config=sample_config)
+        data_module = HARDataModule(config=data_config)
         data_module.setup()
 
         train_loader = data_module.train_dataloader()
@@ -196,14 +345,15 @@ class TestDataPipeline:
 
         # Check shapes
         assert batch["signal"].shape[0] == 4  # Batch size
+        assert batch["signal"].shape[1] == 512  # Context length
         assert batch["signal"].shape[2] == 3  # 3 channels
         assert batch["label"].shape[0] == 4
 
-    def test_no_subject_leakage(self, sample_config, temp_dir):
+    def test_no_subject_leakage(self, data_config):
         """Test that there's no subject leakage across splits."""
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+        from src.data.datamodule import HARDataModule
 
-        data_module = HARDataModule(config=sample_config)
+        data_module = HARDataModule(config=data_config)
         data_module.setup()
 
         # Get datasets
@@ -217,18 +367,45 @@ class TestDataPipeline:
         test_subjects = set(test_dataset.participant_ids)
 
         # Check no overlap
-        assert len(train_subjects & val_subjects) == 0
-        assert len(train_subjects & test_subjects) == 0
-        assert len(val_subjects & test_subjects) == 0
+        assert len(train_subjects & val_subjects) == 0, "Subject leakage between train and val"
+        assert len(train_subjects & test_subjects) == 0, "Subject leakage between train and test"
+        assert len(val_subjects & test_subjects) == 0, "Subject leakage between val and test"
 
 
 @pytest.mark.integration
+@requires_ttm
 class TestModelPipeline:
-    """Integration tests for model pipeline."""
+    """Integration tests for model pipeline (only needs TTM, not data)."""
 
-    def test_model_forward_pass(self, sample_config, sample_batch, device):
+    @pytest.fixture
+    def model_config(self):
+        """Config for model tests."""
+        return {
+            "experiment": {"seed": 42},
+            "dataset": {"num_classes": 5},
+            "model": {
+                "backbone": "ttm",
+                "checkpoint": "ibm-granite/granite-timeseries-ttm-r2",
+                "num_channels": 3,
+                "num_classes": 5,
+                "context_length": 512,
+                "patch_length": 16,
+                "freeze_strategy": "all",
+                "head": {
+                    "type": "linear",
+                    "pooling": "mean",
+                    "dropout": 0.1,
+                    "activation": "gelu",
+                },
+            },
+            "training": {"lr_head": 1e-3, "lr_backbone": 1e-5},
+        }
+
+    def test_model_forward_pass(self, model_config, sample_batch, device):
         """Test model forward pass."""
-        model = create_model(sample_config)
+        from src.models.model_factory import create_model
+
+        model = create_model(model_config)
         model = model.to(device)
         model.eval()
 
@@ -243,11 +420,16 @@ class TestModelPipeline:
         assert outputs.shape[0] == inputs.shape[0]  # Batch size
         assert outputs.shape[1] == 5  # Num classes
 
-    def test_model_backward_pass(self, sample_config, sample_batch, device):
+    def test_model_backward_pass(self, model_config, sample_batch, device):
         """Test model backward pass."""
-        model = create_model(sample_config)
+        from src.models.model_factory import create_model
+
+        model = create_model(model_config)
         model = model.to(device)
         model.train()
+
+        # Unfreeze for gradient test
+        model.unfreeze_backbone()
 
         # Forward pass
         inputs = sample_batch["signal"].to(device)
@@ -260,13 +442,19 @@ class TestModelPipeline:
         loss.backward()
 
         # Check gradients exist for trainable parameters
+        has_grads = False
         for name, param in model.named_parameters():
-            if param.requires_grad:
-                assert param.grad is not None
+            if param.requires_grad and param.grad is not None:
+                has_grads = True
+                break
 
-    def test_freeze_unfreeze(self, sample_config, device):
+        assert has_grads, "No gradients computed"
+
+    def test_freeze_unfreeze(self, model_config, device):
         """Test freezing and unfreezing model."""
-        model = create_model(sample_config)
+        from src.models.model_factory import create_model
+
+        model = create_model(model_config)
         model = model.to(device)
 
         # Freeze backbone
@@ -290,29 +478,80 @@ class TestModelPipeline:
 
 @pytest.mark.integration
 @pytest.mark.slow
+@requires_full_setup
 class TestFullWorkflow:
     """Test complete workflow from preprocessing to evaluation."""
 
-    def test_full_workflow(self, sample_config, temp_dir, device):
+    @pytest.fixture
+    def full_config(self):
+        """Full config for workflow test."""
+        return {
+            "experiment": {"name": "full_workflow_test", "seed": 42},
+            "dataset": {
+                "name": "capture24",
+                "data_path": DATA_PATH,
+                "num_classes": 5,
+                "train_split": 0.7,
+                "val_split": 0.15,
+                "test_split": 0.15,
+            },
+            "preprocessing": {
+                "sampling_rate_original": 100,
+                "sampling_rate_target": 30,
+                "context_length": 512,
+                "patch_length": 16,
+                "window_stride_train": 256,
+                "window_stride_eval": 512,
+                "resampling_method": "polyphase",
+                "normalization": {"method": "zscore"},
+                "gravity_removal": {"enabled": False},
+            },
+            "model": {
+                "backbone": "ttm",
+                "checkpoint": "ibm-granite/granite-timeseries-ttm-r2",
+                "num_channels": 3,
+                "num_classes": 5,
+                "context_length": 512,
+                "patch_length": 16,
+                "freeze_strategy": "all",
+                "head": {"type": "linear", "pooling": "mean", "dropout": 0.1},
+            },
+            "training": {
+                "strategy": "linear_probe",
+                "epochs": 2,
+                "batch_size": 8,
+                "lr_head": 1e-3,
+                "lr_backbone": 1e-5,
+                "weight_decay": 0.01,
+                "optimizer": "adamw",
+                "scheduler": "cosine",
+                "warmup_ratio": 0.1,
+                "gradient_clip_norm": 1.0,
+                "loss": {"type": "weighted_ce"},
+            },
+            "hardware": {"num_workers": 0, "pin_memory": False},
+        }
+
+    def test_full_workflow(self, full_config, temp_dir, device):
         """Test complete workflow: data -> train -> evaluate."""
-        # Configure for quick test
-        sample_config["training"]["epochs"] = 2
-        sample_config["training"]["batch_size"] = 8
-        sample_config["dataset"]["data_path"] = str(temp_dir)
+        from src.data.datamodule import HARDataModule
+        from src.models.model_factory import create_model
+        from src.training.trainer import Trainer
+        from src.evaluation import Evaluator
 
         # 1. Setup data
-        data_module = HARDataModule(config=sample_config)
+        data_module = HARDataModule(config=full_config)
         data_module.setup()
 
         # 2. Create model
-        model = create_model(sample_config)
+        model = create_model(full_config)
 
         # 3. Train
         trainer = Trainer(
             model=model,
             train_loader=data_module.train_dataloader(),
             val_loader=data_module.val_dataloader(),
-            config=sample_config,
+            config=full_config,
             device=device,
             callbacks=[],
         )

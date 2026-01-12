@@ -1,5 +1,7 @@
 # Default configuration for TTM-HAR
 # This file contains all default settings for the project
+#
+# IMPORTANT: This project requires REAL data - no synthetic data is supported.
 
 # Experiment metadata
 experiment:
@@ -41,7 +43,6 @@ dataset:
   name: "capture24"
   data_path: "data/capture24"
   num_classes: 5
-  use_synthetic: false         # Use synthetic data for testing (no real data required)
 
   # 5-class taxonomy mapping
   label_map:

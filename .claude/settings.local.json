@@ -16,7 +16,12 @@
       "Bash(python -c \"from src.models.mock_ttm import MockTTMModel; MockTTMModel.from_pretrained(''''test'''')\")",
       "Bash(TTM_HAR_ALLOW_MOCK=1 pytest:*)",
       "Bash(pytest:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(TTM_HAR_ALLOW_MOCK=1 python3:*)",
+      "Bash(tree:*)",
+      "Bash(tee:*)",
+      "Bash(mkdir:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

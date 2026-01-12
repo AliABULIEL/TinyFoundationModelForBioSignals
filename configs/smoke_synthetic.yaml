@@ -1,0 +1,159 @@
+# Smoke test configuration for TTM-HAR
+# Minimal settings for fast end-to-end smoke testing with synthetic data
+#
+# Usage:
+#   python scripts/smoke_test_full_system.py --fast
+
+# Experiment metadata
+experiment:
+  name: "smoke_test_synthetic"
+  description: "Fast smoke test with tiny synthetic dataset"
+  seed: 42
+  output_dir: "runs/smoke"
+
+# Preprocessing configuration
+preprocessing:
+  # Sampling rates
+  sampling_rate_original: 100  # Hz (matches synthetic data)
+  sampling_rate_target: 30     # Hz (resampled for efficiency)
+
+  # Windowing
+  context_length: 512          # Number of timesteps per window
+  patch_length: 16             # Patch size for TTM
+  window_stride_train: 256     # Training stride (50% overlap)
+  window_stride_eval: 512      # Evaluation stride (no overlap)
+
+  # Resampling
+  resampling_method: "polyphase"
+
+  # Normalization (per-window)
+  normalization:
+    method: "zscore"
+    epsilon: 1.0e-8
+    affine: false
+
+  # Gravity removal (disabled for smoke test)
+  gravity_removal:
+    enabled: false
+    method: "highpass"
+    cutoff_freq: 0.5
+
+# Dataset configuration
+dataset:
+  name: "capture24"
+  data_path: "data/smoke_synthetic"  # Will be overridden by CLI
+  num_classes: 5
+
+  # 5-class taxonomy mapping
+  label_map:
+    0: "Sleep"
+    1: "Sedentary"
+    2: "Light"
+    3: "Moderate"
+    4: "Vigorous"
+
+  # Data splits (for smoke test: 4 train / 1 val / 1 test)
+  train_split: 0.67   # 4/6
+  val_split: 0.17     # 1/6
+  test_split: 0.17    # 1/6
+
+  # Class weights (auto-computed)
+  class_weights: null
+
+# Model configuration
+model:
+  backbone: "ttm"
+  checkpoint: "ibm-granite/granite-timeseries-ttm-r2"
+
+  # Input/output dimensions
+  num_channels: 3
+  num_classes: 5
+  context_length: 512
+  patch_length: 16
+
+  # Classification head (minimal for smoke test)
+  head:
+    pooling: "mean"
+    hidden_dims: null    # No MLP layers for speed
+    dropout: 0.1
+    activation: "gelu"
+
+  # Freezing strategy (linear probe for speed)
+  freeze_strategy: "all"
+
+# Training configuration
+training:
+  # Strategy (linear probe is fastest)
+  strategy: "linear_probe"
+
+  # Optimization
+  optimizer: "adamw"
+  lr_head: 1.0e-3
+  lr_backbone: 1.0e-5
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+
+  # Learning rate schedule (constant for smoke test)
+  scheduler: "constant"
+  warmup_ratio: 0.0    # No warmup for speed
+
+  # Training duration (MINIMAL for smoke test)
+  epochs: 2            # Just 2 epochs
+  batch_size: 8        # Small batch size
+
+  # Validation
+  eval_every_n_epochs: 1
+  early_stopping_patience: 999  # Disabled for smoke test
+
+  # Loss function
+  loss:
+    type: "weighted_ce"
+    label_smoothing: 0.0
+    focal_gamma: 2.0
+    focal_alpha: null
+
+  # Checkpointing
+  checkpoint:
+    save_every_n_epochs: 1   # Save every epoch
+    keep_last_n: 2
+    save_best: true
+    monitor_metric: "balanced_accuracy"
+    mode: "max"
+
+# Evaluation configuration
+evaluation:
+  # Splitting strategy (simple for smoke test)
+  splitter: "group_kfold"
+  n_folds: 1   # Just one fold for smoke test
+
+  # Metrics to compute
+  metrics:
+    - "balanced_accuracy"
+    - "macro_f1"
+    - "weighted_f1"
+    - "per_class_precision"
+    - "per_class_recall"
+    - "confusion_matrix"
+    - "cohen_kappa"
+
+  # Per-class evaluation
+  compute_per_class: true
+
+# Logging configuration
+logging:
+  level: "INFO"
+  log_file: null
+  use_tensorboard: false   # Disabled for speed
+  tensorboard_dir: "runs/smoke/tensorboard"
+
+  # What to log
+  log_frequency: 1     # Log every step for debugging
+  log_gradients: false
+  log_weights: false
+
+# Hardware configuration (SMOKE TEST SETTINGS)
+hardware:
+  device: "cpu"        # Force CPU for reproducibility
+  num_workers: 0       # Force deterministic behavior
+  pin_memory: false    # Not needed for CPU
+  mixed_precision: false  # Disabled for CPU

@@ -1,4 +1,8 @@
-"""CAPTURE-24 dataset adapter for TTM-HAR."""
+"""CAPTURE-24 dataset adapter for TTM-HAR.
+
+This module provides the dataset adapter for CAPTURE-24 accelerometry data.
+Real data is REQUIRED - no synthetic data generation is supported.
+"""
 
 import logging
 from pathlib import Path
@@ -33,7 +37,9 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         participant_ids: List of participant IDs to load (None = all)
         num_classes: Number of activity classes (5 or 8)
         transform: Optional transform to apply to samples
-        use_synthetic: If True and data doesn't exist, generate synthetic data for testing
+
+    Raises:
+        FileNotFoundError: If data_path does not exist or contains no data
 
     Example:
         >>> dataset = CAPTURE24Dataset(
@@ -49,14 +55,34 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         participant_ids: Optional[List[str]] = None,
         num_classes: int = 5,
         transform: Optional[callable] = None,
-        use_synthetic: bool = False,
     ) -> None:
         """Initialize CAPTURE-24 dataset."""
         self.num_classes = num_classes
-        self.use_synthetic = use_synthetic
 
         # Get label mapping
         self.label_mapping = get_label_mapping("capture24", num_classes)
+
+        # Validate data path exists
+        data_path_obj = Path(data_path)
+        if not data_path_obj.exists():
+            raise FileNotFoundError(
+                f"\n{'=' * 80}\n"
+                f"❌ CAPTURE-24 DATA NOT FOUND\n"
+                f"{'=' * 80}\n\n"
+                f"Data path does not exist: {data_path}\n\n"
+                f"REQUIRED: Download the CAPTURE-24 dataset first.\n\n"
+                f"DOWNLOAD INSTRUCTIONS:\n"
+                f"─────────────────────────────────────────────────────────────────────────────\n"
+                f"1. Visit: https://ora.ox.ac.uk/objects/uuid:99d7c092-d865-4a19-b096-cc16f8e4f6d0\n"
+                f"2. Download the dataset files\n"
+                f"3. Extract to: {data_path}\n"
+                f"4. Ensure structure: {data_path}/P001/, P002/, ..., P151/\n"
+                f"─────────────────────────────────────────────────────────────────────────────\n\n"
+                f"Each participant folder should contain:\n"
+                f"  • accelerometry.npy or accelerometry.csv (X, Y, Z columns)\n"
+                f"  • labels.npy or labels.csv (activity labels)\n"
+                f"{'=' * 80}\n"
+            )
 
         # Initialize base class
         super().__init__(
@@ -64,6 +90,26 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
             participant_ids=participant_ids,
             transform=transform,
         )
+
+        # Validate we have data
+        if len(self.participant_ids) == 0:
+            raise FileNotFoundError(
+                f"\n{'=' * 80}\n"
+                f"❌ NO PARTICIPANTS FOUND\n"
+                f"{'=' * 80}\n\n"
+                f"Data path exists but contains no participant folders: {data_path}\n\n"
+                f"Expected structure:\n"
+                f"  {data_path}/\n"
+                f"    ├── P001/\n"
+                f"    │   ├── accelerometry.npy\n"
+                f"    │   └── labels.npy\n"
+                f"    ├── P002/\n"
+                f"    │   ├── accelerometry.npy\n"
+                f"    │   └── labels.npy\n"
+                f"    └── ... (P001 to P151)\n\n"
+                f"Please download and extract the CAPTURE-24 dataset correctly.\n"
+                f"{'=' * 80}\n"
+            )
 
         logger.info(
             f"Initialized CAPTURE-24 dataset: "
@@ -89,41 +135,28 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         """
         participant_dir = self.data_path / participant_id
 
-        # Check if data exists
+        # Check if participant directory exists
         if not participant_dir.exists():
-            if self.use_synthetic:
-                logger.warning(
-                    f"Participant {participant_id} not found at {participant_dir}. "
-                    f"Generating synthetic data for testing."
-                )
-                return self._generate_synthetic_data()
-            else:
-                raise FileNotFoundError(
-                    f"Participant directory not found: {participant_dir}\n"
-                    f"  Hint: Download CAPTURE-24 dataset or enable use_synthetic=True\n"
-                    f"  Expected structure: {self.data_path}/P001/, P002/, ..."
-                )
+            raise FileNotFoundError(
+                f"Participant directory not found: {participant_dir}\n"
+                f"  Hint: Ensure CAPTURE-24 dataset is downloaded and extracted\n"
+                f"  Expected structure: {self.data_path}/P001/, P002/, ..."
+            )
 
         # Check if directory is empty
         if participant_dir.is_dir():
             dir_contents = list(participant_dir.iterdir())
             if len(dir_contents) == 0:
-                error_msg = (
+                raise ValueError(
                     f"Participant directory is empty: {participant_dir}\n"
                     f"  Expected files: accelerometry.npy/.csv and labels.npy/.csv\n"
-                    f"  This may indicate incomplete data download or extraction.\n"
-                    f"  Hint: Check data preparation pipeline or re-download data."
+                    f"  This may indicate incomplete data download or extraction."
                 )
-                if self.use_synthetic:
-                    logger.warning(f"{error_msg}\n  Generating synthetic data for testing.")
-                    return self._generate_synthetic_data()
-                else:
-                    raise ValueError(error_msg)
 
-        # Try loading accelerometry data
+        # Load accelerometry data
         signal = self._load_accelerometry(participant_dir)
 
-        # Try loading labels
+        # Load labels
         labels = self._load_labels(participant_dir)
 
         # Validate shapes match
@@ -230,61 +263,21 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
             f"  Expected files: labels.npy, labels.csv, annotations.npy, or annotations.csv"
         )
 
-    def _generate_synthetic_data(
-        self, duration_hours: float = 24.0, sampling_rate: int = 100
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Generate synthetic accelerometry data for testing.
-
-        Args:
-            duration_hours: Duration of synthetic data in hours
-            sampling_rate: Sampling rate in Hz
-
-        Returns:
-            Tuple of (signal, labels)
-        """
-        num_samples = int(duration_hours * 3600 * sampling_rate)
-
-        # Generate realistic-looking accelerometry with ~1g mean (gravity)
-        # and small variations (body movement)
-        signal = np.random.randn(num_samples, 3) * 0.3 + np.array([0.0, 0.0, 1.0])
-
-        # Generate random labels with realistic distribution
-        # Sleep/Sedentary: 70%, Light: 20%, Moderate: 8%, Vigorous: 2%
-        label_probs = [0.35, 0.35, 0.20, 0.08, 0.02]
-        if self.num_classes < 5:
-            label_probs = label_probs[:self.num_classes]
-            label_probs = np.array(label_probs) / np.sum(label_probs)
-
-        labels = np.random.choice(
-            self.num_classes,
-            size=num_samples,
-            p=label_probs[:self.num_classes]
-        )
-
-        logger.info(
-            f"Generated synthetic data: {num_samples} samples "
-            f"({duration_hours}h at {sampling_rate}Hz)"
-        )
-
-        return signal.astype(np.float32), labels.astype(np.int64)
-
     def get_participant_ids(self) -> List[str]:
         """
         Get list of all available participant IDs.
 
         Returns:
             List of participant IDs sorted alphabetically
+
+        Raises:
+            FileNotFoundError: If data path doesn't exist or is empty
         """
         if not self.data_path.exists():
-            logger.warning(
+            raise FileNotFoundError(
                 f"Data path does not exist: {self.data_path}\n"
-                f"  Returning empty participant list."
+                f"  Please download the CAPTURE-24 dataset first."
             )
-            if self.use_synthetic:
-                # Return synthetic participant IDs for testing
-                return [f"P{i:03d}" for i in range(1, 11)]  # P001 to P010
-            return []
 
         # Find all directories that match participant ID pattern (e.g., P001, P002)
         participant_dirs = [
@@ -293,12 +286,11 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         ]
 
         if not participant_dirs:
-            logger.warning(
+            raise FileNotFoundError(
                 f"No participant directories found in {self.data_path}\n"
-                f"  Expected pattern: P001/, P002/, ..."
+                f"  Expected pattern: P001/, P002/, ...\n"
+                f"  Please download and extract the CAPTURE-24 dataset."
             )
-            if self.use_synthetic:
-                return [f"P{i:03d}" for i in range(1, 11)]
 
         return sorted(participant_dirs)
 

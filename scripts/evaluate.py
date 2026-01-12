@@ -240,7 +240,7 @@ def main():
     # Setup logging
     log_file = Path(args.output_dir) / "evaluate.log"
     setup_logging(
-        log_level=args.log_level,
+        level=args.log_level,
         log_file=str(log_file),
     )
 
@@ -285,12 +285,12 @@ def main():
     logger.info(f"Loaded {len(dataloader.dataset)} samples ({len(dataloader)} batches)")
 
     # Get label names
-    label_names = list(data_module.label_map.values())
+    label_names = list(data_module.get_label_map().values())
     logger.info(f"Classes: {label_names}")
 
     # Load model from checkpoint
     logger.info("Loading model from checkpoint...")
-    model = load_model_from_checkpoint(args.checkpoint, device=device)
+    model = load_model_from_checkpoint(args.checkpoint, config=config, device=device)
 
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())

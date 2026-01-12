@@ -1,4 +1,11 @@
-"""Pytest configuration and shared fixtures for TTM-HAR tests."""
+"""Pytest configuration and shared fixtures for TTM-HAR tests.
+
+IMPORTANT: This test suite requires:
+1. Real IBM TTM model installed (pip install git+https://github.com/ibm-granite/granite-tsfm.git)
+2. Real CAPTURE-24 data for integration tests (unit tests use generated tensors)
+
+No mock models or synthetic data generators are used.
+"""
 
 import pytest
 import numpy as np
@@ -6,13 +13,41 @@ import torch
 import tempfile
 from pathlib import Path
 from typing import Dict, Any
+import os
 
-from src.utils.config import load_config
 
+# =============================================================================
+# ENVIRONMENT VALIDATION
+# =============================================================================
+
+def _check_ttm_available():
+    """Check if real TTM is available."""
+    try:
+        from tsfm_public.models.tinytimemixer import TinyTimeMixerForPrediction
+        return True
+    except ImportError:
+        try:
+            from granite_tsfm.models import TinyTimeMixerForPrediction
+            return True
+        except ImportError:
+            return False
+
+
+TTM_AVAILABLE = _check_ttm_available()
+
+
+# =============================================================================
+# CONFIGURATION FIXTURES
+# =============================================================================
 
 @pytest.fixture
 def sample_config() -> Dict[str, Any]:
-    """Provide sample configuration for testing."""
+    """
+    Provide sample configuration for testing.
+    
+    Note: This config is for testing the config loading/validation logic.
+    Integration tests should use real data paths.
+    """
     return {
         "experiment": {
             "name": "test_experiment",
@@ -21,18 +56,16 @@ def sample_config() -> Dict[str, Any]:
         },
         "dataset": {
             "name": "capture24",
-            "data_path": "data/capture24",  # Fixed: use data_path, not data_dir
+            "data_path": "data/capture24",  # Must exist for integration tests
             "num_classes": 5,
-            "use_synthetic": True,  # Fixed: Enable synthetic data for tests
             "train_split": 0.7,
             "val_split": 0.15,
             "test_split": 0.15,
         },
         "preprocessing": {
-            # Fixed: Use the correct structure matching PreprocessingPipeline
             "sampling_rate_original": 100,
             "sampling_rate_target": 30,
-            "context_length": 512,  # Must be divisible by patch_length
+            "context_length": 512,
             "patch_length": 16,
             "window_stride_train": 256,
             "window_stride_eval": 512,
@@ -42,7 +75,7 @@ def sample_config() -> Dict[str, Any]:
                 "epsilon": 1e-8,
             },
             "gravity_removal": {
-                "enabled": False,  # Disable for faster tests
+                "enabled": False,
                 "method": "highpass",
                 "cutoff_freq": 0.5,
             },
@@ -52,7 +85,7 @@ def sample_config() -> Dict[str, Any]:
             "checkpoint": "ibm-granite/granite-timeseries-ttm-r2",
             "num_channels": 3,
             "num_classes": 5,
-            "context_length": 512,  # Must be divisible by patch_length (512 / 16 = 32)
+            "context_length": 512,
             "patch_length": 16,
             "freeze_strategy": "all",
             "head": {
@@ -66,7 +99,7 @@ def sample_config() -> Dict[str, Any]:
         "training": {
             "strategy": "linear_probe",
             "epochs": 20,
-            "batch_size": 8,  # Reduced for faster tests
+            "batch_size": 8,
             "lr_head": 1e-3,
             "lr_backbone": 1e-5,
             "weight_decay": 0.01,
@@ -80,7 +113,7 @@ def sample_config() -> Dict[str, Any]:
             },
         },
         "hardware": {
-            "device": None,  # Auto-select
+            "device": None,
             "num_workers": 0,  # Use 0 for tests to avoid multiprocessing issues
             "pin_memory": False,
             "mixed_precision": False,
@@ -90,10 +123,10 @@ def sample_config() -> Dict[str, Any]:
 
 @pytest.fixture
 def minimal_config() -> Dict[str, Any]:
-    """Minimal config for sanity tests."""
+    """Minimal config for unit tests that don't need full config."""
     return {
         "experiment": {"name": "test", "seed": 42},
-        "dataset": {"num_classes": 5, "use_synthetic": True},
+        "dataset": {"num_classes": 5},
         "preprocessing": {
             "sampling_rate_original": 100,
             "sampling_rate_target": 30,
@@ -120,33 +153,53 @@ def minimal_config() -> Dict[str, Any]:
     }
 
 
+# =============================================================================
+# DATA FIXTURES (Using real tensor shapes, not synthetic generators)
+# =============================================================================
+
 @pytest.fixture
 def sample_signal() -> np.ndarray:
-    """Generate sample accelerometry signal."""
+    """
+    Generate sample accelerometry signal for unit tests.
+    
+    This creates a tensor with realistic shapes for testing preprocessing
+    and model input/output. NOT a replacement for real data in integration tests.
+    """
     np.random.seed(42)
-    # 1 minute of 100Hz data, 3 channels
+    # 1 minute of 100Hz data, 3 channels (realistic shape)
     duration_sec = 60
     sample_rate = 100
     n_samples = duration_sec * sample_rate
-    signal = np.random.randn(n_samples, 3).astype(np.float32)
+    
+    # Generate with realistic accelerometry characteristics
+    # Mean ~1g on Z axis (gravity), small variations on X, Y
+    signal = np.zeros((n_samples, 3), dtype=np.float32)
+    signal[:, 0] = np.random.randn(n_samples) * 0.3  # X
+    signal[:, 1] = np.random.randn(n_samples) * 0.3  # Y
+    signal[:, 2] = np.random.randn(n_samples) * 0.3 + 1.0  # Z (gravity)
+    
     return signal
 
 
 @pytest.fixture
 def sample_labels() -> np.ndarray:
-    """Generate sample labels."""
+    """Generate sample labels for unit tests."""
     np.random.seed(42)
     duration_sec = 60
     sample_rate = 100
     n_samples = duration_sec * sample_rate
-    # 5 classes
-    labels = np.random.randint(0, 5, n_samples).astype(np.int64)
+    # 5 classes with realistic imbalanced distribution
+    labels = np.random.choice(
+        5, 
+        size=n_samples, 
+        p=[0.35, 0.35, 0.20, 0.08, 0.02]  # Sleep, Sed, Light, Mod, Vig
+    ).astype(np.int64)
     return labels
 
 
 @pytest.fixture
 def sample_windows() -> np.ndarray:
-    """Generate sample windowed data."""
+    """Generate sample windowed data for unit tests."""
     np.random.seed(42)
     # 100 windows, 512 timesteps, 3 channels
     windows = np.random.randn(100, 512, 3).astype(np.float32)
@@ -155,9 +208,8 @@ def sample_windows() -> np.ndarray:
 
 @pytest.fixture
 def sample_window_labels() -> np.ndarray:
-    """Generate sample window labels."""
+    """Generate sample window labels for unit tests."""
     np.random.seed(42)
-    # 100 labels (one per window)
     labels = np.random.randint(0, 5, 100).astype(np.int64)
     return labels
 
@@ -169,10 +221,14 @@ def sample_batch() -> Dict[str, torch.Tensor]:
     batch = {
         "signal": torch.randn(4, 512, 3),  # (B, L, C)
         "label": torch.randint(0, 5, (4,)),  # (B,)
-        "participant_id": ["P001", "P002", "P003", "P004"],  # Added for completeness
+        "participant_id": ["P001", "P002", "P003", "P004"],
     }
     return batch
 
+
+# =============================================================================
+# UTILITY FIXTURES
+# =============================================================================
 
 @pytest.fixture
 def temp_dir():
@@ -195,16 +251,15 @@ def temp_config_file(temp_dir, sample_config):
 
 @pytest.fixture
 def device() -> torch.device:
-    """Get device for testing (CPU by default)."""
+    """Get device for testing (CPU by default for reproducibility)."""
     return torch.device("cpu")
 
 
 @pytest.fixture
 def mock_checkpoint(temp_dir, sample_config):
-    """Create mock checkpoint file."""
-    checkpoint_path = temp_dir / "mock_checkpoint.pt"
+    """Create checkpoint file for testing checkpoint loading."""
+    checkpoint_path = temp_dir / "test_checkpoint.pt"
 
-    # Create minimal checkpoint
     checkpoint = {
         "model_state_dict": {},
         "optimizer_state_dict": {},
@@ -219,7 +274,7 @@ def mock_checkpoint(temp_dir, sample_config):
 
 @pytest.fixture(autouse=True)
 def reset_random_seeds():
-    """Reset random seeds before each test."""
+    """Reset random seeds before each test for reproducibility."""
     np.random.seed(42)
     torch.manual_seed(42)
     if torch.cuda.is_available():
@@ -236,3 +291,42 @@ def label_map() -> Dict[int, str]:
         3: "Moderate",
         4: "Vigorous",
     }
+
+
+# =============================================================================
+# SKIP MARKERS FOR TESTS REQUIRING REAL RESOURCES
+# =============================================================================
+
+# Skip if TTM not installed
+requires_ttm = pytest.mark.skipif(
+    not TTM_AVAILABLE,
+    reason="Requires real IBM TTM model (pip install git+https://github.com/ibm-granite/granite-tsfm.git)"
+)
+
+# Skip if real data not available
+def requires_real_data(data_path: str = "data/capture24"):
+    """Decorator to skip tests that require real CAPTURE-24 data."""
+    return pytest.mark.skipif(
+        not Path(data_path).exists(),
+        reason=f"Requires real CAPTURE-24 data at {data_path}"
+    )
+
+
+# =============================================================================
+# TEST DATA DIRECTORY FIXTURE
+# =============================================================================
+
+@pytest.fixture
+def test_data_dir():
+    """
+    Get path to test data directory.
+    
+    For integration tests, this should point to real CAPTURE-24 data.
+    Set environment variable CAPTURE24_DATA_PATH to override default.
+    """
+    default_path = Path("data/capture24")
+    env_path = os.environ.get("CAPTURE24_DATA_PATH")
+    
+    if env_path:
+        return Path(env_path)
+    return default_path

@@ -1,0 +1,203 @@
+================================================================================
+TTM-HAR Full-System Smoke Test
+================================================================================
+Created temporary workdir: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl
+Data root: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/synthetic_data
+Output dir: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs
+Config: /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/configs/smoke_synthetic.yaml
+Mode: FAST
+Participants: 6, Duration: 120s
+
+[1/7] Generating synthetic dataset...
+✓ Dataset generated successfully (0.01s)
+
+[2/7] Running training pipeline...
+Training command: /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/scripts/train.py --config /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/configs/smoke_synthetic.yaml --output_dir /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs --log_level INFO --no_tensorboard dataset.data_path=/var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/synthetic_data experiment.seed=42 hardware.device=cpu hardware.num_workers=0 training.epochs=2 training.batch_size=8
+
+✓ Training completed successfully (7.97s)
+
+[3/7] Validating training artifacts...
+  Found 1 checkpoint(s)
+  best_model.pt not found, using final_model.pt
+  Checkpoint epoch: 1
+  ✓ Checkpoint structure valid
+  Found 1 log file(s)
+✓ Training artifacts validated
+
+[4/7] Running evaluation pipeline...
+Evaluation command: /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/scripts/evaluate.py --checkpoint /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs/checkpoints/final_model.pt --split test --output_dir /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/evaluation --plot --log_level INFO
+
+✓ Evaluation completed successfully (8.68s)
+
+[5/7] Validating evaluation outputs...
+  Metrics found:
+    accuracy: 0.1429
+    balanced_accuracy: 0.1333
+    macro_f1: 0.0533
+    weighted_f1: 0.0571
+  ✓ Confusion matrix plot found: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/evaluation/plots/confusion_matrix.png
+  ✓ Confusion matrix shape: (5, 5)
+✓ Evaluation outputs validated
+
+[6/7] Validating data integrity...
+Loaded configuration from /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/configs/smoke_synthetic.yaml
+Initialized preprocessing pipeline:
+  Resampling: 100Hz -> 30Hz (enabled)
+  Gravity removal: disabled
+  Windowing: length=512, stride_train=256, stride_eval=512
+  Normalization: zscore
+Initialized HARDataModule for capture24 dataset
+Setting up DataModule...
+Initialized CAPTURE24Dataset: 6 participants
+Initialized CAPTURE-24 dataset: 6 participants, 5 classes
+Created capture24 dataset: 6 participants, 5 classes
+Split ratios don't sum to 1.0 (got 1.01). Normalizing...
+Subject-independent splits:
+  Train: 3 participants
+  Val:   1 participants
+  Test:  2 participants
+Building window metadata index for 3 participants (is_training=True)... [LAZY MODE]
+✓ Lazy dataset ready: 39 windows indexed from 3 participants (0 MB signal data in memory)
+Building window metadata index for 1 participants (is_training=False)... [LAZY MODE]
+✓ Lazy dataset ready: 7 windows indexed from 1 participants (0 MB signal data in memory)
+Building window metadata index for 2 participants (is_training=False)... [LAZY MODE]
+✓ Lazy dataset ready: 14 windows indexed from 2 participants (0 MB signal data in memory)
+Computed class weights: tensor([1.1538, 1.0000, 3.7500, 5.0000, 3.7500])
+DataModule setup complete
+  Train participants: ['P001', 'P002', 'P006']
+  Val participants: ['P003']
+  Test participants: ['P004', 'P005']
+  ✓ No participant leakage detected
+  Train windows: 39
+  Val windows: 7
+  Test windows: 14
+Resampling may have altered signal energy significantly. Energy ratio: 0.201 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.181 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.183 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.183 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.183 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.181 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.201 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+Resampling may have altered signal energy significantly. Energy ratio: 0.181 (expected ~1.0)
+Preprocessing complete: 3600 samples -> 13 windows of length 512
+  Sample batch shape: x=(8, 512, 3), y=(8,)
+  ✓ Batch shapes valid
+  ✓ Dataset uses lazy loading (verified by design)
+✓ Data integrity validated
+
+[7/7] Validating deterministic checkpoint reload...
+/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/site-packages/torchvision/io/image.py:13: UserWarning: Failed to load image Python extension: 'dlopen(/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/site-packages/torchvision/image.so, 0x0006): Symbol not found: __ZN3c1017RegisterOperatorsD1Ev
+  Referenced from: <6DFB383A-E1D9-3EC6-8A60-382AF4E3C226> /Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/site-packages/torchvision/image.so
+  Expected in:     <B6BD92AE-4D03-3F92-9E03-2E2594A12866> /Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/site-packages/torch/lib/libtorch_cpu.dylib'If you don't plan on using image functionality from `torchvision.io`, you can ignore this warning. Otherwise, there might be something wrong with your environment. Did you have `libjpeg` or `libpng` installed before building `torchvision` from source?
+  warn(
+Loaded checkpoint from /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs/checkpoints/final_model.pt
+Creating model from configuration...
+Initializing TTMWrapper:
+  Checkpoint: ibm-granite/granite-timeseries-ttm-r2
+  Input: (3 channels, 512 length)
+  Freeze strategy: all
+Loading TTM from: ibm-granite/granite-timeseries-ttm-r2 (via tsfm_public)
+✓ Successfully loaded TTM checkpoint
+  Model type: TinyTimeMixerForPrediction
+  Input channels: 1
+  Parameters: 805,280
+Input channels (3) != model channels (1). Adding projection layer.
+Froze all TTM parameters (including channel projection)
+Trainable parameters: 0 / 805,284
+✓ TTM initialized successfully:
+  Source: tsfm_public
+  Checkpoint: ibm-granite/granite-timeseries-ttm-r2
+  Model channels: 1
+  Num patches: 32
+  Output dim: 192
+  Trainable params: 0
+Created HARModel:
+  Backbone: TTMWrapper (output_dim=192)
+  Head: LinearHead (num_classes=5)
+  Total params: 806,249
+✓ Model created successfully
+  Backbone params: 805,284
+  Head params: 965
+  Total params: 806,249
+  Trainable params: 965
+Loaded model from checkpoint: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs/checkpoints/final_model.pt
+  Epoch: 1
+  Best metric: N/A
+Loaded checkpoint from /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs/checkpoints/final_model.pt
+Creating model from configuration...
+Initializing TTMWrapper:
+  Checkpoint: ibm-granite/granite-timeseries-ttm-r2
+  Input: (3 channels, 512 length)
+  Freeze strategy: all
+Loading TTM from: ibm-granite/granite-timeseries-ttm-r2 (via tsfm_public)
+✓ Successfully loaded TTM checkpoint
+  Model type: TinyTimeMixerForPrediction
+  Input channels: 1
+  Parameters: 805,280
+Input channels (3) != model channels (1). Adding projection layer.
+Froze all TTM parameters (including channel projection)
+Trainable parameters: 0 / 805,284
+✓ TTM initialized successfully:
+  Source: tsfm_public
+  Checkpoint: ibm-granite/granite-timeseries-ttm-r2
+  Model channels: 1
+  Num patches: 32
+  Output dim: 192
+  Trainable params: 0
+Created HARModel:
+  Backbone: TTMWrapper (output_dim=192)
+  Head: LinearHead (num_classes=5)
+  Total params: 806,249
+✓ Model created successfully
+  Backbone params: 805,284
+  Head params: 965
+  Total params: 806,249
+  Trainable params: 965
+Loaded model from checkpoint: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/outputs/checkpoints/final_model.pt
+  Epoch: 1
+  Best metric: N/A
+  ✓ Checkpoint reload is deterministic
+  Logits shape: (4, 5)
+✓ Determinism validated
+
+================================================================================
+SMOKE TEST SUMMARY
+================================================================================
+Status: ✓ SMOKE PASS
+
+Steps completed: 7/7
+  ✓ generate_dataset
+  ✓ run_training
+  ✓ validate_training_artifacts
+  ✓ run_evaluation
+  ✓ validate_evaluation_outputs
+  ✓ validate_data_integrity
+  ✓ validate_determinism
+
+Key Validation Checks:
+  ✓ Dataset: 6 participants
+  ✓ Checkpoint: final_model.pt
+  ✓ Metrics: acc=0.143, f1=0.053
+  ✓ No participant leakage
+  ✓ Windows: train=39, val=7, test=14
+  ✓ Deterministic checkpoint reload
+
+Timing:
+  dataset_generation: 0.01s
+  training: 7.97s
+  evaluation: 8.68s
+  total: 22.33s
+
+Workdir: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl
+================================================================================
+
+Results saved to: /var/folders/dg/pl7y8lmx7wb2bg5sfsxb_d_h0000gn/T/tmp_x5sjbtl/smoke_test_results.json
+
+✓ SMOKE PASS

@@ -5,49 +5,26 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="17b8176f-e524-4d4d-b395-aeb00d6dc7cd" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.github/workflows/ci.yml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.pre-commit-config.yaml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/mypy.ini" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/export_model.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/utils/export.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/utils/profiling.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58637.XbcqWwQx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58652.XFvxclax" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58653.XLteOtDx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58654.XJGReNix" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58656.XgLFSkSx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58665.XtOgkIAx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58717.XQbFuzpx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58718.XTvaXGEx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58720.XlFGlolx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58721.XsTdhOBx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58731.XZLaBlgx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58734.XvJhcOdx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58735.XeUkVPWx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/.coverage.Alis-MacBook-Pro.local.58737.XpvyMkbx" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/sanity/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/configs/smoke_synthetic.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/final_smoke_test.log" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/scripts/smoke_test_full_system.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/testing/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/testing/synthetic_capture24.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_smoke_full_system.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.claude/settings.local.json" beforeDir="false" afterPath="$PROJECT_DIR$/.claude/settings.local.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.coverage" beforeDir="false" afterPath="$PROJECT_DIR$/.coverage" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/configs/default.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/default.yaml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/coverage.xml" beforeDir="false" afterPath="$PROJECT_DIR$/coverage.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/notebooks/ttm_reproduction_visual.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/notebooks/ttm_reproduction_visual.ipynb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pytest.ini" beforeDir="false" afterPath="$PROJECT_DIR$/pytest.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/evaluate.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/evaluate.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/train.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/train.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/data/capture24_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/capture24_adapter.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/data/datamodule.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/datamodule.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/models/mock_ttm.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/mock_ttm.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/models/model_factory.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/model_factory.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/ttm_wrapper.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/ttm_wrapper.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/training/callbacks.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/callbacks.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/training/strategies.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/strategies.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/training/trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/training/trainer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/utils/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils/config.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/integration/test_end_to_end.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/unit/test_preprocessing.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/unit/test_preprocessing.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/sanity/test_sanity_checks.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -89,25 +66,25 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_ADD_EXTERNAL_FILES": "true",
-    "Python tests.Python tests in test_datasets.py.executor": "Run",
-    "Python tests.Python tests in test_metrics.py.executor": "Run",
-    "Python.verify_vitaldb.executor": "Run",
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "Shell Script.quickstart_demo.sh.executor": "Run",
-    "git-widget-placeholder": "main",
-    "last_opened_file_path": "/Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_ADD_EXTERNAL_FILES&quot;: &quot;true&quot;,
+    &quot;Python tests.Python tests in test_datasets.py.executor&quot;: &quot;Run&quot;,
+    &quot;Python tests.Python tests in test_metrics.py.executor&quot;: &quot;Run&quot;,
+    &quot;Python.verify_vitaldb.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;Shell Script.quickstart_demo.sh.executor&quot;: &quot;Run&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="$PROJECT_DIR$/deprecated" />
@@ -154,7 +131,7 @@
       <envs />
       <method v="2" />
     </configuration>
-    <configuration name="Python tests in test_datasets.py" type="tests" factoryName="Autodetect" temporary="true" nameIsGenerated="true">
+    <configuration name="Python tests in /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/deprecated/tests/test_datasets.py" type="tests" factoryName="Autodetect" temporary="true" nameIsGenerated="true">
       <module name="TinyFoundationModelForBioSignals" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -170,7 +147,7 @@
       <option name="_new_targetType" value="&quot;PATH&quot;" />
       <method v="2" />
     </configuration>
-    <configuration name="Python tests in test_metrics.py" type="tests" factoryName="Autodetect" temporary="true" nameIsGenerated="true">
+    <configuration name="Python tests in /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/deprecated/tests/test_metrics.py" type="tests" factoryName="Autodetect" temporary="true" nameIsGenerated="true">
       <module name="TinyFoundationModelForBioSignals" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -190,8 +167,8 @@
       <list>
         <item itemvalue="Shell Script.quickstart_demo.sh" />
         <item itemvalue="Python.verify_vitaldb" />
-        <item itemvalue="Python tests.Python tests in test_metrics.py" />
-        <item itemvalue="Python tests.Python tests in test_datasets.py" />
+        <item itemvalue="Python tests.Python tests in /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/deprecated/tests/test_metrics.py" />
+        <item itemvalue="Python tests.Python tests in /Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/deprecated/tests/test_datasets.py" />
       </list>
     </recent_temporary>
   </component>
@@ -212,7 +189,8 @@
       <updated>1759130514788</updated>
       <workItem from="1759130515869" duration="166635000" />
       <workItem from="1766956031092" duration="9863000" />
-      <workItem from="1767627189119" duration="5058000" />
+      <workItem from="1767627189119" duration="10284000" />
+      <workItem from="1768206689155" duration="2512000" />
     </task>
     <servers />
   </component>
@@ -259,6 +237,11 @@
           <url>file://$PROJECT_DIR$/deprecated/data/unified_biosignal_data.py</url>
           <line>745</line>
           <option name="timeStamp" value="9" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="jupyter-line">
+          <url>notebook:///Users/aliab/Desktop/GitHub/TinyFoundationModelForBioSignals/ttm_har_extended_notebook.ipynb</url>
+          <line>529</line>
+          <option name="timeStamp" value="10" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
