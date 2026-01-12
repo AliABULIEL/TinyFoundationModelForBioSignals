@@ -3,9 +3,12 @@
 This module provides the dataset adapter for CAPTURE-24 accelerometry data.
 Real data is REQUIRED - no synthetic data generation is supported.
 
-Supports both data formats:
-- File format: P001.csv.gz, P002.csv.gz, ... (official CAPTURE-24 format)
-- Directory format: P001/, P002/, ... (preprocessed format)
+Supports multiple data formats (in order of preference):
+1. HDF5 format: capture24.h5 (FASTEST - recommended)
+2. File format: P001.csv.gz, P002.csv.gz, ... (official CAPTURE-24 format)
+3. Directory format: P001/, P002/, ... (preprocessed format)
+
+For best performance, run preprocess_to_hdf5.py first to convert CSV.gz → HDF5.
 """
 
 import logging
@@ -16,6 +19,12 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    import h5py
+    HDF5_AVAILABLE = True
+except ImportError:
+    HDF5_AVAILABLE = False
+
 from src.data.base_dataset import BaseAccelerometryDataset
 from src.data.label_mappings import CAPTURE24_5CLASS, get_label_mapping
 
@@ -24,38 +33,39 @@ logger = logging.getLogger(__name__)
 
 class CAPTURE24Dataset(BaseAccelerometryDataset):
     """
-    CAPTURE-24 dataset adapter.
+    CAPTURE-24 dataset adapter with HDF5 support for fast loading.
 
     CAPTURE-24 is a large-scale wrist-worn accelerometry dataset for 24-hour
     activity recognition collected from ~150 participants wearing Axivity AX3
     sensors on the dominant wrist.
 
-    Supports two data formats:
-        1. Official CAPTURE-24 format (P001.csv.gz, P002.csv.gz, ...)
-           - Single compressed CSV per participant
-           - Columns: time, x, y, z, annotation (+ label columns like Walmsley2020)
-        
-        2. Preprocessed directory format (P001/, P002/, ...)
-           - Each participant folder contains:
-             - accelerometry.csv (or .npy): Time series data with X, Y, Z columns
-             - labels.csv (or .npy): Corresponding activity labels
+    Supports three data formats (checked in this order):
+        1. HDF5 format: capture24.h5 (INSTANT loading, recommended)
+           - Created by preprocess_to_hdf5.py
+           - Chunked storage for efficient window access
+           
+        2. Official CAPTURE-24 format (P001.csv.gz, P002.csv.gz, ...)
+           - Slow: requires decompression + parsing + resampling
+           
+        3. Preprocessed directory format (P001/, P002/, ...)
+           - Each folder contains accelerometry.npy and labels.npy
 
     Args:
-        data_path: Path to CAPTURE-24 root directory
+        data_path: Path to CAPTURE-24 root directory (or .h5 file directly)
         participant_ids: List of participant IDs to load (None = all)
         num_classes: Number of activity classes (5 or 8)
         transform: Optional transform to apply to samples
         target_sampling_rate: Target sampling rate in Hz (default 30 for TTM)
-
-    Raises:
-        FileNotFoundError: If data_path does not exist or contains no data
+        use_hdf5: If True (default), prefer HDF5 format if available
+        cache_in_memory: If True, cache loaded data in RAM (faster but uses more memory)
 
     Example:
-        >>> dataset = CAPTURE24Dataset(
-        >>>     data_path="data/capture24",
-        >>>     num_classes=5
-        >>> )
-        >>> signal, labels = dataset.load_participant("P001")
+        >>> # Fast loading from HDF5 (run preprocess_to_hdf5.py first)
+        >>> dataset = CAPTURE24Dataset(data_path="data/capture24/capture24.h5")
+        >>> signal, labels = dataset.load_participant("P001")  # Instant!
+        
+        >>> # Or specify directory (will auto-detect capture24.h5 inside)
+        >>> dataset = CAPTURE24Dataset(data_path="data/capture24/capture24")
     """
 
     # Class constants
@@ -69,32 +79,62 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         num_classes: int = 5,
         transform: Optional[callable] = None,
         target_sampling_rate: int = 30,
+        use_hdf5: bool = True,
+        cache_in_memory: bool = False,
     ) -> None:
         """Initialize CAPTURE-24 dataset."""
         self.num_classes = num_classes
         self.target_sampling_rate = target_sampling_rate
+        self.use_hdf5 = use_hdf5 and HDF5_AVAILABLE
+        self.cache_in_memory = cache_in_memory
+        self._cache = {}  # Memory cache for loaded participants
+        
         self._data_format = None  # Will be detected in get_participant_ids()
+        self._h5_file = None  # HDF5 file handle (opened lazily)
+        self._h5_path = None  # Path to HDF5 file
 
         # Get label mapping
         self.label_mapping = get_label_mapping("capture24", num_classes)
 
-        # Validate data path exists
+        # Resolve data path and detect format
         data_path_obj = Path(data_path)
-        if not data_path_obj.exists():
+        
+        # Check if path is directly an HDF5 file
+        if data_path_obj.suffix == '.h5' and data_path_obj.exists():
+            self._h5_path = data_path_obj
+            self._data_format = 'hdf5'
+            # Set data_path to parent for compatibility
+            data_path = str(data_path_obj.parent)
+        # Check if HDF5 file exists in the directory
+        elif self.use_hdf5:
+            h5_candidates = [
+                data_path_obj / 'capture24.h5',
+                data_path_obj.parent / 'capture24.h5',
+                data_path_obj / 'capture24_30hz.h5',
+            ]
+            for h5_path in h5_candidates:
+                if h5_path.exists():
+                    self._h5_path = h5_path
+                    self._data_format = 'hdf5'
+                    logger.info(f"Found HDF5 file: {h5_path}")
+                    break
+
+        # Validate data path exists
+        if not data_path_obj.exists() and self._h5_path is None:
             raise FileNotFoundError(
                 f"\n{'=' * 80}\n"
                 f"❌ CAPTURE-24 DATA NOT FOUND\n"
                 f"{'=' * 80}\n\n"
                 f"Data path does not exist: {data_path}\n\n"
                 f"REQUIRED: Download the CAPTURE-24 dataset first.\n\n"
+                f"RECOMMENDED: Convert to HDF5 for fast loading:\n"
+                f"  python preprocess_to_hdf5.py --data_path {data_path}\n\n"
                 f"DOWNLOAD INSTRUCTIONS:\n"
                 f"─────────────────────────────────────────────────────────────────────────────\n"
                 f"1. Visit: https://ora.ox.ac.uk/objects/uuid:99d7c092-d865-4a19-b096-cc16f6bab45f\n"
                 f"2. Download the dataset files\n"
                 f"3. Extract to: {data_path}\n"
-                f"4. Data can be in either format:\n"
-                f"   - P001.csv.gz, P002.csv.gz, ... (official format)\n"
-                f"   - P001/, P002/, ... directories (preprocessed format)\n"
+                f"4. Run: python preprocess_to_hdf5.py --data_path {data_path}\n"
                 f"─────────────────────────────────────────────────────────────────────────────\n"
                 f"{'=' * 80}\n"
             )
@@ -113,14 +153,6 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
                 f"❌ NO PARTICIPANTS FOUND\n"
                 f"{'=' * 80}\n\n"
                 f"Data path exists but contains no participant data: {data_path}\n\n"
-                f"Expected formats:\n"
-                f"  Format 1 (Official): P001.csv.gz, P002.csv.gz, ...\n"
-                f"  Format 2 (Preprocessed):\n"
-                f"    {data_path}/\n"
-                f"      ├── P001/\n"
-                f"      │   ├── accelerometry.npy\n"
-                f"      │   └── labels.npy\n"
-                f"      └── P002/ ...\n\n"
                 f"Please download and extract the CAPTURE-24 dataset correctly.\n"
                 f"{'=' * 80}\n"
             )
@@ -131,6 +163,22 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
             f"{num_classes} classes, "
             f"format={self._data_format}"
         )
+
+    def _get_h5_file(self):
+        """Get HDF5 file handle (open lazily)."""
+        if self._h5_file is None and self._h5_path is not None:
+            self._h5_file = h5py.File(self._h5_path, 'r')
+        return self._h5_file
+    
+    def close(self):
+        """Close HDF5 file handle."""
+        if self._h5_file is not None:
+            self._h5_file.close()
+            self._h5_file = None
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        self.close()
 
     def load_participant(self, participant_id: str) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -143,18 +191,80 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
             Tuple of (signal, labels) where:
                 - signal: np.ndarray of shape (num_samples, 3) - X, Y, Z acceleration
                 - labels: np.ndarray of shape (num_samples,) - integer class labels
-
-        Raises:
-            FileNotFoundError: If participant data doesn't exist
-            ValueError: If data format is invalid
         """
+        # Check cache first
+        if self.cache_in_memory and participant_id in self._cache:
+            return self._cache[participant_id]
+        
         # Route to appropriate loader based on detected format
-        if self._data_format == 'csv.gz':
-            return self._load_from_csv_gz(participant_id)
+        if self._data_format == 'hdf5':
+            result = self._load_from_hdf5(participant_id)
+        elif self._data_format == 'csv.gz':
+            result = self._load_from_csv_gz(participant_id)
         elif self._data_format == 'csv':
-            return self._load_from_csv(participant_id)
+            result = self._load_from_csv(participant_id)
         else:
-            return self._load_from_directory(participant_id)
+            result = self._load_from_directory(participant_id)
+        
+        # Cache if enabled
+        if self.cache_in_memory:
+            self._cache[participant_id] = result
+        
+        return result
+
+    def _load_from_hdf5(self, participant_id: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Load data from HDF5 file (FAST!)."""
+        h5f = self._get_h5_file()
+        
+        if participant_id not in h5f:
+            raise FileNotFoundError(
+                f"Participant {participant_id} not found in HDF5 file.\n"
+                f"  Available: {list(h5f.keys())[:5]}..."
+            )
+        
+        grp = h5f[participant_id]
+        
+        # Load signal and labels (HDF5 handles chunked reading efficiently)
+        signal = grp['signal'][:]  # (N, 3) float32
+        labels = grp['labels'][:]  # (N,) int64
+        
+        return signal, labels
+
+    def get_participant_slice_hdf5(
+        self,
+        participant_id: str,
+        start: int,
+        end: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load a slice of data from HDF5 (for windowed access).
+        
+        This is more efficient than loading entire participant and slicing.
+        """
+        h5f = self._get_h5_file()
+        
+        if participant_id not in h5f:
+            raise FileNotFoundError(f"Participant {participant_id} not found in HDF5")
+        
+        grp = h5f[participant_id]
+        
+        # HDF5 efficiently loads only the requested slice
+        signal = grp['signal'][start:end]
+        labels = grp['labels'][start:end]
+        
+        return signal, labels
+
+    def get_participant_length(self, participant_id: str) -> int:
+        """Get the number of samples for a participant without loading data."""
+        if self._data_format == 'hdf5':
+            h5f = self._get_h5_file()
+            if participant_id in h5f:
+                return h5f[participant_id].attrs.get('num_samples', 
+                       len(h5f[participant_id]['signal']))
+        
+        # Fallback: load and check (slower)
+        signal, _ = self.load_participant(participant_id)
+        return len(signal)
 
     def _load_from_csv_gz(self, participant_id: str) -> Tuple[np.ndarray, np.ndarray]:
         """Load data from compressed CSV file (official CAPTURE-24 format)."""
@@ -193,7 +303,7 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         logger.debug(f"Loading data from {csv_path}")
         
         # Read CSV (pandas handles .gz automatically)
-        # FIX: Use low_memory=False to avoid mixed type warnings on large files
+        # Use low_memory=False to avoid mixed type warnings on large files
         df = pd.read_csv(csv_path, low_memory=False)
         
         # Find accelerometer columns
@@ -331,7 +441,6 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         Resample signal and labels to target sampling rate.
         
         Uses scipy's resample_poly for high-quality resampling.
-        FIX: Uses actual resample_poly output length to avoid shape mismatch.
         """
         from scipy.signal import resample_poly
         from math import gcd
@@ -340,25 +449,20 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         up = target_rate // g
         down = original_rate // g
         
-        # FIX: Resample first channel to get the ACTUAL output length
-        # (resample_poly can produce length that differs by 1 from calculated)
+        # Resample first channel to get actual output length
         resampled_ch0 = resample_poly(signal[:, 0], up, down)
         n_samples_new = len(resampled_ch0)
         
-        # Allocate output array with correct size
+        # Allocate output
         resampled_signal = np.zeros((n_samples_new, signal.shape[1]), dtype=np.float32)
         resampled_signal[:, 0] = resampled_ch0
         
         # Resample remaining channels
         for ch in range(1, signal.shape[1]):
             resampled_ch = resample_poly(signal[:, ch], up, down)
-            # Truncate or pad to match first channel length (handles off-by-one)
-            if len(resampled_ch) >= n_samples_new:
-                resampled_signal[:, ch] = resampled_ch[:n_samples_new]
-            else:
-                resampled_signal[:len(resampled_ch), ch] = resampled_ch
+            resampled_signal[:, ch] = resampled_ch[:n_samples_new]
         
-        # Resample labels with nearest neighbor to EXACT same length as signal
+        # Resample labels with nearest neighbor to match exact signal length
         new_indices = np.linspace(0, len(labels) - 1, n_samples_new)
         resampled_labels = labels[np.round(new_indices).astype(int)]
         
@@ -476,13 +580,20 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         """
         Get list of all available participant IDs.
 
-        Supports both formats:
-        - P001.csv.gz files (official CAPTURE-24)
-        - P001/ directories (preprocessed)
+        Checks formats in order: HDF5, CSV.gz, CSV, directories
 
         Returns:
             List of participant IDs sorted alphabetically
         """
+        # If HDF5 format already detected
+        if self._data_format == 'hdf5' and self._h5_path is not None:
+            h5f = self._get_h5_file()
+            if 'metadata' in h5f and 'participant_ids' in h5f['metadata']:
+                return [pid.decode() for pid in h5f['metadata']['participant_ids'][:]]
+            else:
+                # Get participant groups (exclude metadata)
+                return sorted([k for k in h5f.keys() if k != 'metadata'])
+
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data path does not exist: {self.data_path}")
 
@@ -527,13 +638,14 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         raise FileNotFoundError(
             f"No participant data found in {self.data_path}\n"
             f"  Expected formats:\n"
+            f"    - capture24.h5 (recommended - run preprocess_to_hdf5.py)\n"
             f"    - P001.csv.gz, P002.csv.gz, ... (official CAPTURE-24)\n"
             f"    - P001/, P002/, ... (preprocessed directories)"
         )
 
     def get_metadata(self) -> Dict[str, any]:
         """Get CAPTURE-24 dataset metadata."""
-        return {
+        metadata = {
             "dataset_name": "CAPTURE-24",
             "sampling_rate": self.ORIGINAL_SAMPLING_RATE,
             "target_sampling_rate": self.target_sampling_rate,
@@ -546,6 +658,16 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
             "duration_per_participant": "~24 hours",
             "data_format": self._data_format,
         }
+        
+        # Add HDF5-specific metadata if available
+        if self._data_format == 'hdf5':
+            h5f = self._get_h5_file()
+            if 'metadata' in h5f:
+                meta = h5f['metadata']
+                metadata['total_samples'] = meta.attrs.get('total_samples', 'N/A')
+                metadata['total_hours'] = meta.attrs.get('total_hours', 'N/A')
+        
+        return metadata
 
     def get_label_map(self) -> Dict[int, str]:
         """Get mapping from class IDs to class names."""
