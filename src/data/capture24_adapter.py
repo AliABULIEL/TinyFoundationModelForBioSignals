@@ -213,21 +213,23 @@ class CAPTURE24Dataset(BaseAccelerometryDataset):
         return result
 
     def _load_from_hdf5(self, participant_id: str) -> Tuple[np.ndarray, np.ndarray]:
-        """Load data from HDF5 file (FAST!)."""
+        """Load data from HDF5 file with length mismatch fix."""
         h5f = self._get_h5_file()
-        
+
         if participant_id not in h5f:
-            raise FileNotFoundError(
-                f"Participant {participant_id} not found in HDF5 file.\n"
-                f"  Available: {list(h5f.keys())[:5]}..."
-            )
-        
+            raise FileNotFoundError(f"Participant {participant_id} not found in HDF5")
+
         grp = h5f[participant_id]
-        
-        # Load signal and labels (HDF5 handles chunked reading efficiently)
-        signal = grp['signal'][:]  # (N, 3) float32
-        labels = grp['labels'][:]  # (N,) int64
-        
+        signal = grp['signal'][:]
+        labels = grp['labels'][:]
+
+        # FIX: Handle off-by-one resampling mismatch
+        if len(signal) != len(labels):
+            min_len = min(len(signal), len(labels))
+            print(f"  ⚠️ Length fix: {participant_id} signal={len(signal)} labels={len(labels)} → {min_len}")
+            signal = signal[:min_len]
+            labels = labels[:min_len]
+
         return signal, labels
 
     def get_participant_slice_hdf5(

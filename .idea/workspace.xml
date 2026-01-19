@@ -6,6 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="17b8176f-e524-4d4d-b395-aeb00d6dc7cd" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/capture24_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/capture24_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/datamodule.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/datamodule.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -171,7 +173,7 @@
       <workItem from="1759130515869" duration="166635000" />
       <workItem from="1766956031092" duration="9863000" />
       <workItem from="1767627189119" duration="10284000" />
-      <workItem from="1768206689155" duration="9824000" />
+      <workItem from="1768206689155" duration="15680000" />
     </task>
     <servers />
   </component>
